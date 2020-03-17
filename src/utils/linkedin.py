@@ -1,4 +1,5 @@
 from selenium import webdriver
+from selenium.common import exceptions
 import json
 
 class LinkedIn:
@@ -32,9 +33,9 @@ class LinkedIn:
                 with open(filepath, 'x') as file:
                     json.dump(cookies, file)
 
-            except FileExistsError as err:
-                print(err)
-                print('session cookie already stored in specified filename')
+            except FileExistsError as error:
+                print(error)
+                print('File specified already exists. Please use overwrite flag if you wish to login again or use `restore_session(filepath)` method instead to load the saved cookies')
 
     def restore_session(self, filepath = 'cookies.json'):
         self.browser.get('https://www.linkedin.com/')
@@ -47,11 +48,50 @@ class LinkedIn:
                     self.browser.add_cookie(cookie)
             print('Cookies loaded into browser successfully')
             # Reload page with the cookies
-            self.browser.get('https://www.linkedin.com/jobs')
+            self.browser.get('https://www.linkedin.com/feed')
 
-        except FileNotFoundError as err:
-            print(err)
-            print('Cookies not added to the browser')
+        except FileNotFoundError as error:
+            print(error)
+            print('Failed to add Cookies to the browser')
+
+    def scrape_jobs(self, filepath = 'job_listing.json'):
+        # Get to the page
+        self.browser.get('https://www.linkedin.com/jobs')
+        # Get scroll height
+        last_height = self.browser.execute_script("return document.body.scrollHeight")
+
+        while True:
+            # Scroll down to bottom
+            self.browser.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+
+            # Wait to load page, time is tentative but depends on network connection speed + lazy loaded component rendering
+            time.sleep(3)
+
+            # Calculate new scroll height and compare with last scroll height
+            new_height = self.browser.execute_script("return document.body.scrollHeight")
+            if new_height == last_height:
+                break
+            last_height = new_height
+
+        # Get list of loaded job cards
+        jobs = browser.find_elements_by_class_name('job-card__link-wrapper')
+        for job in jobs:
+            url = job.get_attribute('href')
+            jobID = {s.split('=')[0]: s.split('=')[-1] for s in url.split('&')}['currentJobId']
+            try:
+                job.find_element_by_class_name('job-card__easy-apply')
+                try:
+                    with open(filepath, 'a') as file:
+                        json.dump({jobID: url}, file)
+                    # Can be replaced by an if os.path.exists() call instead later
+                except FileNotFoundError as error:
+                    print(error)
+                    print('creating a new file')
+                    with open(filepath, 'w') as file:
+                        json.dump({jobID: url}, file)
+                # So that loop ignores the entries without Easy Apply and continues the loop without interruption
+            except exceptions.NoSuchElementException as error:
+                print(error)
 
     def __del__(self):
         self.browser.quit()
