@@ -12,12 +12,13 @@ parser.add_argument("-w", "--overwrite", action="store_true", help='overwrite ex
 parser.add_argument('-d', '--driver', default='chromedriver', help='path to Chrome browser driver')
 parser.add_argument("-t", "--twofa", action="store_true", help='use it if you have 2 Factor Authentication enabled')
 parser.add_argument('-j', '--jobs', default='job_listing.json', help='file path to where jobs urls are or to store them')
+parser.add_argument("-D", "--Display", action="store_false", help='Whether to display the browser or not (headless mode)')
 
 args = parser.parse_args()
 
 # Driver Code
 
-operator = LinkedIn(path = args.driver)
+operator = LinkedIn(path = args.driver, headless = args.Display)
 
 fp = Path(args.cookies)
 

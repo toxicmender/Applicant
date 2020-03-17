@@ -1,12 +1,17 @@
 from selenium import webdriver
 from selenium.common import exceptions
+from selenium.webdriver.chrome.options import Options
 from pathlib import Path
 import json
 import time
 
 class LinkedIn:
-    def __init__(self, path = None):
-        self.browser = webdriver.Chrome(path)
+    def __init__(self, path = None, headless = True):
+        self.browser_options = Options()
+        self.browser_options.add_argument('--disable-extensions')
+        if headless:
+            self.browser_options.add_argument('--headless')
+        self.browser = webdriver.Chrome(path, options=self.browser_options)
 
     def login(self, username, password, twoFA = False, filepath = 'cookies.json', overwrite = False):
         self.browser.get('https://www.linkedin.com/login?fromSignIn=true')
@@ -14,7 +19,10 @@ class LinkedIn:
         self.browser.find_element_by_id('password').send_keys(password)
         # TODO: Detect which one is correct on the page
         # self.browser.find_element_by_xpath('/html/body/div/main/div/form/div[3]/button').click()
-        self.browser.find_element_by_xpath('/html/body/div/main/div/form/div[4]/button').click()
+        if self.browser.find_element_by_xpath('/html/body/div/main/div/form/div[4]/button'):
+            self.browser.find_element_by_xpath('/html/body/div/main/div/form/div[4]/button').click()
+        else:
+            self.browser.find_element_by_xpath('/html/body/div/main/div/form/div[3]/button').click()
 
         if twoFA:
             self.browser.find_element_by_id('input__phone_verification_pin').send_keys(input('Enter OTP: '))
