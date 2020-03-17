@@ -127,4 +127,4 @@ class LinkedIn:
             print(error)
 
     def __del__(self):
-        self.browser.quit()
+        self.browser.close()
