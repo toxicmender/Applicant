@@ -93,5 +93,20 @@ class LinkedIn:
             except exceptions.NoSuchElementException as error:
                 print(error)
 
+    def easy_apply(self, filepath = 'job_listing.json'):
+        try:
+            with open(filepath, 'r') as file:
+                jobs = json.load(file)
+                for jobID in jobs.keys():
+                    # TODO: prevent openning & applying on already  applied job postings
+                    self.browser.get(jobs[jobID])
+                    self.browser.find_element_by_class_name('jobs-apply-button').click()
+                    if self.browser.find_element_by_id('follow-company-checkbox').is_selected():
+                        # self.browser.find_element_by_id('follow-company-checkbox').click() results in selenium.common.exceptions.ElementClickInterceptedException
+                        self.browser.execute_script("arguments[0].click();", self.browser.find_element_by_id('follow-company-checkbox'))
+                    self.browser.find_element_by_class_name('artdeco-button--primary').click()
+        except FileNotFoundError as error:
+            print(error)
+
     def __del__(self):
         self.browser.quit()
