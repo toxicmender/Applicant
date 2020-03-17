@@ -1,6 +1,8 @@
 from selenium import webdriver
 from selenium.common import exceptions
+from pathlib import Path
 import json
+import time
 
 class LinkedIn:
     def __init__(self, path = None):
@@ -60,6 +62,10 @@ class LinkedIn:
         # Get scroll height
         last_height = self.browser.execute_script("return document.body.scrollHeight")
 
+        # Get the initially loaded jobs
+        jobs = {'list': [{{s.split('=')[0]: s.split('=')[-1] for s in job.get_attribute('href').split('&')}['currentJobId']: job.get_attribute('href')}  for job in self.browser.find_elements_by_class_name('job-card__link-wrapper')]}
+
+        # Start scrolling upto maximum allowed pages to lost as many jobs as possible
         while True:
             # Scroll down to bottom
             self.browser.execute_script("window.scrollTo(0, document.body.scrollHeight);")
@@ -73,32 +79,36 @@ class LinkedIn:
                 break
             last_height = new_height
 
-        # Get list of loaded job cards
-        jobs = browser.find_elements_by_class_name('job-card__link-wrapper')
-        for job in jobs:
+        # Get list of newly loaded job cards
+        for job in self.browser.find_elements_by_class_name('job-card__link-wrapper'):
             url = job.get_attribute('href')
             jobID = {s.split('=')[0]: s.split('=')[-1] for s in url.split('&')}['currentJobId']
             try:
                 job.find_element_by_class_name('job-card__easy-apply')
-                try:
-                    with open(filepath, 'a') as file:
-                        json.dump({jobID: url}, file)
-                    # Can be replaced by an if os.path.exists() call instead later
-                except FileNotFoundError as error:
-                    print(error)
-                    print('creating a new file')
-                    with open(filepath, 'w') as file:
-                        json.dump({jobID: url}, file)
+                jobs['list'].append({jobID: url})
                 # So that loop ignores the entries without Easy Apply and continues the loop without interruption
             except exceptions.NoSuchElementException as error:
                 print(error)
+
+        if Path(filepath).exists():
+            with open(filepath, 'r') as file:
+                # payload = json.load(file)
+                for job in json.load(file)['list']:
+                    jobs['list'].append(job)
+
+            with open(filepath, 'w') as file:
+                json.dump(jobs, file)
+        else:
+            print('creating a new file')
+            with open(filepath, 'x') as file:
+                json.dump(jobs, file)
 
     def easy_apply(self, filepath = 'job_listing.json'):
         try:
             with open(filepath, 'r') as file:
                 jobs = json.load(file)
                 for jobID in jobs.keys():
-                    # TODO: prevent openning & applying on already  applied job postings
+                    # TODO: prevent openning & applying on already applied job postings
                     self.browser.get(jobs[jobID])
                     self.browser.find_element_by_class_name('jobs-apply-button').click()
                     if self.browser.find_element_by_id('follow-company-checkbox').is_selected():
