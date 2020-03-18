@@ -26,7 +26,7 @@ if args.overwrite:
     user = input('Username/Email ID: ')
     passw = getpass.getpass()
     operator.login(username=user, password=passw, twoFA=args.twofa, filepath=fp, overwrite=args.overwrite)
-elif fp.exists():
+elif fp.exists() and not fp.is_dir():
     operator.restore_session(fp)
 else:
     user = input('Username/Email ID: ')
