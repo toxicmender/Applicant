@@ -22,11 +22,7 @@ operator = LinkedIn(path = args.driver, headless = args.Display)
 
 fp = Path(args.cookies)
 
-if args.overwrite:
-    user = input('Username/Email ID: ')
-    passw = getpass.getpass()
-    operator.login(username=user, password=passw, twoFA=args.twofa, filepath=fp, overwrite=args.overwrite)
-elif fp.exists() and not fp.is_dir():
+if fp.exists() and not fp.is_dir() and not args.overwrite:
     operator.restore_session(fp)
 else:
     user = input('Username/Email ID: ')
