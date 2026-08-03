@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 
 from .jobs import Job, JobsError, save_jobs
+from .money import convert
 
 SOURCES = ('linkedin', 'indeed', 'naukri', 'googlejobs')
 
@@ -138,6 +139,12 @@ class JobFilter:
     location: str | None = None
     min_salary: float | None = None      # annual, in `currency`
     currency: str | None = None
+    # how to compare pay quoted in another currency:
+    #   'ppp'    - purchasing power, the fair cross-country comparison
+    #   'market' - today's exchange rate
+    #   'strict' - refuse to compare, flag the mismatch
+    salary_basis: str = 'ppp'
+    experience: float | None = None      # years you have
     posted_within_days: int | None = None
     keep_unknown: bool = True            # unverifiable jobs survive, flagged
 
@@ -167,6 +174,13 @@ class JobFilter:
             if not keep:
                 return False, flags
 
+        if self.experience is not None and 'experience' not in skip:
+            keep, flag = self._experience_ok(job)
+            if flag:
+                flags.append(flag)
+            if not keep:
+                return False, flags
+
         if self.posted_within_days is not None and 'posted' not in skip:
             keep, flag = self._date_ok(job, today)
             if flag:
@@ -181,17 +195,45 @@ class JobFilter:
         actual = actual.lower()
         return all(word in actual for word in wanted.lower().split())
 
+    def _experience_ok(self, job):
+        """You qualify when your years fall inside the range the job asks for.
+
+        A job wanting 0-2 years is not a match for someone with 8, so the upper
+        bound matters as much as the lower one. An open ended maximum means no
+        ceiling.
+        """
+        low, high = job.experience_min, job.experience_max
+        if low is None and high is None:
+            return self.keep_unknown, 'experience-unknown'
+        if low is not None and self.experience < low:
+            return False, None
+        if high is not None and self.experience > high:
+            return False, None
+        return True, None
+
     def _salary_ok(self, job):
         salary = parse_salary(job.salary)
         if salary is None:
             return self.keep_unknown, 'salary-unknown'
-        if self.currency and salary.currency and salary.currency != self.currency:
-            # no exchange rates are invented here - it is simply not comparable
-            return self.keep_unknown, 'salary-currency-mismatch'
+
         top = salary.annual_high
         if top is None:
             return self.keep_unknown, 'salary-unknown'
-        return top >= self.min_salary, None
+
+        flag = None
+        if self.currency and salary.currency and salary.currency != self.currency:
+            if self.salary_basis == 'strict':
+                return self.keep_unknown, 'salary-currency-mismatch'
+            top, note = convert(top, salary.currency, self.currency,
+                                basis=self.salary_basis)
+            if top is None:
+                return self.keep_unknown, note or 'salary-currency-mismatch'
+            flag = note                        # e.g. fell back off ppp to market
+        elif self.currency and not salary.currency:
+            # a bare number with no symbol - assume it is already in `currency`
+            flag = 'salary-currency-assumed'
+
+        return top >= self.min_salary, flag
 
     def _date_ok(self, job, today=None):
         if not job.posted:
@@ -206,7 +248,7 @@ class JobFilter:
 
 APPLIED_COLUMNS = ['applied_at', 'status', 'source', 'id', 'title', 'company', 'location',
                    'salary', 'salary_annual_low', 'salary_annual_high', 'currency',
-                   'posted', 'url', 'flags', 'note']
+                   'experience_min', 'experience_max', 'posted', 'url', 'flags', 'note']
 
 
 class ApplicationLog:
@@ -250,6 +292,8 @@ class ApplicationLog:
                 'salary_annual_low': salary.annual_low if salary else None,
                 'salary_annual_high': salary.annual_high if salary else None,
                 'currency': salary.currency if salary else None,
+                'experience_min': job.experience_min,
+                'experience_max': job.experience_max,
                 'posted': job.posted,
                 'url': job.url,
                 'flags': ' '.join(job.flags),

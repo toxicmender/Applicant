@@ -46,6 +46,8 @@ uv run python run.py search "developer" -l India --title "senior python" \
 | `-t/--title` | words in the job title, any order |
 | `-c/--company` | the hiring company |
 | `--min-salary` + `--currency` | annual pay floor |
+| `--salary-basis` | how to compare other currencies: `ppp`, `market` or `strict` |
+| `-e/--experience YEARS` | years you have; keeps jobs asking for that much |
 | `--posted-within DAYS` | how recently it was posted |
 
 Location and date are handed to the boards themselves where they support it
@@ -53,12 +55,38 @@ Location and date are handed to the boards themselves where they support it
 `-n/--limit` is how many to pull from each board *before* filtering, so a tight
 filter returns fewer than you asked for - raise it if you want more survivors.
 
-**Most postings state no salary at all.** Those are kept and marked
-`salary-unknown` in the `flags` field rather than silently dropped; pass `--strict`
-to drop anything that could not actually be checked. Pay is normalised to an annual
-figure first, so `2-2.5 Lacs PA`, `₹25K–₹40K a month` and `$30 an hour` all compare
-properly. No exchange rates are invented - a job priced in a different currency to
-`--currency` is flagged `salary-currency-mismatch`, never guessed at.
+**Unverifiable jobs are kept and flagged, not dropped.** Most postings state no
+salary, and only Naukri publishes required experience, so those come back marked
+`salary-unknown` / `experience-unknown` in the `flags` field. Pass `--strict` to drop
+anything that could not actually be checked.
+
+`--experience 5` keeps jobs whose stated range contains 5 years, so it excludes
+roles wanting 0-2 years as well as ones wanting 8+. `5+ years` is treated as having
+no upper bound, not as exactly five.
+
+### Salaries across currencies
+
+Pay is normalised to an annual figure first, so `2-2.5 Lacs PA`, `₹25K–₹40K a month`
+and `$30 an hour` all compare properly. Pay in *another* currency is then converted,
+and the basis matters a great deal:
+
+| `--salary-basis` | ₹20,00,000 compared against a USD floor |
+|---|---|
+| `ppp` (default) | **$99,559** - what it is worth where it is earned |
+| `market` | $20,978 - today's exchange rate |
+| `strict` | not compared at all, flagged `salary-currency-mismatch` |
+
+Purchasing power parity is the default because a market conversion makes every
+Indian salary look small next to an American one, which is not a useful way to
+choose a job. Exchange rates come from the ECB via frankfurter.dev; PPP conversion
+factors from the World Bank indicator `PA.NUS.PPP`. Both are cached in
+`.money_cache.json`.
+
+**Nothing is ever guessed.** The World Bank API throttles hard, so factors are
+fetched one country at a time and only when needed. When one cannot be had, the
+comparison falls back to a market rate and says so with a `ppp-unavailable` flag
+rather than inventing a number. Factors for India, Japan and the US ship built in;
+the rest are fetched on first use.
 
 ## Applying
 
@@ -83,7 +111,8 @@ is written UTF-8 with a BOM and a stable column order, so **Google Sheets import
 cleanly** via *File > Import > Upload* (currency symbols survive). Columns:
 
 `applied_at`, `status`, `source`, `id`, `title`, `company`, `location`, `salary`,
-`salary_annual_low`, `salary_annual_high`, `currency`, `posted`, `url`, `flags`, `note`
+`salary_annual_low`, `salary_annual_high`, `currency`, `experience_min`,
+`experience_max`, `posted`, `url`, `flags`, `note`
 
 `status` is one of `applied`, `needs_manual_apply`, `would_apply` (dry run) or `failed`.
 
@@ -134,9 +163,14 @@ from utils.jobsearch import Jobs, JobFilter
 board = Jobs()
 hits = board.search('python developer',
                     JobFilter(location='India', min_salary=1_200_000,
-                              currency='INR', posted_within_days=7))
+                              currency='INR', salary_basis='ppp',
+                              experience=5, posted_within_days=7))
 board.apply(hits, log='applied_jobs.csv', dry_run=True)
 ```
+
+`Job` is a Pydantic model, so postings are validated as they are built - blank
+strings become `None`, whitespace is stripped, and a year range is derived from
+whatever the board said (`experience_text`) into `experience_min` / `experience_max`.
 
 Individual boards work standalone too, and all four return the same `Job` objects:
 

@@ -3,6 +3,7 @@
 **/company_reviews.json
 **/applied_jobs.csv
 **/applied_via_jobs_interface.json
+**/.money_cache.json
 **/storage_state.json
 .gd_profile/
 

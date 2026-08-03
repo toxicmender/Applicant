@@ -125,7 +125,7 @@ class Naukri:
             posted=relative_to_iso(posted_text),
             posted_text=posted_text,
             salary=self._salary(fields.get('salary')),
-            employment_type=fields.get('experience'),
+            experience_text=fields.get('experience'),
         )
 
     # -- rendered job tuples ----------------------------------------------
@@ -153,7 +153,7 @@ class Naukri:
                     posted=relative_to_iso(posted_text),
                     posted_text=posted_text,
                     salary=self._salary(self._text(card, '.sal')),
-                    employment_type=self._text(card, '.expwdth'),
+                    experience_text=self._text(card, '.expwdth'),
                 ))
             except Exception:
                 continue

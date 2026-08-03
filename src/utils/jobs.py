@@ -9,8 +9,9 @@ from __future__ import annotations
 import json
 import re
 from contextlib import contextmanager
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 USER_AGENT = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
               '(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36')
@@ -26,8 +27,44 @@ class BlockedError(JobsError):
     """A bot check, captcha or login wall stopped the scrape."""
 
 
-@dataclass
-class Job:
+EXPERIENCE = re.compile(
+    r'(\d+(?:\.\d+)?)\s*(?:-|to|–)\s*(\d+(?:\.\d+)?)\s*\+?\s*(?:yrs?|years?)'
+    r'|(\d+(?:\.\d+)?)\s*\+\s*(?:yrs?|years?)'
+    r'|(?:min(?:imum)?|at least)\s*(\d+(?:\.\d+)?)\s*(?:yrs?|years?)'
+    r'|(\d+(?:\.\d+)?)\s*(?:yrs?|years?)',
+    re.IGNORECASE)
+FRESHER = re.compile(r'\bfresher|\bentry[ -]level|\bno experience\b|\bgraduate trainee\b',
+                     re.IGNORECASE)
+
+
+def parse_experience(text):
+    """'0-2 Yrs' -> (0.0, 2.0); '5+ years' -> (5.0, None). (None, None) if absent.
+
+    An open ended maximum is meaningful: '5+ years' must not become '5 to 5'.
+    """
+    if not text:
+        return None, None
+    if FRESHER.search(text):
+        return 0.0, 0.0
+
+    match = EXPERIENCE.search(text)
+    if not match:
+        return None, None
+    low_high, high, plus, minimum, exact = match.groups()
+    if low_high is not None:
+        return float(low_high), float(high)
+    if plus is not None:
+        return float(plus), None
+    if minimum is not None:
+        return float(minimum), None
+    return float(exact), float(exact)
+
+
+class Job(BaseModel):
+    """A posting, normalised across every board."""
+
+    model_config = ConfigDict(str_strip_whitespace=True, validate_assignment=True)
+
     source: str
     title: str
     id: str | None = None
@@ -38,30 +75,40 @@ class Job:
     posted_text: str | None = None       # what the board actually said, e.g. '6 days ago'
     employment_type: str | None = None
     salary: str | None = None
+    experience_text: str | None = None   # what the board said, e.g. '0-2 Yrs'
+    experience_min: float | None = Field(default=None, ge=0, le=60)
+    experience_max: float | None = Field(default=None, ge=0, le=60)
     via: str | None = None               # originating board, for aggregators
     remote: bool | None = None
     easy_apply: bool | None = None
     # why a job survived a filter it could not be checked against,
     # e.g. 'salary-unknown' - see utils.jobsearch
-    flags: list = field(default_factory=list)
+    flags: list[str] = Field(default_factory=list)
+
+    @field_validator('*', mode='before')
+    @classmethod
+    def _blank_to_none(cls, value):
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @model_validator(mode='after')
+    def _fill_experience(self):
+        """Derive the year range from whatever text the board gave us."""
+        if self.experience_min is None and self.experience_max is None:
+            low, high = parse_experience(self.experience_text or self.title)
+            if low is not None or high is not None:
+                # assignment validation is on, so set via __dict__ to avoid recursing
+                self.__dict__['experience_min'] = low
+                self.__dict__['experience_max'] = high
+        if (self.experience_min is not None and self.experience_max is not None
+                and self.experience_max < self.experience_min):
+            self.__dict__['experience_min'], self.__dict__['experience_max'] = (
+                self.experience_max, self.experience_min)
+        return self
 
     def to_dict(self):
-        return {
-            'source': self.source,
-            'id': self.id,
-            'title': self.title,
-            'company': self.company,
-            'location': self.location,
-            'url': self.url,
-            'posted': self.posted,
-            'posted_text': self.posted_text,
-            'employment_type': self.employment_type,
-            'salary': self.salary,
-            'via': self.via,
-            'remote': self.remote,
-            'easy_apply': self.easy_apply,
-            'flags': list(self.flags),
-        }
+        return self.model_dump()
 
 
 def _key(item):

@@ -75,6 +75,8 @@ def _filters(args):
         location=args.location,
         min_salary=args.min_salary,
         currency=args.currency,
+        salary_basis=args.salary_basis,
+        experience=args.experience,
         posted_within_days=args.posted_within,
         keep_unknown=not args.strict,
     )
@@ -108,7 +110,7 @@ def run_apply(args):
         print('could not read {}: {}'.format(args.input, error))
         return 1
 
-    known = {field for field in Job.__dataclass_fields__}
+    known = set(Job.model_fields)
     jobs = [Job(**{key: value for key, value in item.items() if key in known})
             for item in stored]
 
@@ -133,6 +135,12 @@ def _add_filters(command):
     command.add_argument('-c', '--company', help='keep jobs from companies matching this')
     command.add_argument('--min-salary', type=float, help='annual salary floor, in --currency')
     command.add_argument('--currency', help='currency for --min-salary, e.g. INR or USD')
+    command.add_argument('--salary-basis', default='ppp',
+                         choices=['ppp', 'market', 'strict'],
+                         help='how to compare pay in another currency: purchasing '
+                              'power (default), the exchange rate, or not at all')
+    command.add_argument('-e', '--experience', type=float, metavar='YEARS',
+                         help='years of experience you have; keeps jobs asking for it')
     command.add_argument('--posted-within', type=int, metavar='DAYS',
                          help='keep jobs posted within this many days')
     command.add_argument('--strict', action='store_true',
