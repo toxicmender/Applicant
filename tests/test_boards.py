@@ -17,7 +17,7 @@ from applicant.boards.googlejobs import GoogleJobs
 from applicant.boards.indeed import Indeed, host_for
 from applicant.boards.linkedin import LinkedIn
 from applicant.boards.naukri import Naukri, search_url
-from applicant.models import BlockedError
+from applicant.models import BlockedError, Job
 
 
 def mosaic_html(results: list[dict]) -> str:
@@ -275,7 +275,10 @@ class NaukriTest(unittest.TestCase):
         self.assertEqual(job.title, 'Python Developer')
         self.assertEqual(job.location, 'Pune')
         self.assertEqual(job.salary, '5-8 Lacs PA')
-        self.assertEqual(job.employment_type, '2-5 Yrs')
+        # Naukri's "2-5 Yrs" is required experience, not an employment type
+        self.assertIsNone(job.employment_type)
+        self.assertEqual(job.experience_text, '2-5 Yrs')
+        self.assertEqual((job.experience_min, job.experience_max), (2.0, 5.0))
         self.assertTrue(job.url.startswith('https://www.naukri.com/'))
 
     def test_a_titleless_item_is_skipped(self):
@@ -386,6 +389,38 @@ class LinkedInGuestSearchTest(unittest.TestCase):
 
         self.client(handler).search('python', limit=5, posted_within_days=7)
         self.assertEqual(seen[0]['f_TPR'], 'r604800')
+
+
+class JobValidationTest(unittest.TestCase):
+    """Job is a Pydantic model, so postings are normalised as they are built."""
+
+    def test_whitespace_is_stripped(self):
+        self.assertEqual(Job(source='indeed', title='  Dev  ').title, 'Dev')
+
+    def test_a_blank_string_becomes_none(self):
+        """Boards emit empty cells constantly; '' is absence, not a value."""
+        job = Job(source='indeed', title='Dev', company='', location='   ')
+        self.assertIsNone(job.company)
+        self.assertIsNone(job.location)
+
+    def test_a_missing_title_is_rejected(self):
+        with self.assertRaises(ValueError):
+            Job(source='indeed')  # type: ignore[call-arg]
+
+    def test_flags_default_to_a_fresh_list_per_job(self):
+        first = Job(source='indeed', title='A')
+        first.flags.append('salary-unknown')
+        self.assertEqual(Job(source='indeed', title='B').flags, [])
+
+    def test_round_trips_through_to_dict(self):
+        job = Job(source='naukri', title='Dev', experience_text='2-5 Yrs', salary='5-8 Lacs PA')
+        restored = Job.from_dict(job.to_dict())
+        self.assertEqual(restored.experience_min, 2.0)
+        self.assertEqual(restored.salary, '5-8 Lacs PA')
+
+    def test_from_dict_ignores_fields_we_no_longer_know(self):
+        job = Job.from_dict({'source': 'indeed', 'title': 'Dev', 'retired_field': 'x'})
+        self.assertEqual(job.title, 'Dev')
 
 
 if __name__ == '__main__':

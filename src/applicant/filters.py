@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
 from .models import Job
-from .money import convert
+from .money import Rates, convert
 from .salary import parse_salary
 
 
@@ -24,6 +24,9 @@ class JobFilter:
     #   'market' - today's exchange rate
     #   'strict' - refuse to compare, flag the mismatch
     salary_basis: str = 'ppp'
+    # where FX and PPP figures come from. None uses the shared cache, which
+    # fetches on a miss; pass Rates(offline=True) to keep a run off the network.
+    rates: Rates | None = None
     experience: float | None = None  # years you have
     posted_within_days: int | None = None
     keep_unknown: bool = True  # unverifiable jobs survive, flagged
@@ -108,7 +111,9 @@ class JobFilter:
         if self.currency and salary.currency and salary.currency != self.currency:
             if self.salary_basis == 'strict':
                 return self.keep_unknown, 'salary-currency-mismatch'
-            top, note = convert(top, salary.currency, self.currency, basis=self.salary_basis)
+            top, note = convert(
+                top, salary.currency, self.currency, basis=self.salary_basis, table=self.rates
+            )
             if top is None:
                 return self.keep_unknown, note or 'salary-currency-mismatch'
             flag = note  # e.g. fell back off ppp to market

@@ -23,7 +23,9 @@ uv run pyright
 
 Tests are `unittest.TestCase` subclasses run under pytest, so both runners work and
 neither is required. Nothing in the suite touches the network: the boards take an
-injected `httpx` client and the parsers are exercised against fixtures.
+injected `httpx` client, the parsers run against fixtures, and currency tests use
+`JobFilter(rates=Rates(offline=True))` so no ECB or World Bank call is ever made.
+Pass `rates=` yourself to keep a real search off the network too.
 
 CI mirrors this in two workflows. `format` is the only one that writes - it runs
 `ruff format` and pushes the result back to the branch. `ci` runs ruff, pyright and
@@ -184,6 +186,7 @@ src/applicant/
   storage.py     job_listing.json and applied_jobs.csv
   search.py      the facade over boards, filters and storage
   boards/        one module per job board, all returning Job
+  money.py       FX and PPP factors, for comparing pay across currencies
   reviews/       company ratings from AmbitionBox and Glassdoor
 tests/           unittest.TestCase suites, run under pytest
 ```

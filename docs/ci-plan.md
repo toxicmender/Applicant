@@ -11,6 +11,10 @@ Written against PR #2 (`company-reviews-submodule`, head `02a8b5b`).
 | End-to-end testing dropped | §3.4 below is **not built**; kept for the reasoning |
 | Lint split into a job that commits | `.github/workflows/format.yml` writes; `ci.yml` only reports |
 
+Rebased onto `26b3220` after PR #2 gained a fourth commit (Pydantic `Job`,
+required experience, PPP salary comparison). That commit also rewrote the PR
+description to cover all four commits, which resolves §1's main finding.
+
 Sections 1 and 2 are the assessment that drove the work and are left as written.
 Section 3 describes the design; where the built pipeline differs, it says so.
 
@@ -488,3 +492,17 @@ Three defects surfaced while building the suite, all now fixed and covered:
 `Indeed`, `Naukri` and `GoogleJobs` also gained a `close()`, which replaced a
 `hasattr(client, 'close')` guard in the facade and stopped `Indeed` leaking its
 `httpx` client after every search.
+
+Two more surfaced when the suite was brought onto `26b3220`:
+
+4. **A derived experience range bypassed its own bounds.** `experience_min` and
+   `experience_max` declare `ge=0, le=60`, but the range derived from
+   `experience_text` was written straight into `__dict__` after validation, so a
+   posting saying "100 years" stored 100 while an explicit `experience_min=100`
+   was rejected. Moving the derivation to a `mode='before'` validator holds both
+   paths to the same rule; an out-of-range derived value now reads as unknown
+   rather than failing the scrape that found it.
+5. **Salary filtering could reach the network mid-scrape** with no way to stop
+   it. `JobFilter` now takes a `rates=` table, so a caller can pass
+   `Rates(offline=True)` — and so no test can silently depend on a live ECB or
+   World Bank response.

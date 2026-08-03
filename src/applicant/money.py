@@ -30,14 +30,26 @@ FX_URL = 'https://api.frankfurter.dev/v1/latest'
 WB_URL = 'https://api.worldbank.org/v2/country/{}/indicator/PA.NUS.PPP?format=json'
 
 CACHE_PATH = os.environ.get('APPLICANT_MONEY_CACHE', '.money_cache.json')
-FX_TTL = 24 * 3600          # exchange rates move daily
-PPP_TTL = 180 * 24 * 3600   # PPP factors are published yearly
+FX_TTL = 24 * 3600  # exchange rates move daily
+PPP_TTL = 180 * 24 * 3600  # PPP factors are published yearly
 
 # which economy a currency belongs to, for the PPP lookup
 CURRENCY_COUNTRY = {
-    'INR': 'IND', 'USD': 'USA', 'GBP': 'GBR', 'EUR': 'EMU', 'CAD': 'CAN',
-    'AUD': 'AUS', 'SGD': 'SGP', 'AED': 'ARE', 'CHF': 'CHE', 'JPY': 'JPN',
-    'BRL': 'BRA', 'MXN': 'MEX', 'PLN': 'POL', 'SEK': 'SWE', 'ZAR': 'ZAF',
+    'INR': 'IND',
+    'USD': 'USA',
+    'GBP': 'GBR',
+    'EUR': 'EMU',
+    'CAD': 'CAN',
+    'AUD': 'AUS',
+    'SGD': 'SGP',
+    'AED': 'ARE',
+    'CHF': 'CHE',
+    'JPY': 'JPN',
+    'BRL': 'BRA',
+    'MXN': 'MEX',
+    'PLN': 'POL',
+    'SEK': 'SWE',
+    'ZAR': 'ZAF',
     'NZD': 'NZL',
 }
 
@@ -62,7 +74,7 @@ class Rates:
 
     def _load(self):
         try:
-            with open(self.path, 'r', encoding='utf-8') as handle:
+            with open(self.path, encoding='utf-8') as handle:
                 cache = json.load(handle)
         except (FileNotFoundError, ValueError):
             cache = {}
@@ -94,11 +106,14 @@ class Rates:
                 payload = client.get(FX_URL, params={'base': base}).json()
             rates = dict(payload['rates'])
             rates[base] = 1.0
-        except Exception:
+        except Exception:  # noqa: BLE001 - any FX failure falls back to the cache
             return entry['rates'] if entry else {}
 
-        self._cache['fx'][base] = {'rates': rates, 'fetched': time.time(),
-                                   'date': payload.get('date')}
+        self._cache['fx'][base] = {
+            'rates': rates,
+            'fetched': time.time(),
+            'date': payload.get('date'),
+        }
         self._save()
         return rates
 
@@ -122,12 +137,15 @@ class Rates:
             rows = [row for row in payload[1] if row.get('value') is not None]
             rows.sort(key=lambda row: row['date'], reverse=True)
             newest = rows[0]
-        except Exception:
+        except Exception:  # noqa: BLE001 - the World Bank throttles and reshapes
             # the World Bank throttles hard; a stale or seeded value beats nothing
             return entry['value'] if entry else None
 
-        self._cache['ppp'][country] = {'value': newest['value'], 'year': newest['date'],
-                                       'fetched': time.time()}
+        self._cache['ppp'][country] = {
+            'value': newest['value'],
+            'year': newest['date'],
+            'fetched': time.time(),
+        }
         self._save()
         return newest['value']
 

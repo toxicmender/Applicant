@@ -165,6 +165,22 @@ class ApplicationLogTest(TempDirTest):
         self.assertEqual(row['salary_annual_low'], '')
         self.assertEqual(row['currency'], '')
 
+    def test_experience_is_expanded_into_its_own_columns(self):
+        target = self.path('applied.csv')
+        ApplicationLog(target).record([self.entry('1', experience_text='2-5 Yrs')])
+
+        row = ApplicationLog(target).rows()[0]
+        self.assertEqual(row['experience_min'], '2.0')
+        self.assertEqual(row['experience_max'], '5.0')
+
+    def test_unknown_experience_leaves_those_columns_empty(self):
+        target = self.path('applied.csv')
+        ApplicationLog(target).record([self.entry('1')])
+
+        row = ApplicationLog(target).rows()[0]
+        self.assertEqual(row['experience_min'], '')
+        self.assertEqual(row['experience_max'], '')
+
     def test_flags_are_written_space_separated(self):
         target = self.path('applied.csv')
         ApplicationLog(target).record([self.entry('1', flags=['salary-unknown', 'date-unknown'])])

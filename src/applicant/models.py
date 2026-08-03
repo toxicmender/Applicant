@@ -31,6 +31,14 @@ FRESHER = re.compile(
 )
 
 
+# the bounds the model enforces on experience_min / experience_max
+YEAR_LIMIT = 60
+
+
+def _in_range(value: float | None) -> bool:
+    return value is None or 0 <= value <= YEAR_LIMIT
+
+
 def parse_experience(text: str | None) -> tuple[float | None, float | None]:
     """'0-2 Yrs' -> (0.0, 2.0); '5+ years' -> (5.0, None). (None, None) if absent.
 
@@ -70,8 +78,8 @@ class Job(BaseModel):
     employment_type: str | None = None
     salary: str | None = None
     experience_text: str | None = None  # what the board said, e.g. '0-2 Yrs'
-    experience_min: float | None = Field(default=None, ge=0, le=60)
-    experience_max: float | None = Field(default=None, ge=0, le=60)
+    experience_min: float | None = Field(default=None, ge=0, le=YEAR_LIMIT)
+    experience_max: float | None = Field(default=None, ge=0, le=YEAR_LIMIT)
     via: str | None = None  # originating board, for aggregators
     remote: bool | None = None
     easy_apply: bool | None = None
@@ -86,25 +94,31 @@ class Job(BaseModel):
             return None
         return value
 
-    @model_validator(mode='after')
-    def _fill_experience(self):
-        """Derive the year range from whatever text the board gave us."""
-        if self.experience_min is None and self.experience_max is None:
-            low, high = parse_experience(self.experience_text or self.title)
-            if low is not None or high is not None:
-                # assignment validation is on, so set via __dict__ to avoid recursing
-                self.__dict__['experience_min'] = low
-                self.__dict__['experience_max'] = high
-        if (
-            self.experience_min is not None
-            and self.experience_max is not None
-            and self.experience_max < self.experience_min
-        ):
-            self.__dict__['experience_min'], self.__dict__['experience_max'] = (
-                self.experience_max,
-                self.experience_min,
-            )
-        return self
+    @model_validator(mode='before')
+    @classmethod
+    def _fill_experience(cls, data):
+        """Derive the year range from whatever text the board gave us.
+
+        Done before validation rather than after, so a derived range is held to
+        the same bounds as one passed in explicitly, and so nothing has to be
+        written past `validate_assignment`.
+        """
+        if not isinstance(data, dict):
+            return data
+
+        low, high = data.get('experience_min'), data.get('experience_max')
+
+        if low is None and high is None:
+            low, high = parse_experience(data.get('experience_text') or data.get('title'))
+            # a posting saying "100 years" is a typo, not a requirement: read it
+            # as unknown rather than failing the whole scrape on it
+            if not _in_range(low) or not _in_range(high):
+                low = high = None
+
+        if low is not None and high is not None and high < low:
+            low, high = high, low
+
+        return {**data, 'experience_min': low, 'experience_max': high}
 
     def to_dict(self) -> dict:
         return self.model_dump()

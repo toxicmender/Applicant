@@ -6,6 +6,11 @@ from typing import Any
 
 from applicant.filters import JobFilter
 from applicant.models import Job
+from applicant.money import Rates
+
+# every currency test runs off a fixed table, so no test reaches the network and
+# a change in real rates can never turn the suite red
+OFFLINE = Rates(path='/nonexistent/money-cache.json', offline=True)
 
 
 def job(**kwargs) -> Job:
@@ -90,19 +95,52 @@ class SalaryFilterTest(unittest.TestCase):
         self.assertFalse(keep)
         self.assertEqual(flags, ['salary-unknown'])
 
-    def test_a_different_currency_is_flagged_never_converted(self):
-        keep, flags = JobFilter(min_salary=1_000_000, currency='INR').matches(
+    def test_another_currency_is_converted_by_purchasing_power(self):
+        """$120k is well past a ₹10L floor once compared at PPP."""
+        keep, flags = JobFilter(min_salary=1_000_000, currency='INR', rates=OFFLINE).matches(
             job(salary='$120,000 a year')
         )
         self.assertTrue(keep)
-        self.assertEqual(flags, ['salary-currency-mismatch'])
+        self.assertEqual(flags, [])
 
-    def test_strict_drops_a_currency_mismatch(self):
-        keep, flags = JobFilter(min_salary=1_000_000, currency='INR', keep_unknown=False).matches(
+    def test_conversion_can_still_reject(self):
+        keep, _ = JobFilter(min_salary=100_000_000, currency='INR', rates=OFFLINE).matches(
             job(salary='$120,000 a year')
         )
         self.assertFalse(keep)
+
+    def test_strict_refuses_to_compare_across_currencies(self):
+        keep, flags = JobFilter(
+            min_salary=1_000_000, currency='INR', salary_basis='strict', rates=OFFLINE
+        ).matches(job(salary='$120,000 a year'))
+        self.assertTrue(keep, 'unverifiable, so kept and flagged')
         self.assertEqual(flags, ['salary-currency-mismatch'])
+
+    def test_strict_and_no_keep_unknown_drops_the_mismatch(self):
+        keep, flags = JobFilter(
+            min_salary=1_000_000,
+            currency='INR',
+            salary_basis='strict',
+            keep_unknown=False,
+            rates=OFFLINE,
+        ).matches(job(salary='$120,000 a year'))
+        self.assertFalse(keep)
+        self.assertEqual(flags, ['salary-currency-mismatch'])
+
+    def test_an_unconvertible_currency_is_flagged_not_invented(self):
+        # ISK is in neither the PPP seed nor an offline FX table
+        keep, flags = JobFilter(min_salary=1_000_000, currency='ISK', rates=OFFLINE).matches(
+            job(salary='$120,000 a year')
+        )
+        self.assertTrue(keep)
+        self.assertEqual(flags, ['rate-unavailable'])
+
+    def test_a_bare_number_is_assumed_to_be_in_the_filter_currency(self):
+        keep, flags = JobFilter(min_salary=1_000_000, currency='INR', rates=OFFLINE).matches(
+            job(salary='1500000 per annum')
+        )
+        self.assertTrue(keep)
+        self.assertEqual(flags, ['salary-currency-assumed'])
 
 
 class DateFilterTest(unittest.TestCase):
