@@ -136,6 +136,41 @@ cleanly** via *File > Import > Upload* (currency symbols survive). Columns:
 
 `status` is one of `applied`, `needs_manual_apply`, `would_apply` (dry run) or `failed`.
 
+## Comparing pay across currencies
+
+`--min-salary` needs a `--currency`, and most postings are priced in another one.
+`--salary-basis` decides how they are compared:
+
+| basis | ₹20,00,000 against a USD floor | when to use it |
+|---|---|---|
+| `ppp` (default) | ~$99,600 | "which of these is the better job" |
+| `market` | ~$21,000 | "what is this worth in my currency" |
+| `strict` | not compared, flagged | when you would rather judge it yourself |
+
+PPP factors come from the World Bank indicator `PA.NUS.PPP` and are cached in
+`src/applicant/ppp_factors.json`, which is checked in so a fresh clone starts
+with whatever is already known.
+
+```
+uv run applicant rates                          # what is cached right now
+uv run applicant rates --refresh                # fetch everything missing
+uv run applicant rates --refresh -c GBP SEK NZD # just these
+uv run applicant rates --refresh --force        # re-fetch what is already there
+```
+
+**The file ships with only USD, INR and JPY.** The World Bank API throttles
+hard - roughly one country per attempt - so the rest are fetched on demand and
+cached as you use them, or all at once with `--refresh`. Run it once and commit
+the result so nobody else has to.
+
+Nothing is ever written from memory. A factor that cannot be retrieved is
+reported and left out, and a comparison needing it falls back to a market rate
+flagged `ppp-unavailable` rather than being handed an invented number.
+
+Two things worth knowing before reading a converted figure: `EUR` maps to the
+euro area aggregate, which is coarser than a single country, and `TWD` has no
+factor at all because Taiwan is not a World Bank member.
+
 ### Checking where things stand
 
 ```
@@ -187,6 +222,7 @@ src/applicant/
   search.py      the facade over boards, filters and storage
   boards/        one module per job board, all returning Job
   money.py       FX and PPP factors, for comparing pay across currencies
+  ppp_factors.json  the checked in PPP table, filled by `applicant rates --refresh`
   reviews/       company ratings from AmbitionBox and Glassdoor
 tests/           unittest.TestCase suites, run under pytest
 ```

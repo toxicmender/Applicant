@@ -175,6 +175,32 @@ class StatusCommandTest(unittest.TestCase):
         self.assertEqual(payload['applications']['total'], 0)
 
 
+class RatesCommandTest(unittest.TestCase):
+    def run_rates(self, *extra: str) -> tuple[int, str]:
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = main(['rates', *extra])
+        return code, buffer.getvalue()
+
+    def test_it_lists_every_mapped_currency(self):
+        from applicant.money import CURRENCY_COUNTRY
+
+        code, output = self.run_rates()
+        self.assertEqual(code, 0)
+        for currency in ('USD', 'GBP', 'INR', 'NZD', 'AUD', 'EUR', 'SEK'):
+            with self.subTest(currency=currency):
+                self.assertIn(currency, output)
+        self.assertIn('of {} mapped currencies'.format(len(set(CURRENCY_COUNTRY.values()))), output)
+
+    def test_a_cached_factor_shows_its_value_and_year(self):
+        _, output = self.run_rates()
+        self.assertIn('USD (USA): 1.0 per international $ (definition)', output)
+
+    def test_an_uncached_currency_says_so_rather_than_showing_a_number(self):
+        _, output = self.run_rates()
+        self.assertIn('not cached - fetched on demand', output)
+
+
 class ApplyCommandTest(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()

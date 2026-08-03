@@ -23,44 +23,105 @@ from __future__ import annotations
 import json
 import os
 import time
+from pathlib import Path
 
 import httpx
 
 FX_URL = 'https://api.frankfurter.dev/v1/latest'
 WB_URL = 'https://api.worldbank.org/v2/country/{}/indicator/PA.NUS.PPP?format=json'
+# mrnev=1 asks for the most recent non-empty value, so one small response per country
+WB_PARAMS = {'format': 'json', 'mrnev': '1'}
 
 CACHE_PATH = os.environ.get('APPLICANT_MONEY_CACHE', '.money_cache.json')
+# the checked in reference table, so a fresh clone starts with what is known
+FACTORS_PATH = Path(__file__).with_name('ppp_factors.json')
 FX_TTL = 24 * 3600  # exchange rates move daily
 PPP_TTL = 180 * 24 * 3600  # PPP factors are published yearly
 
-# which economy a currency belongs to, for the PPP lookup
+# Which economy a currency belongs to, for the PPP lookup. ISO 4217 -> ISO 3166
+# alpha-3, which is what the World Bank keys on.
+#
+# Two caveats worth knowing before reading a converted figure:
+#
+# * EUR maps to the euro area aggregate (EMU). Price levels differ a lot between
+#   Ireland and Portugal, so a euro figure is coarser than a single country one.
+# * A currency used by several economies (USD, EUR) is priced at the economy
+#   named here, not wherever the job actually is.
+#
+# TWD is deliberately absent: Taiwan is not a World Bank member, so there is no
+# PA.NUS.PPP series to fetch and a PPP comparison would have to be invented.
 CURRENCY_COUNTRY = {
-    'INR': 'IND',
+    # requested explicitly
     'USD': 'USA',
     'GBP': 'GBR',
-    'EUR': 'EMU',
-    'CAD': 'CAN',
-    'AUD': 'AUS',
-    'SGD': 'SGP',
-    'AED': 'ARE',
-    'CHF': 'CHE',
-    'JPY': 'JPN',
-    'BRL': 'BRA',
-    'MXN': 'MEX',
-    'PLN': 'POL',
-    'SEK': 'SWE',
-    'ZAR': 'ZAF',
+    'INR': 'IND',
     'NZD': 'NZL',
+    'AUD': 'AUS',
+    'EUR': 'EMU',
+    'SEK': 'SWE',
+    # the rest of the majors, by trade volume
+    'JPY': 'JPN',
+    'CHF': 'CHE',
+    'CAD': 'CAN',
+    'CNY': 'CHN',
+    'HKD': 'HKG',
+    'SGD': 'SGP',
+    'NOK': 'NOR',
+    'DKK': 'DNK',
+    'KRW': 'KOR',
+    'PLN': 'POL',
+    'CZK': 'CZE',
+    'HUF': 'HUN',
+    'RON': 'ROU',
+    'TRY': 'TUR',
+    'ILS': 'ISR',
+    'ZAR': 'ZAF',
+    'MXN': 'MEX',
+    'BRL': 'BRA',
+    'CLP': 'CHL',
+    'COP': 'COL',
+    'ARS': 'ARG',
+    'AED': 'ARE',
+    'SAR': 'SAU',
+    'EGP': 'EGY',
+    'NGN': 'NGA',
+    'KES': 'KEN',
+    'PKR': 'PAK',
+    'BDT': 'BGD',
+    'LKR': 'LKA',
+    'NPR': 'NPL',
+    'IDR': 'IDN',
+    'MYR': 'MYS',
+    'THB': 'THA',
+    'PHP': 'PHL',
+    'VND': 'VNM',
 }
 
-# Seeded from the World Bank on 2026-08-03; only values actually retrieved are
-# listed. Everything else is fetched on demand and cached. USA is 1.0 by
-# definition - the international dollar is the US dollar.
-PPP_SEED = {
-    'USA': {'value': 1.0, 'year': 'definition'},
-    'IND': {'value': 20.088629, 'year': '2025'},
-    'JPN': {'value': 97.08005, 'year': '2025'},
-}
+# the reverse, for reporting - first currency wins where several share a country
+COUNTRY_CURRENCY = {}
+for _currency, _country in CURRENCY_COUNTRY.items():
+    COUNTRY_CURRENCY.setdefault(_country, _currency)
+
+
+def load_factors(path: str | Path = FACTORS_PATH):
+    """The checked in PPP table: country -> {value, year}.
+
+    Missing or unreadable reads as empty rather than raising, so a broken data
+    file degrades to fetching on demand instead of stopping a search.
+    """
+    try:
+        with open(path, encoding='utf-8') as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    factors = payload.get('factors')
+    return factors if isinstance(factors, dict) else {}
+
+
+# Only values actually retrieved from the World Bank live here - see the note in
+# ppp_factors.json. USA is 1.0 by definition: the international dollar is the US
+# dollar.
+PPP_SEED = load_factors()
 
 
 class Rates:
@@ -131,23 +192,102 @@ class Rates:
         if self.offline:
             return entry['value'] if entry else None
 
-        try:
-            with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
-                payload = client.get(WB_URL.format(country)).json()
-            rows = [row for row in payload[1] if row.get('value') is not None]
-            rows.sort(key=lambda row: row['date'], reverse=True)
-            newest = rows[0]
-        except Exception:  # noqa: BLE001 - the World Bank throttles and reshapes
+        newest = fetch_factor(country, timeout=self.timeout)
+        if newest is None:
             # the World Bank throttles hard; a stale or seeded value beats nothing
             return entry['value'] if entry else None
 
-        self._cache['ppp'][country] = {
-            'value': newest['value'],
-            'year': newest['date'],
-            'fetched': time.time(),
-        }
+        self._cache['ppp'][country] = dict(newest, fetched=time.time())
         self._save()
         return newest['value']
+
+
+def fetch_factor(country, timeout=20.0, attempts=3, pause=2.0, client=None):
+    """One country's newest PPP factor -> {value, year}, or None.
+
+    The World Bank answers roughly one country per attempt under load, so this
+    retries with a widening pause rather than treating a throttle as an answer.
+    """
+    for attempt in range(max(1, attempts)):
+        if attempt:
+            time.sleep(pause * attempt)
+        try:
+            if client is not None:
+                response = client.get(WB_URL.format(country), params=WB_PARAMS)
+            else:
+                with httpx.Client(timeout=timeout, follow_redirects=True) as owned:
+                    response = owned.get(WB_URL.format(country), params=WB_PARAMS)
+            payload = response.json()
+            rows = [row for row in payload[1] if row.get('value') is not None]
+        except Exception:  # noqa: BLE001 - throttled, reshaped, or offline
+            continue
+        if not rows:
+            return None  # a real answer: the series has no data for this country
+        rows.sort(key=lambda row: row['date'], reverse=True)
+        return {'value': rows[0]['value'], 'year': rows[0]['date']}
+    return None
+
+
+def refresh_factors(
+    path: str | Path = FACTORS_PATH,
+    currencies=None,
+    force=False,
+    pause=1.0,
+    timeout=20.0,
+    on_result=None,
+    client=None,
+):
+    """Fetch PPP factors into the checked in reference file.
+
+    -> (updated, failed, skipped), each a list of country codes.
+
+    Only what actually comes back is written. USA stays at 1.0 by definition and
+    is never fetched. Countries already recorded are skipped unless `force`.
+    """
+    wanted = (
+        CURRENCY_COUNTRY.values()
+        if currencies is None
+        else [
+            CURRENCY_COUNTRY[code.upper()]
+            for code in currencies
+            if code.upper() in CURRENCY_COUNTRY
+        ]
+    )
+
+    try:
+        with open(path, encoding='utf-8') as handle:
+            document = json.load(handle)
+    except (OSError, ValueError):
+        document = {}
+    factors = document.setdefault('factors', {})
+
+    updated, failed, skipped = [], [], []
+    today = time.strftime('%Y-%m-%d')
+
+    for country in dict.fromkeys(wanted):
+        if country == 'USA' or (country in factors and not force):
+            skipped.append(country)
+            if on_result:
+                on_result(country, factors.get(country), True)
+            continue
+
+        found = fetch_factor(country, timeout=timeout, pause=pause, client=client)
+        if found is None:
+            failed.append(country)
+        else:
+            factors[country] = dict(found, retrieved=today)
+            updated.append(country)
+        if on_result:
+            on_result(country, factors.get(country), False)
+        time.sleep(pause)
+
+    if updated:
+        document['factors'] = dict(sorted(factors.items()))
+        with open(path, 'w', encoding='utf-8') as handle:
+            json.dump(document, handle, indent=2)
+            handle.write('\n')
+
+    return updated, failed, skipped
 
 
 _DEFAULT = None

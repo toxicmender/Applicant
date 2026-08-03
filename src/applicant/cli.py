@@ -180,6 +180,62 @@ def run_status(args) -> int:
     return 0
 
 
+def run_rates(args) -> int:
+    """Show, or top up, the locally cached PPP factors."""
+    from .money import CURRENCY_COUNTRY, load_factors, refresh_factors
+
+    if args.refresh:
+        wanted = args.currency or None
+        print(
+            'fetching PPP factors from the World Bank{}...'.format(
+                '' if wanted is None else ' for ' + ', '.join(c.upper() for c in wanted)
+            )
+        )
+        print('one country at a time - the API throttles hard, so this is not quick.\n')
+
+        def report(country, found, was_skipped):
+            if was_skipped:
+                return
+            if found is None:
+                print('  {}: no value returned'.format(country))
+            else:
+                print('  {}: {} ({})'.format(country, found['value'], found['year']))
+
+        updated, failed, skipped = refresh_factors(
+            currencies=wanted, force=args.force, on_result=report
+        )
+        print(
+            '\n{} updated, {} failed, {} already known'.format(
+                len(updated), len(failed), len(skipped)
+            )
+        )
+        if failed:
+            print('not recorded (nothing is written from memory): ' + ', '.join(sorted(failed)))
+        if updated:
+            print('written to ppp_factors.json - commit it so others start with them')
+
+    factors = load_factors()
+    known = sum(1 for country in CURRENCY_COUNTRY.values() if country in factors)
+    print(
+        '\n{} of {} mapped currencies have a local PPP factor'.format(
+            known, len(set(CURRENCY_COUNTRY.values()))
+        )
+    )
+
+    for currency, country in sorted(CURRENCY_COUNTRY.items()):
+        entry = factors.get(country)
+        if entry is None:
+            print('  {} ({}): not cached - fetched on demand'.format(currency, country))
+        else:
+            print(
+                '  {} ({}): {} per international $ ({})'.format(
+                    currency, country, entry['value'], entry.get('year', '?')
+                )
+            )
+
+    return 0
+
+
 def _add_filters(command) -> None:
     command.add_argument('-t', '--title', help='keep jobs whose title contains these words')
     command.add_argument('-c', '--company', help='keep jobs from companies matching this')
@@ -334,6 +390,26 @@ def build_parser() -> argparse.ArgumentParser:
         help='Whether to display the browser or not (headless mode)',
     )
     reviews.set_defaults(handler=run_reviews)
+
+    rates = commands.add_parser(
+        'rates', help='show or refresh the locally cached PPP conversion factors'
+    )
+    rates.add_argument(
+        '--refresh',
+        action='store_true',
+        help='fetch missing factors from the World Bank and record them',
+    )
+    rates.add_argument(
+        '--force', action='store_true', help='re-fetch factors that are already recorded'
+    )
+    rates.add_argument(
+        '-c',
+        '--currency',
+        nargs='+',
+        metavar='CODE',
+        help='limit the refresh to these currencies, e.g. GBP SEK NZD',
+    )
+    rates.set_defaults(handler=run_rates)
 
     status = commands.add_parser('status', help='summarise stored jobs and applications')
     status.add_argument(
