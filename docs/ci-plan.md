@@ -1,7 +1,18 @@
 # CI plan
 
-Written against PR #2 (`company-reviews-submodule`, head `02a8b5b`). This is a plan,
-not an implementation — nothing here is wired up yet.
+Written against PR #2 (`company-reviews-submodule`, head `02a8b5b`).
+
+**Status: implemented, with four changes agreed after the plan was written.**
+
+| Change | Where it landed |
+|---|---|
+| `__main__.py` built from `run.py` | `src/applicant/cli.py` + `src/applicant/__main__.py` |
+| Repository restructured | `src/utils/` → `src/applicant/`, split into coherent modules |
+| End-to-end testing dropped | §3.4 below is **not built**; kept for the reasoning |
+| Lint split into a job that commits | `.github/workflows/format.yml` writes; `ci.yml` only reports |
+
+Sections 1 and 2 are the assessment that drove the work and are left as written.
+Section 3 describes the design; where the built pipeline differs, it says so.
 
 ---
 
@@ -294,9 +305,10 @@ Coverage: report it, don't gate on it initially. A percentage threshold on a cod
 that is 60% browser driving just teaches people to write tests for the easy 40%. Gate
 on `src/utils/jobsearch.py` and `src/utils/jobs.py` specifically once those are covered.
 
-### Job 4 — `e2e` (Playwright)
+### Job 4 — `e2e` (Playwright) — NOT BUILT
 
-This is where the plan diverges most from the obvious approach, so the reasoning matters.
+Dropped by request. The reasoning is kept because it explains why no test in this
+repository touches a real site, which still governs the unit suite.
 
 **The five target sites cannot be reached from CI** (§2.5). An end-to-end job that
 loads `linkedin.com` will be red permanently and everyone will learn to ignore it.
@@ -444,25 +456,35 @@ Fast, no fixtures, catches the §2.3 issues. Both jobs green before anything els
 `parse_salary` and `JobFilter` first; they carry the most logic and no I/O. Add the
 fixture-backed parsers as fixtures are recorded.
 
-**Phase 3 — E2E**
-Local fixture server, Playwright, artifacts on failure.
+**Phase 3 — E2E** — dropped.
 
 **Phase 4 — status job**
-Reading A. Artifacts and job summary first; the `ci-status` branch only if the history
-turns out to be wanted.
+Reading A: `status.json` as a 90 day artifact plus a run summary table. The
+`ci-status` orphan branch is still available if longer history turns out to be wanted.
 
 **Phase 5 — status store**
-Reading B, as its own PR with its own review.
+Reading B, as its own PR with its own review. A first step landed with this work:
+`applicant status` reports stored jobs by board and applications by status, and
+`--json` writes the same summary machine readably. The state machine and the move off
+flat files are still ahead.
 
-**Branch protection** should only require `lint`, `types` and `unit`. E2E can be
-required later once it has a few weeks of proven stability; requiring a
-browser-driving job from day one is how a team learns to merge with a red check.
+**Branch protection** currently requires nothing — every job in `ci.yml` reports and
+exits 0 by design. When the team wants gates, `lint`, `types` and `unit` are the three
+to promote; they have been green from the first commit.
 
 ---
 
-## 5. Open question
+## 5. What the assessment found in the code
 
-Item 5 of the brief — "storing job and application status" — is planned both ways in
-§3.5 because the phrasing supports both, and both are worth doing. If only one was
-meant, Reading A (persisting CI job status) is the one that belongs in a CI workflow,
-and Reading B should be tracked as a product issue instead.
+Three defects surfaced while building the suite, all now fixed and covered:
+
+1. **`Indeed.search` looped forever.** Indeed clamps `start` past a few hundred
+   results and re-serves the same page; every job on it deduped, the loop never
+   advanced, and nothing broke out. Found by the first pagination test, which hung.
+2. **`LinkedIn.search` had the same defect** in its guest endpoint loop.
+3. **`AmbitionBoxClient._get` could return `None`** into `.status_code` — the §2.3
+   prediction, confirmed by pyright.
+
+`Indeed`, `Naukri` and `GoogleJobs` also gained a `close()`, which replaced a
+`hasattr(client, 'close')` guard in the facade and stopped `Indeed` leaking its
+`httpx` client after every search.
