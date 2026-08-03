@@ -5,10 +5,6 @@ description = "Scrapes applicable job postings, applies to them, and looks up co
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    # pinned: src/utils/linkedin.py uses the Selenium 3 find_element_by_* API
-    "selenium==3.141.0",
-    # selenium 3 calls resp.getheader(), which urllib3 2.x dropped
-    "urllib3<2",
     "httpx>=0.27",
     "playwright>=1.44",
 ]

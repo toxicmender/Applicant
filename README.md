@@ -12,10 +12,43 @@ uv run playwright install chromium
 
 `requirements.txt` is kept in sync for anyone who would rather use `pip install -r requirements.txt`.
 
+No chromedriver step any more - everything runs on Playwright, which manages its own
+browser. The `--driver` flag is still accepted but ignored.
+
+> If you have Chrome or Edge installed, keep it. Naukri and Google both reject Playwright's
+> bundled Chromium outright ("Access Denied"), so the scrapers try an installed Chrome, then
+> Edge, then the bundled build.
+
+## Searching job boards
+`run.py search` pulls listings from LinkedIn, Indeed, Naukri and Google Jobs into
+`job_listing.json`. **No account needed** - none of these use your login.
+
+```
+uv run python run.py search "python developer" -l India -n 25
+uv run python run.py search "data engineer" -s linkedin indeed -n 50
+```
+
+- `-s/--source` picks any of `linkedin`, `indeed`, `naukri`, `googlejobs`, or `all` (default).
+  A board that gets blocked is reported and skipped rather than losing the others' results.
+- `--show` runs the browser visibly so you can clear a bot check yourself.
+- Results are merged into the output file across runs rather than overwritten.
+
+How each board is reached, since they differ a lot:
+
+| Board | Needs a browser | How the data is read |
+|---|---|---|
+| LinkedIn | no | its guest endpoint serves job cards to logged out clients |
+| Indeed | no (browser as fallback) | the `mosaic-provider-jobcards` JSON blob |
+| Naukri | yes | its own search API call is intercepted; falls back to the rendered tuples |
+| Google Jobs | yes | the `udm=8` Jobs tab, read structurally |
+
+Google Jobs is the most fragile of the four: it is Google Search, its CSS classes are
+obfuscated and rotate, and it gives no posting URL - applications route back to the
+originating board, which is reported as `via`.
+
 ## Usage
-1. Download Google's [Chromium Drivers](https://sites.google.com/a/chromium.org/chromedriver/downloads) & either add to Path or put it in the `src/` directory
-2. Run `uv run python run.py -h` or `uv run python run.py --help` to see the full list of arguments supported
-3. `uv run python run.py` without arguments it'll create 2 files in current directory by the name of `cookies.json` storing session cookies & `job_listing.json` for scraped jobs.
+1. Run `uv run python run.py -h` or `uv run python run.py --help` to see the full list of arguments supported
+2. `uv run python run.py` without arguments it'll create 2 files in current directory by the name of `cookies.json` storing session cookies & `job_listing.json` for scraped jobs.
 
 Job scraping also has its own subcommand, `run.py jobs`, which takes the same flags. Running
 `run.py` with bare flags still means the job run, so existing invocations keep working.
@@ -39,7 +72,22 @@ uv run python run.py reviews "https://www.glassdoor.com/Reviews/Google-Reviews-E
   headlessly afterwards. Without a warmed profile the run reports a bot check and stops
   instead of returning empty results.
 
-It is also importable:
+The job boards are importable too, and all four return the same `Job` objects:
+
+```python
+from utils.indeed import Indeed
+from utils.naukri import Naukri
+
+for job in Indeed().search('python developer', 'remote', limit=10):
+    print(job.title, job.company, job.location, job.salary)
+```
+
+`LinkedIn` additionally keeps the signed-in flows - `login()`, `restore_session()`,
+`scrape_jobs()` for recommended jobs and `easy_apply()`. Sessions are stored as Playwright
+storage state, and a `cookies.json` written by the older Selenium version is converted
+automatically on read.
+
+Company ratings are also importable:
 
 ```python
 from utils.reviews import AmbitionBoxClient

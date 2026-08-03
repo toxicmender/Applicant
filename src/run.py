@@ -7,8 +7,15 @@ import sys
 from pathlib import Path
 
 
+SOURCES = ('linkedin', 'indeed', 'naukri', 'googlejobs')
+
+
 def run_jobs(args):
     from utils.linkedin import LinkedIn
+
+    if args.driver != 'chromedriver':
+        print('note: --driver is ignored now that LinkedIn runs on Playwright, '
+              'which manages its own browser')
 
     operator = LinkedIn(path = args.driver, headless = args.Display)
 
@@ -59,6 +66,48 @@ def run_reviews(args):
     return 0
 
 
+def run_search(args):
+    from utils.jobs import JobsError, save_jobs
+
+    wanted = SOURCES if 'all' in args.source else args.source
+    headless = not args.show
+    found = []
+
+    for name in wanted:
+        if name == 'linkedin':
+            from utils.linkedin import LinkedIn
+            client = LinkedIn(headless=headless)
+        elif name == 'indeed':
+            from utils.indeed import Indeed
+            client = Indeed(headless=headless)
+        elif name == 'naukri':
+            from utils.naukri import Naukri
+            client = Naukri(headless=headless)
+        else:
+            from utils.googlejobs import GoogleJobs
+            client = GoogleJobs(headless=headless)
+
+        try:
+            jobs = client.search(args.keywords, args.location, limit=args.limit)
+        except JobsError as error:
+            # one blocked board should not cost us the others
+            print('{}: {}'.format(name, error))
+            continue
+        finally:
+            if hasattr(client, 'close'):
+                client.close()
+
+        print('{}: {} jobs'.format(name, len(jobs)))
+        found.extend(jobs)
+
+    if not found:
+        return 1
+
+    total = save_jobs(found, args.output)
+    print('{} jobs written to {} ({} stored in total)'.format(len(found), args.output, total))
+    return 0
+
+
 parser = argparse.ArgumentParser(description='Scrape and apply to jobs, and look up company ratings')
 commands = parser.add_subparsers(dest='command')
 
@@ -70,6 +119,16 @@ jobs.add_argument("-t", "--twofa", action="store_true", help='use it if you have
 jobs.add_argument('-j', '--jobs', default='job_listing.json', help='file path to where jobs urls are or to store them')
 jobs.add_argument("-D", "--Display", action="store_false", help='Whether to display the browser or not (headless mode)')
 jobs.set_defaults(handler=run_jobs)
+
+search = commands.add_parser('search', help='search job boards without signing in')
+search.add_argument('keywords', help='what to search for, e.g. "python developer"')
+search.add_argument('-l', '--location', default='', help='where to search')
+search.add_argument('-s', '--source', default=['all'], nargs='+',
+                    choices=list(SOURCES) + ['all'], help='which boards to search')
+search.add_argument('-n', '--limit', type=int, default=25, help='jobs to pull per board')
+search.add_argument('-o', '--output', default='job_listing.json', help='file path to store the scraped jobs')
+search.add_argument('--show', action='store_true', help='run the browser visibly, to solve a bot check yourself')
+search.set_defaults(handler=run_search)
 
 reviews = commands.add_parser('reviews', help='fetch company ratings and pros/cons')
 reviews.add_argument('company', help='AmbitionBox slug (e.g. tcs), or a Glassdoor reviews url / slug with employer id (e.g. Google-E9079)')
