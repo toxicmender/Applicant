@@ -34,7 +34,10 @@ class GoogleJobs:
         self.timeout = timeout
         self.hl = hl
 
-    def search(self, keywords, location='', limit=20):
+    def search(self, keywords, location='', limit=20, posted_within_days=None):
+        # accepted for a uniform signature; Google's date chip is not
+        # addressable by url, so utils.jobsearch filters this one locally
+        del posted_within_days
         query = '{} jobs'.format(keywords)
         if location:
             query += ' in {}'.format(location)

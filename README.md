@@ -33,6 +33,60 @@ uv run python run.py search "data engineer" -s linkedin indeed -n 50
 - `--show` runs the browser visibly so you can clear a bot check yourself.
 - Results are merged into the output file across runs rather than overwritten.
 
+### Filters
+
+```
+uv run python run.py search "developer" -l India --title "senior python" \
+    --company infosys --min-salary 1200000 --currency INR --posted-within 7
+```
+
+| Flag | Filters on |
+|---|---|
+| `-l/--location` | where the job is |
+| `-t/--title` | words in the job title, any order |
+| `-c/--company` | the hiring company |
+| `--min-salary` + `--currency` | annual pay floor |
+| `--posted-within DAYS` | how recently it was posted |
+
+Location and date are handed to the boards themselves where they support it
+(LinkedIn and Indeed both filter by date server side), and applied locally otherwise.
+`-n/--limit` is how many to pull from each board *before* filtering, so a tight
+filter returns fewer than you asked for - raise it if you want more survivors.
+
+**Most postings state no salary at all.** Those are kept and marked
+`salary-unknown` in the `flags` field rather than silently dropped; pass `--strict`
+to drop anything that could not actually be checked. Pay is normalised to an annual
+figure first, so `2-2.5 Lacs PA`, `₹25K–₹40K a month` and `$30 an hour` all compare
+properly. No exchange rates are invented - a job priced in a different currency to
+`--currency` is flagged `salary-currency-mismatch`, never guessed at.
+
+## Applying
+
+```
+uv run python run.py apply --min-salary 1200000 --currency INR --dry-run
+uv run python run.py apply --title "python"
+```
+
+Reads `job_listing.json`, keeps what matches the same filters as above, and appends
+every one to `applied_jobs.csv`. `--dry-run` records what *would* happen without
+submitting anything.
+
+**Only LinkedIn Easy Apply is actually automated.** Indeed, Naukri and Google Jobs
+hand off to each employer's own form, which differs every time, so those are logged
+as `needs_manual_apply` with their url - the CSV doubles as your worklist. Multi-step
+LinkedIn forms are left open rather than answered with guesses.
+
+### The CSV
+
+`applied_jobs.csv` appends across runs and never records the same posting twice. It
+is written UTF-8 with a BOM and a stable column order, so **Google Sheets imports it
+cleanly** via *File > Import > Upload* (currency symbols survive). Columns:
+
+`applied_at`, `status`, `source`, `id`, `title`, `company`, `location`, `salary`,
+`salary_annual_low`, `salary_annual_high`, `currency`, `posted`, `url`, `flags`, `note`
+
+`status` is one of `applied`, `needs_manual_apply`, `would_apply` (dry run) or `failed`.
+
 How each board is reached, since they differ a lot:
 
 | Board | Needs a browser | How the data is read |
@@ -72,11 +126,22 @@ uv run python run.py reviews "https://www.glassdoor.com/Reviews/Google-Reviews-E
   headlessly afterwards. Without a warmed profile the run reports a bot check and stops
   instead of returning empty results.
 
-The job boards are importable too, and all four return the same `Job` objects:
+The whole thing is importable, with `Jobs` as the front door:
+
+```python
+from utils.jobsearch import Jobs, JobFilter
+
+board = Jobs()
+hits = board.search('python developer',
+                    JobFilter(location='India', min_salary=1_200_000,
+                              currency='INR', posted_within_days=7))
+board.apply(hits, log='applied_jobs.csv', dry_run=True)
+```
+
+Individual boards work standalone too, and all four return the same `Job` objects:
 
 ```python
 from utils.indeed import Indeed
-from utils.naukri import Naukri
 
 for job in Indeed().search('python developer', 'remote', limit=10):
     print(job.title, job.company, job.location, job.salary)

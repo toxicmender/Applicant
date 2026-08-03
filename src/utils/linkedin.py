@@ -63,13 +63,16 @@ class LinkedIn:
 
     # -- guest search (no account needed) ---------------------------------
 
-    def search(self, keywords, location='', limit=25):
+    def search(self, keywords, location='', limit=25, posted_within_days=None):
         jobs = []
         seen = set()
         start = 0
 
         while len(jobs) < limit:
             query = {'keywords': keywords, 'location': location, 'start': start}
+            if posted_within_days:
+                # LinkedIn wants the window in seconds, as r<seconds>
+                query['f_TPR'] = 'r{}'.format(int(posted_within_days) * 86400)
             response = self.client.get('{}?{}'.format(GUEST_SEARCH, urlencode(query)))
             if response.status_code == 429:
                 raise BlockedError('LinkedIn rate limited the guest search; slow down or retry later')

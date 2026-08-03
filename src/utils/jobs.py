@@ -41,6 +41,9 @@ class Job:
     via: str | None = None               # originating board, for aggregators
     remote: bool | None = None
     easy_apply: bool | None = None
+    # why a job survived a filter it could not be checked against,
+    # e.g. 'salary-unknown' - see utils.jobsearch
+    flags: list = field(default_factory=list)
 
     def to_dict(self):
         return {
@@ -57,6 +60,7 @@ class Job:
             'via': self.via,
             'remote': self.remote,
             'easy_apply': self.easy_apply,
+            'flags': list(self.flags),
         }
 
 

@@ -38,7 +38,10 @@ class Naukri:
         self.timeout = timeout
         self.delay = delay
 
-    def search(self, keywords, location='', limit=20):
+    def search(self, keywords, location='', limit=20, posted_within_days=None):
+        # accepted for a uniform signature; Naukri's age filter lives behind the
+        # same API we cannot call, so utils.jobsearch filters this one locally
+        del posted_within_days
         jobs = []
         seen = set()
 
