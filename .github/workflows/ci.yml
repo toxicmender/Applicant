@@ -1,0 +1,200 @@
+# Everything here reports and nothing here gates.
+#
+# Each job runs its tool, records the real outcome as a job output, and exits 0.
+# The `status` job collects those outcomes into one summary and one artifact, so
+# a red tool is visible without turning the workflow red.
+#
+# Formatting is the one thing that writes, and it lives in format.yml.
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUFF_VERSION: 0.16.1
+  PYRIGHT_VERSION: 1.1.411
+
+jobs:
+  lint:
+    name: lint (ruff)
+    runs-on: ubuntu-latest
+    outputs:
+      outcome: ${{ steps.ruff.outputs.outcome }}
+      detail: ${{ steps.ruff.outputs.detail }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: ruff check
+        id: ruff
+        run: |
+          # --output-format=github puts each finding on the diff as an annotation
+          uvx "ruff@${RUFF_VERSION}" check --output-format=github . && code=0 || code=$?
+          uvx "ruff@${RUFF_VERSION}" check --output-format=concise . > findings.txt 2>&1 || true
+
+          if [ "$code" -eq 0 ]; then
+            echo 'outcome=pass' >> "$GITHUB_OUTPUT"
+            echo 'detail=clean' >> "$GITHUB_OUTPUT"
+            echo '### ✅ ruff check: clean' >> "$GITHUB_STEP_SUMMARY"
+          else
+            count=$(grep -c . findings.txt || true)
+            echo 'outcome=fail' >> "$GITHUB_OUTPUT"
+            echo "detail=${count} finding(s)" >> "$GITHUB_OUTPUT"
+            printf '### ⚠️ ruff check: %s finding(s)\n\n```\n' "$count" >> "$GITHUB_STEP_SUMMARY"
+            head -50 findings.txt >> "$GITHUB_STEP_SUMMARY"
+            printf '```\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: format drift
+        run: |
+          if uvx "ruff@${RUFF_VERSION}" format --check . > /dev/null 2>&1; then
+            echo 'Formatting is current.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Formatting is stale - the `format` workflow pushes the fix.' \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ruff-findings
+          path: findings.txt
+          retention-days: 30
+
+  types:
+    name: types (pyright)
+    runs-on: ubuntu-latest
+    outputs:
+      outcome: ${{ steps.pyright.outputs.outcome }}
+      detail: ${{ steps.pyright.outputs.detail }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # without the venv every `import httpx` is an unresolved import and the
+      # whole run says nothing useful
+      - name: Install dependencies
+        run: uv sync
+
+      - name: pyright
+        id: pyright
+        run: |
+          uvx "pyright@${PYRIGHT_VERSION}" --outputjson > pyright.json || true
+          python .github/scripts/ci_report.py pyright pyright.json
+
+          errors=$(python -c "import json; print(json.load(open('pyright.json'))['summary']['errorCount'])")
+          if [ "$errors" -eq 0 ]; then
+            echo 'outcome=pass' >> "$GITHUB_OUTPUT"
+            echo 'detail=no type errors' >> "$GITHUB_OUTPUT"
+          else
+            echo 'outcome=fail' >> "$GITHUB_OUTPUT"
+            echo "detail=${errors} type error(s)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pyright-report
+          path: pyright.json
+          retention-days: 30
+
+  unit:
+    name: unit (python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    outputs:
+      outcome: ${{ steps.pytest.outputs.outcome }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 is here because requires-python claims it; raise the floor rather
+        # than keep testing a version nobody supports
+        python: ['3.10', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --python ${{ matrix.python }}
+
+      # the suite is unittest.TestCase throughout; pytest is here for the reporting
+      - name: pytest
+        id: pytest
+        run: |
+          if uv run pytest tests -v --junitxml="junit-${{ matrix.python }}.xml"; then
+            echo 'outcome=pass' >> "$GITHUB_OUTPUT"
+          else
+            echo 'outcome=fail' >> "$GITHUB_OUTPUT"
+          fi
+
+      # proves the suite still runs on the stdlib runner alone, which is what a
+      # contributor has before installing anything
+      - name: unittest discover
+        run: uv run python -m unittest discover -s tests -t . || true
+
+      - name: Summarise
+        if: always()
+        run: python .github/scripts/ci_report.py junit 'junit-*.xml'
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-${{ matrix.python }}
+          path: junit-*.xml
+          retention-days: 30
+
+  status:
+    name: status
+    runs-on: ubuntu-latest
+    needs: [lint, types, unit]
+    # the whole point of this job is to record failures, so it must run regardless
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: reports
+          merge-multiple: true
+
+      # `result` is how the job ran (success/failure/skipped/cancelled) and
+      # `outcome` is what its tool actually said. Both matter: a skipped job is
+      # not a passing one.
+      - name: Collect
+        env:
+          JOBS: |
+            {
+              "lint":  {"result": "${{ needs.lint.result }}",
+                        "outcome": "${{ needs.lint.outputs.outcome }}",
+                        "detail": "${{ needs.lint.outputs.detail }}"},
+              "types": {"result": "${{ needs.types.result }}",
+                        "outcome": "${{ needs.types.outputs.outcome }}",
+                        "detail": "${{ needs.types.outputs.detail }}"},
+              "unit":  {"result": "${{ needs.unit.result }}",
+                        "outcome": "${{ needs.unit.outputs.outcome }}",
+                        "detail": ""}
+            }
+        run: |
+          printf '%s' "$JOBS" > jobs.json
+          python .github/scripts/ci_report.py status \
+            --jobs jobs.json --junit 'reports/junit-*.xml' --out status.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-status
+          path: status.json
+          retention-days: 90

@@ -15,7 +15,9 @@ import hashlib
 import re
 from urllib.parse import urlencode
 
-from .jobs import BlockedError, Job, browser, looks_blocked, relative_to_iso
+from ..browser import browser, looks_blocked
+from ..dates import relative_to_iso
+from ..models import BlockedError, Job
 
 BASE = 'https://www.google.com/search'
 CARD = 'div[jsname="y1Aese"][role="button"]'
@@ -23,9 +25,13 @@ CARD = 'div[jsname="y1Aese"][role="button"]'
 VIA = re.compile(r'^(?P<location>.*?)\s*[•·]\s*via\s+(?P<via>.+)$', re.IGNORECASE)
 POSTED = re.compile(r'\b(ago|just posted|today|yesterday)\b', re.IGNORECASE)
 # en dashes and non breaking spaces are everywhere in this UI
-TYPES = re.compile(r'^(full|part)[\s‐-―-]*time$|^(contractor|contract|internship|intern|temporary|volunteer)$',
-                   re.IGNORECASE)
-SALARY = re.compile(r'[₹$€£¥]|\ba (?:month|year|week|day)\b|\ban hour\b|\bper hour\b|\bK\b', re.IGNORECASE)
+TYPES = re.compile(
+    r'^(full|part)[\s‐-―-]*time$|^(contractor|contract|internship|intern|temporary|volunteer)$',
+    re.IGNORECASE,
+)
+SALARY = re.compile(
+    r'[₹$€£¥]|\ba (?:month|year|week|day)\b|\ban hour\b|\bper hour\b|\bK\b', re.IGNORECASE
+)
 
 
 class GoogleJobs:
@@ -36,7 +42,7 @@ class GoogleJobs:
 
     def search(self, keywords, location='', limit=20, posted_within_days=None):
         # accepted for a uniform signature; Google's date chip is not
-        # addressable by url, so utils.jobsearch filters this one locally
+        # addressable by url, so applicant.filters is applied locally instead
         del posted_within_days
         query = '{} jobs'.format(keywords)
         if location:
@@ -49,14 +55,16 @@ class GoogleJobs:
             if looks_blocked(page):
                 raise BlockedError(
                     'Google served a bot check instead of job results. Google Search is '
-                    'strict about automation - retry later or from another network.')
+                    'strict about automation - retry later or from another network.'
+                )
 
             try:
                 page.wait_for_selector(CARD, timeout=20000)
-            except Exception:
+            except Exception:  # noqa: BLE001 - wait_for_selector times out with its own error type
                 raise BlockedError(
                     'no job cards on the Google Jobs page. The Jobs tab may be '
-                    'unavailable for this query or region, or the layout changed again.')
+                    'unavailable for this query or region, or the layout changed again.'
+                ) from None
 
             self._load_more(page, limit)
 
@@ -66,7 +74,7 @@ class GoogleJobs:
             for index in range(cards.count()):
                 try:
                     text = cards.nth(index).inner_text()
-                except Exception:
+                except Exception:  # noqa: BLE001 - a card detached mid-scroll
                     continue
                 job = self._to_job(text)
                 if job is None:
@@ -80,6 +88,9 @@ class GoogleJobs:
                     break
 
         return jobs[:limit]
+
+    def close(self):
+        """Nothing is held between searches; the browser closes with each one."""
 
     def _load_more(self, page, limit):
         """The list lazy loads in blocks of ten as the window scrolls.

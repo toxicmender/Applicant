@@ -1,0 +1,92 @@
+# The only job that writes: it formats the branch and pushes the result back.
+#
+# Kept in its own workflow because it needs `contents: write`, which nothing else
+# here does. Everything in ci.yml is read only and reports rather than gates.
+#
+# Note: a push made with GITHUB_TOKEN does not trigger workflows, so the ci.yml
+# run you see belongs to the commit *before* formatting. That is deliberate - it
+# stops the two workflows pushing each other in a loop - and it costs nothing,
+# because formatting never changes behaviour and ci.yml never gates a merge.
+name: format
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  # a second push while this is committing would race the first one's push
+  group: format-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RUFF_VERSION: 0.16.1
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    # belt and braces: never react to a commit this job itself made
+    if: github.actor != 'github-actions[bot]'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Format and apply safe autofixes
+        run: |
+          uvx "ruff@${RUFF_VERSION}" format .
+          uvx "ruff@${RUFF_VERSION}" check --fix-only .
+
+      - name: Commit the result
+        id: commit
+        run: |
+          if git diff --quiet; then
+            echo 'Nothing to format.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'style: apply ruff format and safe autofixes'
+
+          {
+            echo '### Reformatted'
+            echo
+            echo '```'
+            git show --stat --format='' HEAD
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Push
+        if: steps.commit.outputs.changed == 'true'
+        run: |
+          for delay in 2 4 8; do
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              exit 0
+            fi
+            echo "push failed; rebasing and retrying in ${delay}s"
+            sleep "$delay"
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+          done
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Note the commit for git blame
+        if: steps.commit.outputs.changed == 'true'
+        run: |
+          {
+            echo
+            echo "Formatting commit: \`${{ steps.commit.outputs.sha }}\`"
+            echo 'Append it to `.git-blame-ignore-revs` to keep `git blame` readable.'
+          } >> "$GITHUB_STEP_SUMMARY"

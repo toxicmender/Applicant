@@ -1,0 +1,23 @@
+{
+  "indicator": "PA.NUS.PPP",
+  "units": "local currency units per international dollar",
+  "source": "World Bank, https://api.worldbank.org/v2/country/{iso3}/indicator/PA.NUS.PPP",
+  "note": "Populated by `applicant rates --refresh`. Only values actually retrieved from the World Bank are recorded here - nothing is written from memory, because a wrong factor silently distorts every salary comparison rather than failing loudly. A currency that is mapped in money.CURRENCY_COUNTRY but missing below is fetched on demand at runtime, and falls back to a market rate flagged `ppp-unavailable` if that fetch fails.",
+  "factors": {
+    "USA": {
+      "value": 1.0,
+      "year": "definition",
+      "note": "the international dollar is the US dollar"
+    },
+    "IND": {
+      "value": 20.088629,
+      "year": "2025",
+      "retrieved": "2026-08-03"
+    },
+    "JPN": {
+      "value": 97.08005,
+      "year": "2025",
+      "retrieved": "2026-08-03"
+    }
+  }
+}

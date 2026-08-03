@@ -1,6 +1,6 @@
 """Company rating clients for AmbitionBox and Glassdoor.
 
-    from utils.reviews import AmbitionBoxClient
+    from applicant.reviews import AmbitionBoxClient
 
     rating = AmbitionBoxClient().fetch('tcs', max_reviews=40)
     print(rating.overall_rating, rating.review_count)
@@ -17,11 +17,11 @@ from .models import CompanyRating, Review
 
 __all__ = [
     'AmbitionBoxClient',
-    'GlassdoorClient',
+    'ChallengeError',
+    'CompanyNotFound',
     'CompanyRating',
+    'GlassdoorClient',
+    'ParseError',
     'Review',
     'ReviewsError',
-    'CompanyNotFound',
-    'ChallengeError',
-    'ParseError',
 ]
