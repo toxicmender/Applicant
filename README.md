@@ -12,6 +12,24 @@ uv run playwright install chromium
 
 `requirements.txt` is kept in sync for anyone who would rather use `pip install -r requirements.txt`.
 
+## Development
+
+```
+uv sync                       # includes the dev group: ruff, pyright, pytest
+uv run pytest tests           # or: uv run python -m unittest discover -s tests -t .
+uv run ruff check . && uv run ruff format .
+uv run pyright
+```
+
+Tests are `unittest.TestCase` subclasses run under pytest, so both runners work and
+neither is required. Nothing in the suite touches the network: the boards take an
+injected `httpx` client and the parsers are exercised against fixtures.
+
+CI mirrors this in two workflows. `format` is the only one that writes - it runs
+`ruff format` and pushes the result back to the branch. `ci` runs ruff, pyright and
+the tests across Python 3.10-3.13, reports everything to the run summary, and stores
+a `status.json` artifact; none of it gates a merge.
+
 No chromedriver step any more - everything runs on Playwright, which manages its own
 browser. The `--driver` flag is still accepted but ignored.
 
@@ -20,12 +38,12 @@ browser. The `--driver` flag is still accepted but ignored.
 > Edge, then the bundled build.
 
 ## Searching job boards
-`run.py search` pulls listings from LinkedIn, Indeed, Naukri and Google Jobs into
+`applicant search` pulls listings from LinkedIn, Indeed, Naukri and Google Jobs into
 `job_listing.json`. **No account needed** - none of these use your login.
 
 ```
-uv run python run.py search "python developer" -l India -n 25
-uv run python run.py search "data engineer" -s linkedin indeed -n 50
+uv run applicant search "python developer" -l India -n 25
+uv run applicant search "data engineer" -s linkedin indeed -n 50
 ```
 
 - `-s/--source` picks any of `linkedin`, `indeed`, `naukri`, `googlejobs`, or `all` (default).
@@ -36,7 +54,7 @@ uv run python run.py search "data engineer" -s linkedin indeed -n 50
 ### Filters
 
 ```
-uv run python run.py search "developer" -l India --title "senior python" \
+uv run applicant search "developer" -l India --title "senior python" \
     --company infosys --min-salary 1200000 --currency INR --posted-within 7
 ```
 
@@ -91,8 +109,8 @@ the rest are fetched on first use.
 ## Applying
 
 ```
-uv run python run.py apply --min-salary 1200000 --currency INR --dry-run
-uv run python run.py apply --title "python"
+uv run applicant apply --min-salary 1200000 --currency INR --dry-run
+uv run applicant apply --title "python"
 ```
 
 Reads `job_listing.json`, keeps what matches the same filters as above, and appends
@@ -116,6 +134,17 @@ cleanly** via *File > Import > Upload* (currency symbols survive). Columns:
 
 `status` is one of `applied`, `needs_manual_apply`, `would_apply` (dry run) or `failed`.
 
+### Checking where things stand
+
+```
+uv run applicant status
+uv run applicant status --json status.json
+```
+
+Reads both files and reports how many jobs are stored per board and how many
+applications sit in each status. `--json` writes the same summary as a machine
+readable file.
+
 How each board is reached, since they differ a lot:
 
 | Board | Needs a browser | How the data is read |
@@ -130,19 +159,42 @@ obfuscated and rotate, and it gives no posting URL - applications route back to 
 originating board, which is reported as `via`.
 
 ## Usage
-1. Run `uv run python run.py -h` or `uv run python run.py --help` to see the full list of arguments supported
-2. `uv run python run.py` without arguments it'll create 2 files in current directory by the name of `cookies.json` storing session cookies & `job_listing.json` for scraped jobs.
+`uv run applicant -h` lists everything. `python -m applicant` works identically, and is
+what to use without `uv`.
 
-Job scraping also has its own subcommand, `run.py jobs`, which takes the same flags. Running
-`run.py` with bare flags still means the job run, so existing invocations keep working.
+1. `uv run applicant --help` for the full list of arguments
+2. `uv run applicant` without arguments creates two files in the current directory:
+   `cookies.json` for the session and `job_listing.json` for the scraped jobs
+
+Job scraping also has its own subcommand, `applicant jobs`, which takes the same flags.
+Running `applicant` with bare flags still means the job run, so invocations documented
+before subcommands existed keep working.
+
+## Where things are
+
+```
+src/applicant/
+  cli.py         argument parsing and the subcommand handlers
+  __main__.py    python -m applicant
+  models.py      the Job dataclass and the shared error types
+  dates.py       relative and epoch posting dates -> ISO
+  salary.py      reading pay off a posting, normalised to an annual figure
+  browser.py     launching Playwright in a way the boards accept
+  filters.py     JobFilter, and the flags saying what could not be checked
+  storage.py     job_listing.json and applied_jobs.csv
+  search.py      the facade over boards, filters and storage
+  boards/        one module per job board, all returning Job
+  reviews/       company ratings from AmbitionBox and Glassdoor
+tests/           unittest.TestCase suites, run under pytest
+```
 
 ## Company ratings
-`run.py reviews` pulls a company's overall rating, its rating count and the pros/cons of
+`applicant reviews` pulls a company's overall rating, its rating count and the pros/cons of
 individual reviews from AmbitionBox and Glassdoor, writing them to `company_reviews.json`.
 
 ```
-uv run python run.py reviews tcs -n 40
-uv run python run.py reviews "https://www.glassdoor.com/Reviews/Google-Reviews-E9079.htm" -s glassdoor --login
+uv run applicant reviews tcs -n 40
+uv run applicant reviews "https://www.glassdoor.com/Reviews/Google-Reviews-E9079.htm" -s glassdoor --login
 ```
 
 - `-s/--source` picks `ambitionbox` (default), `glassdoor` or `both`. With `both`, a source
@@ -158,13 +210,21 @@ uv run python run.py reviews "https://www.glassdoor.com/Reviews/Google-Reviews-E
 The whole thing is importable, with `Jobs` as the front door:
 
 ```python
-from utils.jobsearch import Jobs, JobFilter
+from applicant.search import Jobs
+from applicant.filters import JobFilter
 
 board = Jobs()
-hits = board.search('python developer',
-                    JobFilter(location='India', min_salary=1_200_000,
-                              currency='INR', salary_basis='ppp',
-                              experience=5, posted_within_days=7))
+hits = board.search(
+    'python developer',
+    JobFilter(
+        location='India',
+        min_salary=1_200_000,
+        currency='INR',
+        salary_basis='ppp',
+        experience=5,
+        posted_within_days=7,
+    ),
+)
 board.apply(hits, log='applied_jobs.csv', dry_run=True)
 ```
 
@@ -175,7 +235,7 @@ whatever the board said (`experience_text`) into `experience_min` / `experience_
 Individual boards work standalone too, and all four return the same `Job` objects:
 
 ```python
-from utils.indeed import Indeed
+from applicant.boards.indeed import Indeed
 
 for job in Indeed().search('python developer', 'remote', limit=10):
     print(job.title, job.company, job.location, job.salary)
@@ -189,7 +249,7 @@ automatically on read.
 Company ratings are also importable:
 
 ```python
-from utils.reviews import AmbitionBoxClient
+from applicant.reviews import AmbitionBoxClient
 
 rating = AmbitionBoxClient().fetch('tcs', max_reviews=40)
 print(rating.overall_rating, rating.review_count)

@@ -1,0 +1,116 @@
+"""The shared vocabulary of the job boards.
+
+Every board module returns the same `Job` objects and raises the same errors, so
+`applicant.search` and any other caller can mix sources without special casing them.
+"""
+
+from __future__ import annotations
+
+import re
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+class JobsError(Exception):
+    """Base class for every failure raised by the job board clients."""
+
+
+class BlockedError(JobsError):
+    """A bot check, captcha or login wall stopped the scrape."""
+
+
+EXPERIENCE = re.compile(
+    r'(\d+(?:\.\d+)?)\s*(?:-|to|–)\s*(\d+(?:\.\d+)?)\s*\+?\s*(?:yrs?|years?)'
+    r'|(\d+(?:\.\d+)?)\s*\+\s*(?:yrs?|years?)'
+    r'|(?:min(?:imum)?|at least)\s*(\d+(?:\.\d+)?)\s*(?:yrs?|years?)'
+    r'|(\d+(?:\.\d+)?)\s*(?:yrs?|years?)',
+    re.IGNORECASE,
+)
+FRESHER = re.compile(
+    r'\bfresher|\bentry[ -]level|\bno experience\b|\bgraduate trainee\b', re.IGNORECASE
+)
+
+
+def parse_experience(text: str | None) -> tuple[float | None, float | None]:
+    """'0-2 Yrs' -> (0.0, 2.0); '5+ years' -> (5.0, None). (None, None) if absent.
+
+    An open ended maximum is meaningful: '5+ years' must not become '5 to 5'.
+    """
+    if not text:
+        return None, None
+    if FRESHER.search(text):
+        return 0.0, 0.0
+
+    match = EXPERIENCE.search(text)
+    if not match:
+        return None, None
+    low_high, high, plus, minimum, exact = match.groups()
+    if low_high is not None:
+        return float(low_high), float(high)
+    if plus is not None:
+        return float(plus), None
+    if minimum is not None:
+        return float(minimum), None
+    return float(exact), float(exact)
+
+
+class Job(BaseModel):
+    """A posting, normalised across every board."""
+
+    model_config = ConfigDict(str_strip_whitespace=True, validate_assignment=True)
+
+    source: str
+    title: str
+    id: str | None = None
+    company: str | None = None
+    location: str | None = None
+    url: str | None = None
+    posted: str | None = None  # ISO date where the board gives us one
+    posted_text: str | None = None  # what the board actually said, e.g. '6 days ago'
+    employment_type: str | None = None
+    salary: str | None = None
+    experience_text: str | None = None  # what the board said, e.g. '0-2 Yrs'
+    experience_min: float | None = Field(default=None, ge=0, le=60)
+    experience_max: float | None = Field(default=None, ge=0, le=60)
+    via: str | None = None  # originating board, for aggregators
+    remote: bool | None = None
+    easy_apply: bool | None = None
+    # why a job survived a filter it could not be checked against,
+    # e.g. 'salary-unknown' - see applicant.filters
+    flags: list[str] = Field(default_factory=list)
+
+    @field_validator('*', mode='before')
+    @classmethod
+    def _blank_to_none(cls, value):
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @model_validator(mode='after')
+    def _fill_experience(self):
+        """Derive the year range from whatever text the board gave us."""
+        if self.experience_min is None and self.experience_max is None:
+            low, high = parse_experience(self.experience_text or self.title)
+            if low is not None or high is not None:
+                # assignment validation is on, so set via __dict__ to avoid recursing
+                self.__dict__['experience_min'] = low
+                self.__dict__['experience_max'] = high
+        if (
+            self.experience_min is not None
+            and self.experience_max is not None
+            and self.experience_max < self.experience_min
+        ):
+            self.__dict__['experience_min'], self.__dict__['experience_max'] = (
+                self.experience_max,
+                self.experience_min,
+            )
+        return self
+
+    def to_dict(self) -> dict:
+        return self.model_dump()
+
+    @classmethod
+    def from_dict(cls, item: dict) -> Job:
+        """Build a Job from a stored record, ignoring fields we no longer know."""
+        known = set(cls.model_fields)
+        return cls(**{key: value for key, value in item.items() if key in known})

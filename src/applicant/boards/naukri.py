@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import re
 
-from .jobs import BlockedError, Job, browser, looks_blocked, relative_to_iso
+from ..browser import browser, looks_blocked
+from ..dates import relative_to_iso
+from ..models import BlockedError, Job
 
 BASE = 'https://www.naukri.com'
 API = re.compile(r'/jobapi/v\d+/search')
@@ -40,7 +42,7 @@ class Naukri:
 
     def search(self, keywords, location='', limit=20, posted_within_days=None):
         # accepted for a uniform signature; Naukri's age filter lives behind the
-        # same API we cannot call, so utils.jobsearch filters this one locally
+        # same API we cannot call, so applicant.filters is applied locally instead
         del posted_within_days
         jobs = []
         seen = set()
@@ -52,16 +54,18 @@ class Naukri:
             page_number = 1
             while len(jobs) < limit and page_number <= 15:
                 before = len(captured)
-                page.goto(search_url(keywords, location, page_number),
-                          wait_until='domcontentloaded')
+                page.goto(
+                    search_url(keywords, location, page_number), wait_until='domcontentloaded'
+                )
                 if looks_blocked(page):
                     raise BlockedError(
                         'Naukri served a bot check. Retry later, or run with --show '
-                        'to solve it in a visible window.')
+                        'to solve it in a visible window.'
+                    )
 
                 try:
                     page.wait_for_selector('.srp-jobtuple-wrapper', timeout=15000)
-                except Exception:
+                except Exception:  # noqa: BLE001 - no tuples on this page, so we are done
                     break
                 page.wait_for_timeout(int(self.delay * 1000))
 
@@ -81,12 +85,15 @@ class Naukri:
 
         return jobs[:limit]
 
+    def close(self):
+        """Nothing is held between searches; the browser closes with each one."""
+
     def _capture(self, response, captured):
         if not API.search(response.url) or response.status != 200:
             return
         try:
             captured.append(response.json())
-        except Exception:
+        except Exception:  # noqa: BLE001 - non-json body, or one already discarded
             return
 
     # -- the site's own API payload ---------------------------------------
@@ -143,19 +150,21 @@ class Naukri:
                 url = title.get_attribute('href') or ''
                 posted_text = self._text(card, '.job-post-day')
 
-                jobs.append(Job(
-                    source='naukri',
-                    id=card.get_attribute('data-job-id') or self._id_from_url(url),
-                    title=(title.inner_text() or '').strip(),
-                    company=self._text(card, '.comp-name'),
-                    location=self._text(card, '.locWdth'),
-                    url=url.split('?')[0] or None,
-                    posted=relative_to_iso(posted_text),
-                    posted_text=posted_text,
-                    salary=self._salary(self._text(card, '.sal')),
-                    experience_text=self._text(card, '.expwdth'),
-                ))
-            except Exception:
+                jobs.append(
+                    Job(
+                        source='naukri',
+                        id=card.get_attribute('data-job-id') or self._id_from_url(url),
+                        title=(title.inner_text() or '').strip(),
+                        company=self._text(card, '.comp-name'),
+                        location=self._text(card, '.locWdth'),
+                        url=url.split('?')[0] or None,
+                        posted=relative_to_iso(posted_text),
+                        posted_text=posted_text,
+                        salary=self._salary(self._text(card, '.sal')),
+                        experience_text=self._text(card, '.expwdth'),
+                    )
+                )
+            except Exception:  # noqa: BLE001 - a card detached while being read
                 continue
 
         return jobs
@@ -166,7 +175,7 @@ class Naukri:
             return None
         try:
             return (node.inner_text() or '').strip() or None
-        except Exception:
+        except Exception:  # noqa: BLE001 - the node went away between count() and read
             return None
 
     def _id_from_url(self, url):

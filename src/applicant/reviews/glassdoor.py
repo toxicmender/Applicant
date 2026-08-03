@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import suppress
 
 from .errors import ChallengeError, ParseError, ReviewsError
 from .models import CompanyRating, Review
@@ -10,14 +11,17 @@ BASE = 'https://www.glassdoor.com'
 PAGE_SIZE = 10
 
 # https://www.glassdoor.com/Reviews/Google-Reviews-E9079.htm
-REVIEWS_URL = re.compile(r'^https?://[^/]*glassdoor\.[^/]+/Reviews/(?P<slug>[^/]+?)-Reviews-E(?P<id>\d+)',
-                         re.IGNORECASE)
+REVIEWS_URL = re.compile(
+    r'^https?://[^/]*glassdoor\.[^/]+/Reviews/(?P<slug>[^/]+?)-Reviews-E(?P<id>\d+)', re.IGNORECASE
+)
 SLUG_AND_ID = re.compile(r'^(?P<slug>.+?)-?E(?P<id>\d+)$', re.IGNORECASE)
 APOLLO_STATE = re.compile(r'apolloState"\s*:\s*(\{.+?\})\s*\}\s*;', re.DOTALL)
 NEXT_DATA = re.compile(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.DOTALL)
 
-USER_AGENT = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-              '(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36')
+USER_AGENT = (
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+    '(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36'
+)
 
 
 def reviews_url(company, page=1):
@@ -27,7 +31,8 @@ def reviews_url(company, page=1):
         raise ReviewsError(
             'Glassdoor needs a reviews url or a slug with employer id (e.g. "Google-E9079"), '
             'got {!r}. Glassdoor company search is behind the same bot check, so names '
-            'cannot be resolved automatically.'.format(company))
+            'cannot be resolved automatically.'.format(company)
+        )
     url = '{}/Reviews/{}-Reviews-E{}.htm'.format(BASE, match.group('slug'), match.group('id'))
     if page > 1:
         url = url.replace('.htm', '_P{}.htm'.format(page))
@@ -55,8 +60,10 @@ class GlassdoorClient:
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
-            raise ReviewsError('the glassdoor source needs playwright: '
-                               'pip install playwright && playwright install chromium')
+            raise ReviewsError(
+                'the glassdoor source needs playwright: '
+                'pip install playwright && playwright install chromium'
+            ) from None
 
         url, slug, employer_id = reviews_url(company)
         payloads = []
@@ -97,38 +104,38 @@ class GlassdoorClient:
                 context.close()
 
         rating = self._build(payloads, html_pages, slug, employer_id, url)
-        rating.reviews = rating.reviews[:max(0, max_reviews)]
+        rating.reviews = rating.reviews[: max(0, max_reviews)]
         return rating
 
     # -- browser ----------------------------------------------------------
 
     def _settle(self, page):
         """Let XHRs land, and refuse to guess when a bot check is in the way."""
-        try:
+        # networkidle never arrives on some pages; the captured payloads still count
+        with suppress(Exception):
             page.wait_for_load_state('networkidle', timeout=self.timeout)
-        except Exception:
-            pass  # networkidle never arrives on some pages; the captured payloads still count
 
         if self.login:
-            print('A browser window is open. Clear the Cloudflare check and sign in to '
-                  'Glassdoor, then come back here.')
+            print(
+                'A browser window is open. Clear the Cloudflare check and sign in to '
+                'Glassdoor, then come back here.'
+            )
             input('Press Enter once the reviews page is visible: ')
-            try:
+            with suppress(Exception):
                 page.wait_for_load_state('networkidle', timeout=self.timeout)
-            except Exception:
-                pass
             return
 
         if self._blocked(page):
             raise ChallengeError(
                 'Glassdoor served a bot check instead of the reviews page. Re-run with '
                 '--login to clear it once in a visible browser; the saved profile is '
-                'reused headlessly afterwards.')
+                'reused headlessly afterwards.'
+            )
 
     def _blocked(self, page):
         try:
             title = page.title()
-        except Exception:
+        except Exception:  # noqa: BLE001 - a page mid-navigation has no title yet
             title = ''
         if 'just a moment' in title.lower() or 'attention required' in title.lower():
             return True
@@ -139,15 +146,15 @@ class GlassdoorClient:
             return
         try:
             body = response.json()
-        except Exception:
-            return  # non-json, redirect, or a body that is already gone
+        except Exception:  # noqa: BLE001 - non-json, redirect, or a body already gone
+            return
         if body:
             payloads.append(body)
 
     def _save_state(self, context):
         try:
             context.storage_state(path='storage_state.json')
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - reported, never fatal to the scrape
             print('could not write storage_state.json: {}'.format(error))
 
     # -- parsing ----------------------------------------------------------
@@ -191,10 +198,8 @@ class GlassdoorClient:
                 continue
         match = NEXT_DATA.search(html)
         if match:
-            try:
+            with suppress(ValueError):
                 found.append(json.loads(match.group(1)))
-            except ValueError:
-                pass
         return found
 
     def _walk(self, node):
@@ -214,7 +219,11 @@ class GlassdoorClient:
 
     def _read_aggregate(self, node, rating):
         if rating.overall_rating is None:
-            value = node.get('ratingOverall') if isinstance(node.get('ratingOverall'), (int, float)) else None
+            value = (
+                node.get('ratingOverall')
+                if isinstance(node.get('ratingOverall'), (int, float))
+                else None
+            )
             if value:
                 rating.overall_rating = float(value)
         if rating.review_count is None:
@@ -223,12 +232,14 @@ class GlassdoorClient:
                 if isinstance(value, int) and value > 0:
                     rating.review_count = value
                     break
-        for key, name in (('ratingWorkLifeBalance', 'work_life_balance'),
-                          ('ratingCultureAndValues', 'culture_and_values'),
-                          ('ratingCareerOpportunities', 'career_opportunities'),
-                          ('ratingCompensationAndBenefits', 'salary_and_benefits'),
-                          ('ratingSeniorLeadership', 'senior_leadership'),
-                          ('ratingDiversityAndInclusion', 'diversity_and_inclusion')):
+        for key, name in (
+            ('ratingWorkLifeBalance', 'work_life_balance'),
+            ('ratingCultureAndValues', 'culture_and_values'),
+            ('ratingCareerOpportunities', 'career_opportunities'),
+            ('ratingCompensationAndBenefits', 'salary_and_benefits'),
+            ('ratingSeniorLeadership', 'senior_leadership'),
+            ('ratingDiversityAndInclusion', 'diversity_and_inclusion'),
+        ):
             value = node.get(key)
             if isinstance(value, (int, float)) and name not in rating.rating_breakdown:
                 rating.rating_breakdown[name] = float(value)
@@ -263,7 +274,9 @@ class GlassdoorClient:
     def _review_count(self, payloads, html_pages):
         """Cheap progress check for the pagination loop."""
         total = 0
-        for source in list(payloads) + [page for html in html_pages for page in self._embedded(html)]:
+        for source in list(payloads) + [
+            page for html in html_pages for page in self._embedded(html)
+        ]:
             for node in self._walk(source):
                 if self._read_review(node) is not None:
                     total += 1

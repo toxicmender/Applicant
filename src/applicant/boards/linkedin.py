@@ -17,12 +17,19 @@ from __future__ import annotations
 import json
 import re
 import time
+from contextlib import suppress
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlencode
 
 import httpx
 
-from .jobs import USER_AGENT, BROWSER_ARGS, BlockedError, Job, JobsError, relative_to_iso
+from ..browser import BROWSER_ARGS, USER_AGENT
+from ..models import BlockedError, Job, JobsError
+
+if TYPE_CHECKING:
+    from playwright.sync_api import Browser as PlaywrightBrowser
+    from playwright.sync_api import BrowserContext, Page, Playwright
 
 GUEST_SEARCH = 'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search'
 GUEST_PAGE_SIZE = 10
@@ -48,18 +55,27 @@ def _clean(value):
 
 
 class LinkedIn:
-    def __init__(self, path=None, headless=True, state='linkedin_state.json', timeout=45000):
+    def __init__(
+        self,
+        path=None,
+        headless=True,
+        state='linkedin_state.json',
+        timeout=45000,
+        delay=1.0,
+        client=None,
+    ):
         # `path` was the chromedriver location under Selenium; Playwright ships its
         # own browser, so it is accepted only so old call sites keep working
         self.driver_path = path
         self.headless = headless
         self.state = state
         self.timeout = timeout
-        self.client = httpx.Client(headers=HEADERS, timeout=30.0, follow_redirects=True)
-        self._playwright = None
-        self._browser = None
-        self._context = None
-        self._page = None
+        self.delay = delay
+        self.client = client or httpx.Client(headers=HEADERS, timeout=30.0, follow_redirects=True)
+        self._playwright: Playwright | None = None
+        self._browser: PlaywrightBrowser | None = None
+        self._context: BrowserContext | None = None
+        self._page: Page | None = None
 
     # -- guest search (no account needed) ---------------------------------
 
@@ -75,13 +91,16 @@ class LinkedIn:
                 query['f_TPR'] = 'r{}'.format(int(posted_within_days) * 86400)
             response = self.client.get('{}?{}'.format(GUEST_SEARCH, urlencode(query)))
             if response.status_code == 429:
-                raise BlockedError('LinkedIn rate limited the guest search; slow down or retry later')
+                raise BlockedError(
+                    'LinkedIn rate limited the guest search; slow down or retry later'
+                )
             response.raise_for_status()
 
             cards = CARD.findall(response.text)
             if not cards:
                 break
 
+            before = len(jobs)
             for card in cards:
                 job = self._card_to_job(card)
                 if job is None or job.id in seen:
@@ -91,9 +110,14 @@ class LinkedIn:
                 if len(jobs) >= limit:
                     break
 
+            # the guest endpoint re-serves the last page once `start` runs past
+            # the end of the results, so a page of nothing new means we are done
+            if len(jobs) == before:
+                break
+
             start += GUEST_PAGE_SIZE
             if len(jobs) < limit:
-                time.sleep(1.0)
+                time.sleep(self.delay)
 
         return jobs[:limit]
 
@@ -120,34 +144,55 @@ class LinkedIn:
 
     # -- browser session --------------------------------------------------
 
-    def _start(self, storage_state=None):
+    def _start(self, storage_state=None) -> Page:
+        if self._page is not None:
+            return self._page
+
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
-            raise JobsError('the LinkedIn browser flows need playwright: '
-                            'uv sync && uv run playwright install chromium')
-
-        if self._context is not None:
-            return self._page
+            raise JobsError(
+                'the LinkedIn browser flows need playwright: '
+                'uv sync && uv run playwright install chromium'
+            ) from None
 
         self._playwright = sync_playwright().start()
-        self._browser = self._playwright.chromium.launch(headless=self.headless,
-                                                         args=BROWSER_ARGS)
+        self._browser = self._playwright.chromium.launch(headless=self.headless, args=BROWSER_ARGS)
         self._context = self._browser.new_context(
-            user_agent=USER_AGENT, locale='en-US',
+            user_agent=USER_AGENT,
+            locale='en-US',
             viewport={'width': 1366, 'height': 900},
-            storage_state=storage_state)
-        self._page = self._context.new_page()
-        self._page.set_default_timeout(self.timeout)
-        return self._page
+            storage_state=storage_state,
+        )
+        page = self._context.new_page()
+        page.set_default_timeout(self.timeout)
+        self._page = page
+        return page
 
-    def login(self, username, password, twoFA=False, filepath='cookies.json', overwrite=False):
+    def _session(self) -> BrowserContext:
+        """The live context, started if it is not already."""
+        self._start()
+        if self._context is None:  # pragma: no cover - _start always sets it
+            raise JobsError('the browser session did not start')
+        return self._context
+
+    def login(
+        self,
+        username,
+        password,
+        twoFA=False,
+        filepath: str | Path = 'cookies.json',
+        overwrite=False,
+    ):
         target = Path(filepath)
         if target.exists() and not overwrite:
-            print('{} already exists. Pass overwrite to log in again, or use '
-                  'restore_session() to reuse it.'.format(filepath))
+            print(
+                '{} already exists. Pass overwrite to log in again, or use '
+                'restore_session() to reuse it.'.format(filepath)
+            )
             return
 
+        context = self._session()
         page = self._start()
         page.goto('https://www.linkedin.com/login', wait_until='domcontentloaded')
         page.fill('#username', username)
@@ -161,14 +206,16 @@ class LinkedIn:
 
         page.wait_for_load_state('domcontentloaded')
         if '/login' in page.url or '/checkpoint/' in page.url:
-            raise BlockedError('LinkedIn did not complete the login (still on {}). '
-                               'A manual challenge is probably waiting - rerun with '
-                               'headless disabled.'.format(page.url))
+            raise BlockedError(
+                'LinkedIn did not complete the login (still on {}). '
+                'A manual challenge is probably waiting - rerun with '
+                'headless disabled.'.format(page.url)
+            )
 
-        self._context.storage_state(path=str(target))
+        context.storage_state(path=str(target))
         print('session saved to {}'.format(target))
 
-    def restore_session(self, filepath='cookies.json'):
+    def restore_session(self, filepath: str | Path = 'cookies.json'):
         state = self._load_state(filepath)
         if state is None:
             print('no usable session in {}; call login() first'.format(filepath))
@@ -182,10 +229,10 @@ class LinkedIn:
         print('session restored from {}'.format(filepath))
         return True
 
-    def _load_state(self, filepath):
+    def _load_state(self, filepath: str | Path):
         """Accepts Playwright storage_state or the old Selenium cookies.json."""
         try:
-            with open(filepath, 'r', encoding='utf-8') as file:
+            with open(filepath, encoding='utf-8') as file:
                 payload = json.load(file)
         except (FileNotFoundError, ValueError):
             return None
@@ -201,16 +248,18 @@ class LinkedIn:
         for cookie in cookies:
             if not cookie.get('name'):
                 continue
-            converted.append({
-                'name': cookie['name'],
-                'value': cookie.get('value', ''),
-                'domain': cookie.get('domain', '.linkedin.com'),
-                'path': cookie.get('path', '/'),
-                'expires': float(cookie.get('expiry', -1)),
-                'httpOnly': bool(cookie.get('httpOnly')),
-                'secure': bool(cookie.get('secure', True)),
-                'sameSite': 'Lax',
-            })
+            converted.append(
+                {
+                    'name': cookie['name'],
+                    'value': cookie.get('value', ''),
+                    'domain': cookie.get('domain', '.linkedin.com'),
+                    'path': cookie.get('path', '/'),
+                    'expires': float(cookie.get('expiry', -1)),
+                    'httpOnly': bool(cookie.get('httpOnly')),
+                    'secure': bool(cookie.get('secure', True)),
+                    'sameSite': 'Lax',
+                }
+            )
         print('converted {} Selenium cookies to a Playwright session'.format(len(converted)))
         return {'cookies': converted, 'origins': []}
 
@@ -218,11 +267,12 @@ class LinkedIn:
 
     def scrape_jobs(self, filepath='job_listing.json'):
         """Recommended jobs from the signed in Jobs page."""
-        from .jobs import save_jobs
+        from ..storage import save_jobs
 
         page = self._start()
-        page.goto('https://www.linkedin.com/jobs/collections/recommended/',
-                  wait_until='domcontentloaded')
+        page.goto(
+            'https://www.linkedin.com/jobs/collections/recommended/', wait_until='domcontentloaded'
+        )
         if '/authwall' in page.url or '/login' in page.url:
             raise BlockedError('not signed in - call login() or restore_session() first')
 
@@ -242,7 +292,7 @@ class LinkedIn:
             card = cards.nth(index)
             try:
                 text = [line for line in card.inner_text().split('\n') if line.strip()]
-            except Exception:
+            except Exception:  # noqa: BLE001 - a virtualised card scrolled out of the DOM
                 continue
             if not text:
                 continue
@@ -253,15 +303,17 @@ class LinkedIn:
             if url and url.startswith('/'):
                 url = 'https://www.linkedin.com' + url
 
-            jobs.append(Job(
-                source='linkedin',
-                id=job_id,
-                title=text[0],
-                company=text[1] if len(text) > 1 else None,
-                location=text[2] if len(text) > 2 else None,
-                url=url.split('?')[0] if url else None,
-                easy_apply='Easy Apply' in card.inner_text(),
-            ))
+            jobs.append(
+                Job(
+                    source='linkedin',
+                    id=job_id,
+                    title=text[0],
+                    company=text[1] if len(text) > 1 else None,
+                    location=text[2] if len(text) > 2 else None,
+                    url=url.split('?')[0] if url else None,
+                    easy_apply='Easy Apply' in card.inner_text(),
+                )
+            )
 
         total = save_jobs(jobs, filepath)
         print('scraped {} recommended jobs ({} in {})'.format(len(jobs), total, filepath))
@@ -275,7 +327,7 @@ class LinkedIn:
         """
         page = self._start()
         try:
-            with open(filepath, 'r', encoding='utf-8') as file:
+            with open(filepath, encoding='utf-8') as file:
                 stored = json.load(file).get('list', [])
         except (FileNotFoundError, ValueError) as error:
             print('could not read {}: {}'.format(filepath, error))
@@ -318,16 +370,12 @@ class LinkedIn:
         for handle in ('_context', '_browser'):
             target = getattr(self, handle, None)
             if target is not None:
-                try:
+                with suppress(Exception):  # teardown is best effort
                     target.close()
-                except Exception:
-                    pass
                 setattr(self, handle, None)
-        if getattr(self, '_playwright', None) is not None:
-            try:
+        if self._playwright is not None:
+            with suppress(Exception):
                 self._playwright.stop()
-            except Exception:
-                pass
             self._playwright = None
 
     def __del__(self):

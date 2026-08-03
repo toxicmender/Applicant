@@ -15,7 +15,9 @@ from urllib.parse import urlencode
 
 import httpx
 
-from .jobs import (USER_AGENT, BlockedError, Job, browser, epoch_to_iso, looks_blocked)
+from ..browser import USER_AGENT, browser, looks_blocked
+from ..dates import epoch_to_iso
+from ..models import BlockedError, Job
 
 BASE = 'https://www.indeed.com'
 PAGE_SIZE = 10  # what Indeed advances `start` by, even though a page holds more
@@ -23,12 +25,29 @@ PAGE_SIZE = 10  # what Indeed advances `start` by, even though a page holds more
 # Indeed runs a site per country and the US one quietly ignores `l=India`,
 # answering with US jobs instead - so the country picks the host, not the query
 COUNTRY_HOSTS = {
-    'india': 'in', 'united kingdom': 'uk', 'uk': 'uk', 'england': 'uk',
-    'canada': 'ca', 'australia': 'au', 'germany': 'de', 'france': 'fr',
-    'singapore': 'sg', 'ireland': 'ie', 'netherlands': 'nl', 'spain': 'es',
-    'italy': 'it', 'new zealand': 'nz', 'south africa': 'za', 'japan': 'jp',
-    'brazil': 'br', 'mexico': 'mx', 'poland': 'pl', 'sweden': 'se',
-    'united arab emirates': 'ae', 'uae': 'ae', 'switzerland': 'ch',
+    'india': 'in',
+    'united kingdom': 'uk',
+    'uk': 'uk',
+    'england': 'uk',
+    'canada': 'ca',
+    'australia': 'au',
+    'germany': 'de',
+    'france': 'fr',
+    'singapore': 'sg',
+    'ireland': 'ie',
+    'netherlands': 'nl',
+    'spain': 'es',
+    'italy': 'it',
+    'new zealand': 'nz',
+    'south africa': 'za',
+    'japan': 'jp',
+    'brazil': 'br',
+    'mexico': 'mx',
+    'poland': 'pl',
+    'sweden': 'se',
+    'united arab emirates': 'ae',
+    'uae': 'ae',
+    'switzerland': 'ch',
 }
 
 
@@ -40,6 +59,7 @@ def host_for(location):
             return 'https://{}.indeed.com'.format(code)
     return BASE
 
+
 HEADERS = {
     'User-Agent': USER_AGENT,
     'Accept-Language': 'en-US,en;q=0.9',
@@ -48,18 +68,20 @@ HEADERS = {
 
 MOSAIC = re.compile(
     r'window\.mosaic\.providerData\[\s*["\']mosaic-provider-jobcards["\']\s*\]\s*=\s*(\{.+?\})\s*;',
-    re.DOTALL)
+    re.DOTALL,
+)
 
 
 class Indeed:
     def __init__(self, domain=None, delay=1.0, timeout=30.0, headless=True, client=None):
         # None means "work it out from the search location"
         self.domain = domain.rstrip('/') if domain else None
-        self.host = self.domain or BASE   # re-resolved per search from the location
+        self.host = self.domain or BASE  # re-resolved per search from the location
         self.delay = delay
         self.headless = headless
-        self.client = client or httpx.Client(headers=HEADERS, timeout=timeout,
-                                             follow_redirects=True)
+        self.client = client or httpx.Client(
+            headers=HEADERS, timeout=timeout, follow_redirects=True
+        )
 
     def search(self, keywords, location='', limit=25, posted_within_days=None):
         self.host = self.domain or host_for(location)
@@ -74,6 +96,7 @@ class Indeed:
             if not results:
                 break
 
+            before = len(jobs)
             for item in results:
                 job = self._to_job(item)
                 if job.id in seen:
@@ -83,11 +106,20 @@ class Indeed:
                 if len(jobs) >= limit:
                     break
 
+            # Indeed clamps `start` past a few hundred results and re-serves the
+            # same page. Without this the loop never ends.
+            if len(jobs) == before:
+                break
+
             start += PAGE_SIZE
             if len(jobs) < limit:
                 time.sleep(self.delay)
 
         return jobs[:limit]
+
+    def close(self):
+        """Release the HTTP client. Safe to call more than once."""
+        self.client.close()
 
     def _url(self, keywords, location, start, posted_within_days=None):
         query = {'q': keywords, 'l': location}
@@ -113,7 +145,8 @@ class Indeed:
             if looks_blocked(page):
                 raise BlockedError(
                     'Indeed served a bot check instead of results. Retry later, or run '
-                    'with --show to solve it in a visible window.')
+                    'with --show to solve it in a visible window.'
+                )
             return page.content()
 
     def _results(self, html):
@@ -123,7 +156,7 @@ class Indeed:
         try:
             payload = json.loads(match.group(1))
         except ValueError:
-            raise BlockedError('Indeed job card payload was not valid JSON')
+            raise BlockedError('Indeed job card payload was not valid JSON') from None
         model = (payload.get('metaData') or {}).get('mosaicProviderJobCardsModel') or {}
         return model.get('results') or []
 

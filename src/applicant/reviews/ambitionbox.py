@@ -6,7 +6,7 @@ import time
 
 import httpx
 
-from .errors import CompanyNotFound, ParseError
+from .errors import CompanyNotFound, ParseError, ReviewsError
 from .models import CompanyRating, Review
 
 BASE = 'https://www.ambitionbox.com'
@@ -15,8 +15,10 @@ PAGE_SIZE = 20
 MAX_PAGES = 500
 
 HEADERS = {
-    'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-                   '(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36'),
+    'User-Agent': (
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+        '(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36'
+    ),
     'Accept-Language': 'en-US,en;q=0.9',
 }
 
@@ -53,16 +55,17 @@ class AmbitionBoxClient:
     def __init__(self, timeout=30.0, delay=1.0, retries=3, client=None):
         self.delay = delay
         self.retries = retries
-        self.client = client or httpx.Client(headers=HEADERS, timeout=timeout,
-                                             follow_redirects=True)
+        self.client = client or httpx.Client(
+            headers=HEADERS, timeout=timeout, follow_redirects=True
+        )
 
-    def _get(self, url, **kwargs):
+    def _get(self, url, **kwargs) -> httpx.Response:
         """GET with backoff, so one flaky hop does not kill a multi-page scrape."""
-        last_error = None
-        response = None
+        last_error: Exception | None = None
+        response: httpx.Response | None = None
         for attempt in range(max(1, self.retries)):
             if attempt:
-                time.sleep(self.delay * 2 ** attempt)
+                time.sleep(self.delay * 2**attempt)
             try:
                 response = self.client.get(url, **kwargs)
             except httpx.TransportError as error:
@@ -72,9 +75,12 @@ class AmbitionBoxClient:
                 last_error = None
                 continue
             return response
+        if response is not None:
+            # exhausted the retries on 429/502/503; the caller raises on the status
+            return response
         if last_error is not None:
             raise last_error
-        return response  # exhausted retries on 429/503; caller raises on the status
+        raise ReviewsError('no response from {}'.format(url))
 
     def fetch(self, company, max_reviews=PAGE_SIZE):
         slug = slugify(company)
@@ -145,7 +151,7 @@ class AmbitionBoxClient:
         try:
             payload = json.loads(match.group(1))
         except ValueError as error:
-            raise ParseError('__NEXT_DATA__ is not valid JSON: {}'.format(error))
+            raise ParseError('__NEXT_DATA__ is not valid JSON: {}'.format(error)) from error
 
         props = (payload.get('props') or {}).get('pageProps')
         if not props:
@@ -157,7 +163,9 @@ class AmbitionBoxClient:
     def _to_rating(self, props, company, url):
         ratings = props.get('ratingsData') or {}
         header = props.get('companyHeaderData') or {}
-        count = props.get('reviewCount') or props.get('fixedReviewCount') or header.get('reviewsCount')
+        count = (
+            props.get('reviewCount') or props.get('fixedReviewCount') or header.get('reviewsCount')
+        )
 
         distribution = {}
         for bucket in props.get('ratingDistribution') or []:
@@ -172,7 +180,9 @@ class AmbitionBoxClient:
             company_id=str(company_id) if company_id is not None else None,
             overall_rating=ratings.get('overallCompanyRating') or header.get('rating'),
             review_count=count,
-            rating_breakdown={name: ratings[key] for key, name in BREAKDOWN.items() if key in ratings},
+            rating_breakdown={
+                name: ratings[key] for key, name in BREAKDOWN.items() if key in ratings
+            },
             rating_distribution=distribution,
         )
 
@@ -205,4 +215,6 @@ class AmbitionBoxClient:
                 overall_rating=float(block['ratingValue']) if block.get('ratingValue') else None,
                 review_count=block.get('ratingCount'),
             )
-        raise ParseError('neither __NEXT_DATA__ nor EmployerAggregateRating found on {}'.format(url))
+        raise ParseError(
+            'neither __NEXT_DATA__ nor EmployerAggregateRating found on {}'.format(url)
+        )
