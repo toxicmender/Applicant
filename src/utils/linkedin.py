@@ -127,4 +127,8 @@ class LinkedIn:
             print(error)
 
     def __del__(self):
-        self.browser.close()
+        # browser is unset if webdriver.Chrome() raised, and closing it here would
+        # mask the real driver error behind an AttributeError
+        browser = getattr(self, 'browser', None)
+        if browser is not None:
+            browser.close()

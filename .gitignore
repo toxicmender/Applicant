@@ -1,5 +1,8 @@
 **/cookies.json
 **/job_listing.json
+**/company_reviews.json
+**/storage_state.json
+.gd_profile/
 
 # gitignore template for Jupyter Notebooks
 # website: http://jupyter.org/
