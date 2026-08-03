@@ -29,16 +29,19 @@ __pycache__/
 *.so
 
 # Distribution / packaging
+# Anchored for the same reason as the virtualenv block below: a build tree only
+# appears at the repository root, and unanchored these swallow any package
+# directory that happens to share the name.
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
+/build/
+/develop-eggs/
+/dist/
+/downloads/
+/eggs/
+/.eggs/
+/lib/
+/lib64/
+/parts/
 sdist/
 var/
 wheels/
@@ -291,13 +294,18 @@ Temporary Items
 
 # Virtualenv
 # http://iamzed.com/2009/05/07/a-primer-on-virtualenv/
+#
+# Anchored to the repository root. Unanchored, these match a directory of that
+# name at any depth - which silently excluded .github/scripts/ and shipped a CI
+# workflow referencing a file that was never committed. A virtualenv only ever
+# lays these out at the root, so anchoring loses nothing.
 .Python
-[Bb]in
-[Ii]nclude
-[Ll]ib
-[Ll]ib64
-[Ll]ocal
-[Ss]cripts
+/[Bb]in/
+/[Ii]nclude/
+/[Ll]ib/
+/[Ll]ib64/
+/[Ll]ocal/
+/[Ss]cripts/
 pyvenv.cfg
 .venv
 pip-selfcheck.json
