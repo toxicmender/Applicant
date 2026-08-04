@@ -18,7 +18,7 @@ from applicant.boards.googlejobs import GoogleJobs
 from applicant.boards.indeed import Indeed, host_for
 from applicant.boards.linkedin import LinkedIn
 from applicant.boards.naukri import Naukri, search_url
-from applicant.models import BlockedError, Job
+from applicant.models import BlockedError, Job, experience_from
 from applicant.search import SOURCES
 
 
@@ -404,6 +404,85 @@ class LinkedInGuestSearchTest(unittest.TestCase):
 
         self.client(handler).search('python', limit=5, posted_within_days=7)
         self.assertEqual(seen[0]['f_TPR'], 'r604800')
+
+
+class LinkedInDescribeTest(unittest.TestCase):
+    """Reading a posting itself, for what its search card never carried."""
+
+    PAGE = (
+        '<section class="description"><p>You will own our models.</p>'
+        '<ul><li>3+ years of experience with Python &amp; PyTorch</li></ul></section>'
+    )
+
+    def client(self, handler) -> LinkedIn:
+        instance = LinkedIn(delay=0, client=httpx.Client(transport=httpx.MockTransport(handler)))
+        self.addCleanup(instance.close)
+        return instance
+
+    def job(self, job_id: str | None = '3812345678') -> Job:
+        return Job(source='linkedin', id=job_id, title='AI Engineer')
+
+    def test_it_reads_the_guest_posting_page(self):
+        seen = []
+
+        def handler(request):
+            seen.append(str(request.url))
+            return httpx.Response(200, text=self.PAGE)
+
+        text = self.client(handler).describe(self.job())
+        self.assertIn('/jobs-guest/jobs/api/jobPosting/3812345678', seen[0])
+        assert text is not None
+        self.assertIn('3+ years of experience', text)
+
+    def test_markup_is_reduced_to_readable_text(self):
+        text = self.client(lambda request: httpx.Response(200, text=self.PAGE)).describe(self.job())
+        assert text is not None
+        self.assertNotIn('<', text)
+        self.assertIn('Python & PyTorch', text, 'entities decoded')
+        self.assertNotIn('  ', text, 'whitespace collapsed')
+
+    def test_a_posting_with_no_id_is_not_fetched(self):
+        def handler(request):  # pragma: no cover - reaching this is the failure
+            raise AssertionError('should not have been fetched')
+
+        self.assertIsNone(self.client(handler).describe(self.job(None)))
+
+    def test_a_page_that_is_not_there_reads_as_nothing(self):
+        client = self.client(lambda request: httpx.Response(404))
+        self.assertIsNone(client.describe(self.job()))
+
+    def test_rate_limiting_is_reported_not_swallowed(self):
+        """Carrying on through a 429 is how a working scrape becomes a blocked one."""
+        client = self.client(lambda request: httpx.Response(429))
+        with self.assertRaises(BlockedError):
+            client.describe(self.job())
+
+
+class ExperienceFromTest(unittest.TestCase):
+    """What a free text description says, and the phrase it said it in."""
+
+    def test_a_stated_minimum(self):
+        self.assertEqual(
+            experience_from('We want someone with 3+ years of experience in ML.'),
+            ('3+ years', 3.0, None),
+        )
+
+    def test_a_stated_range(self):
+        found = experience_from('Requires 2-5 years of experience building systems.')
+        self.assertEqual(found, ('2-5 years', 2.0, 5.0))
+
+    def test_a_fresher_posting(self):
+        found = experience_from('An entry-level role, no experience needed.')
+        assert found is not None
+        self.assertEqual(found[1:], (0.0, 0.0))
+
+    def test_prose_that_states_nothing(self):
+        self.assertIsNone(experience_from('We are a fast growing team of engineers.'))
+        self.assertIsNone(experience_from(None))
+
+    def test_an_absurd_number_is_read_as_nothing(self):
+        """A posting saying "100 years" is a typo, not a requirement."""
+        self.assertIsNone(experience_from('Looking for 100 years of experience'))
 
 
 class JobValidationTest(unittest.TestCase):

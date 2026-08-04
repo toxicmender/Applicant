@@ -15,11 +15,12 @@ no matter which board they came from.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 from .boards import Capability
 from .filters import JobFilter
-from .models import Job, JobsError
+from .models import Job, JobsError, experience_from
 from .storage import ApplicationLog, fingerprint, save_jobs
 
 if TYPE_CHECKING:
@@ -43,6 +44,20 @@ class Board(Protocol):
 
 
 SOURCES = ('linkedin', 'indeed', 'naukri', 'googlejobs')
+
+
+@dataclass
+class _Enrichment:
+    """Reading postings themselves, and the requests that costs.
+
+    `described` is keyed by posting so a board re-read under `want` does not pay
+    for the same page twice; `budget` counts only pages actually fetched.
+    """
+
+    budget: int
+    described: dict[tuple[str | None, str | None], str | None] = field(default_factory=dict)
+    stopped: bool = False
+
 
 # where jobs handed to _easy_apply are staged for the LinkedIn client to read back
 EASY_APPLY_LISTING = 'applied_via_jobs_interface.json'
@@ -94,6 +109,8 @@ class Jobs:
         limit: int = 25,
         want: int | None = None,
         max_rounds: int = 4,
+        enrich: bool = False,
+        enrich_limit: int = 25,
         on_error: Callable[[str, Exception], None] | None = None,
     ) -> list[Job]:
         """Search every configured board and return the filtered, merged results.
@@ -103,15 +120,19 @@ class Jobs:
         with a larger limit until that many get through, the board runs out, or
         `max_rounds` is reached. Left as None nothing changes and each board is
         read exactly once.
+
+        `enrich` reads the postings themselves for an experience filter the
+        search cards could not answer, at most `enrich_limit` of them.
         """
         filters = filters or JobFilter()
         collected: list[Job] = []
+        plan = _Enrichment(budget=enrich_limit) if enrich else None
 
         for name in self.sources:
             client = self._client(name)
             try:
                 kept, seen = self._from_board(
-                    client, name, keywords, filters, limit, want, max_rounds
+                    client, name, keywords, filters, limit, want, max_rounds, plan
                 )
             except JobsError as error:
                 (on_error or self._report)(name, error)
@@ -135,6 +156,7 @@ class Jobs:
         limit: int,
         want: int | None,
         max_rounds: int,
+        plan: _Enrichment | None = None,
     ) -> tuple[list[Job], int]:
         """One board's surviving jobs, and how many were read to get them.
 
@@ -150,6 +172,16 @@ class Jobs:
         # see Capability.filters for why a second pass would be wrong
         skip = sorted(native)
         posted = filters.posted_within_days if 'posted' in native else None
+
+        # when the postings themselves can answer the experience filter, hold it
+        # back until they have been read - a card's silence is not an answer
+        deferred = (
+            plan is not None
+            and filters.experience is not None
+            and callable(getattr(client, 'describe', None))
+        )
+        if deferred:
+            skip = [*skip, 'experience']
 
         pull = limit
         kept: list[Job] = []
@@ -169,6 +201,10 @@ class Jobs:
                 job.flags = flags
                 kept.append(job)
 
+            if deferred and plan is not None:
+                self._enrich(client, kept, plan)
+                kept = self._recheck_experience(kept, filters)
+
             if want is None or len(kept) >= want:
                 break
             if seen < pull:
@@ -179,6 +215,59 @@ class Jobs:
                 print('{}: {} of {} match, reading {}'.format(name, len(kept), seen, pull))
 
         return (kept[:want] if want else kept), seen
+
+    def _enrich(self, client: Board, jobs: list[Job], plan: _Enrichment) -> None:
+        """Read the posting itself where its card never stated the experience.
+
+        Only what a filter actually needs, only for jobs that survived every
+        other check, and only up to a budget: this is the slowest path in the
+        project and the one most likely to be noticed by a site that would
+        rather we were not here. Experience only - a salary read out of free
+        prose is as likely to be a relocation allowance as a wage, and nothing
+        in this project is ever guessed.
+        """
+        describe = getattr(client, 'describe')  # noqa: B009 - presence is the check
+
+        for job in jobs:
+            if job.experience_min is not None or job.experience_max is not None:
+                continue
+
+            key = (job.source, job.id)
+            if key not in plan.described:
+                if plan.stopped or plan.budget <= 0:
+                    continue
+                try:
+                    plan.described[key] = describe(job)
+                except JobsError as error:
+                    # one refusal means the next request is worse than useless
+                    print('{}: {} (enrichment stopped)'.format(job.source, error))
+                    plan.stopped = True
+                    continue
+                plan.budget -= 1
+
+            found = experience_from(plan.described.get(key))
+            if found is None:
+                continue
+
+            phrase, low, high = found
+            job.experience_text = phrase
+            job.experience_min, job.experience_max = low, high
+            job.flags = [*job.flags, 'experience-enriched']
+
+    def _recheck_experience(self, jobs: list[Job], filters: JobFilter) -> list[Job]:
+        """The check held back for enrichment, now that the postings have been read."""
+        check = JobFilter(
+            experience=filters.experience,
+            keep_unknown=filters.keep_unknown,
+            keep_unpublished=filters.keep_unpublished,
+        )
+        kept = []
+        for job in jobs:
+            keep, flags = check.matches(job)
+            if keep:
+                job.flags = [*job.flags, *flags]
+                kept.append(job)
+        return kept
 
     def _report(self, name: str, error: Exception) -> None:
         print('{}: {}'.format(name, error))

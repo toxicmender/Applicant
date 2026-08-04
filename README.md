@@ -113,6 +113,14 @@ first one saw - which is why it is off unless asked for.
 So `-e 5` is a real filter on Naukri and, on the other three, a request nobody
 answered.
 
+**`--enrich` reads the postings themselves** when a search card cannot answer an
+`-e` filter. It fetches at most `--enrich-limit` postings (default 25), only ones
+that survived every other filter, and only from a board with a readable posting
+page - today that is LinkedIn, whose guest pages need no account and no browser.
+What it finds is recorded as `experience-enriched` with the phrase the posting
+used, so a number in the CSV can always be traced back. Experience only: a salary
+read out of free prose is as likely to be a relocation allowance as a wage.
+
 **Unverifiable jobs are kept and flagged, not dropped.** A flag ending `-unknown`
 means the posting did not say; one ending `-unpublished` means its board never
 says. So a LinkedIn result comes back `experience-unpublished` and a Naukri one

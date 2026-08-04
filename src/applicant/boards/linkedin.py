@@ -18,6 +18,7 @@ import json
 import re
 import time
 from contextlib import suppress
+from html import unescape
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlencode
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
     from playwright.sync_api import BrowserContext, Page, Playwright
 
 GUEST_SEARCH = 'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search'
+GUEST_POSTING = 'https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{}'
 GUEST_PAGE_SIZE = 10
 
 HEADERS = {'User-Agent': USER_AGENT, 'Accept-Language': 'en-US,en;q=0.9'}
@@ -144,6 +146,26 @@ class LinkedIn:
             posted=found['posted'],
             easy_apply=None,  # the guest card does not say
         )
+
+    def describe(self, job: Job) -> str | None:
+        """The posting's own text, for what its search card never said.
+
+        The same guest surface `search` uses, so this needs no account and no
+        browser. Returns None when there is nothing to read - no id, or a page
+        that is not there - and raises on a rate limit, because carrying on
+        through one is how a working scrape becomes a blocked one.
+        """
+        if not job.id:
+            return None
+
+        response = self.client.get(GUEST_POSTING.format(job.id))
+        if response.status_code == 429:
+            raise BlockedError('LinkedIn rate limited the guest posting reads; slow down or retry')
+        if response.status_code != 200:
+            return None
+
+        text = unescape(TAGS.sub(' ', response.text))
+        return re.sub(r'\s+', ' ', text).strip() or None
 
     # -- browser session --------------------------------------------------
 

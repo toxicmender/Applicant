@@ -22,7 +22,7 @@ from unittest.mock import patch
 from applicant.boards import capability
 from applicant.cli import main
 from applicant.filters import JobFilter
-from applicant.models import Job
+from applicant.models import BlockedError, Job
 from applicant.search import Jobs
 from applicant.storage import ApplicationLog, fingerprint, load_jobs, save_jobs
 
@@ -393,6 +393,104 @@ class FacadeSearchTest(unittest.TestCase):
         for job in found:
             with self.subTest(job=job.title):
                 self.assertIn('date-unknown', job.flags)
+
+
+class DescribingBoard(StubBoard):
+    """A board whose postings can be read, the way LinkedIn's guest pages can."""
+
+    def __init__(self, jobs, name='linkedin', pages=None, fail=False):
+        super().__init__(jobs, name)
+        self.pages = pages or {}
+        self.fail = fail
+        self.read: list[str | None] = []
+
+    def describe(self, job):
+        if self.fail:
+            raise BlockedError('rate limited')
+        self.read.append(job.id)
+        return self.pages.get(job.id)
+
+
+class EnrichTest(unittest.TestCase):
+    """`--enrich`: when the card says nothing, read the posting."""
+
+    def board(self, **kwargs):
+        jobs = [
+            posting('linkedin', 'Cohere Health', 'AI Engineer', 'Pune, Maharashtra', None),
+            posting('linkedin', 'Infosys', 'AI Engineer', 'Pune, Maharashtra', None),
+        ]
+        pages = {
+            jobs[0].id: 'You will own our models. 3+ years of experience with Python required.',
+            jobs[1].id: 'A graduate trainee programme for freshers.',
+        }
+        return DescribingBoard(jobs, pages=pages, **kwargs)
+
+    def run_search(self, board, **kwargs):
+        with patch.object(Jobs, '_client', return_value=board), redirect_stdout(io.StringIO()):
+            return Jobs(sources=['linkedin']).search('ai', JobFilter(experience=3), **kwargs)
+
+    def test_without_it_nothing_is_read_and_everything_survives(self):
+        board = self.board()
+        found = self.run_search(board)
+        self.assertEqual(board.read, [])
+        self.assertEqual(len(found), 2)
+        self.assertEqual(found[0].flags, ['experience-unpublished'])
+
+    def test_the_posting_answers_what_the_card_could_not(self):
+        board = self.board()
+        found = self.run_search(board, enrich=True)
+
+        self.assertEqual(len(found), 1, 'the fresher role is now knowably wrong')
+        self.assertEqual(found[0].company, 'Cohere Health')
+        self.assertEqual(found[0].experience_min, 3.0)
+        self.assertIsNone(found[0].experience_max, '3+ years has no ceiling')
+
+    def test_it_records_where_the_number_came_from(self):
+        found = self.run_search(self.board(), enrich=True)
+        self.assertIn('experience-enriched', found[0].flags)
+        self.assertEqual(found[0].experience_text, '3+ years')
+
+    def test_a_posting_that_says_nothing_is_still_kept_and_flagged(self):
+        board = DescribingBoard(
+            [posting('linkedin', 'Acme', 'AI Engineer', 'Pune', None)],
+            pages={},  # read successfully, and it stated no requirement
+        )
+        found = self.run_search(board, enrich=True)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0].flags, ['experience-unpublished'])
+
+    def test_a_refusal_stops_the_reading_rather_than_the_run(self):
+        board = self.board(fail=True)
+        found = self.run_search(board, enrich=True)
+        self.assertEqual(len(found), 2, 'kept, because nothing could be checked')
+        for job in found:
+            self.assertIn('experience-unpublished', job.flags)
+
+    def test_the_budget_caps_how_many_postings_are_read(self):
+        board = self.board()
+        self.run_search(board, enrich=True, enrich_limit=1)
+        self.assertEqual(len(board.read), 1)
+
+    def test_a_card_that_stated_its_range_is_never_read(self):
+        board = DescribingBoard(
+            [posting('linkedin', 'Acme', 'AI Engineer', 'Pune', '2-5 years')], pages={}
+        )
+        self.run_search(board, enrich=True)
+        self.assertEqual(board.read, [], 'nothing to enrich')
+
+    def test_a_board_that_cannot_be_read_is_simply_not(self):
+        """StubBoard has no `describe`, which is how the other three boards are."""
+        board = StubBoard([posting('naukri', 'Acme', 'AI Engineer', 'Pune', None)], 'naukri')
+        with patch.object(Jobs, '_client', return_value=board), redirect_stdout(io.StringIO()):
+            found = Jobs(sources=['naukri']).search('ai', JobFilter(experience=3), enrich=True)
+        self.assertEqual(found[0].flags, ['experience-unknown'])
+
+    def test_re_reading_a_board_does_not_pay_for_the_same_page_twice(self):
+        """`--want` reads the board again; the postings are already known."""
+        board = self.board()
+        self.run_search(board, enrich=True, limit=2, want=2, max_rounds=3)
+        self.assertEqual(len(board.read), 2, 'two postings, read once each')
+        self.assertEqual(set(board.read), {job.id for job in board.jobs})
 
 
 class WantTest(unittest.TestCase):

@@ -118,6 +118,8 @@ def run_search(args) -> int:
         limit=args.limit,
         want=args.want,
         max_rounds=args.max_rounds,
+        enrich=args.enrich,
+        enrich_limit=args.enrich_limit,
     )
 
     if not found:
@@ -372,6 +374,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     search.add_argument(
         '--show', action='store_true', help='run the browser visibly, to solve a bot check yourself'
+    )
+    search.add_argument(
+        '--enrich',
+        action='store_true',
+        help='read the postings themselves to answer an --experience filter their '
+        'search cards could not. Slow, and only where a board offers a readable '
+        'posting page - currently LinkedIn',
+    )
+    search.add_argument(
+        '--enrich-limit',
+        type=int,
+        default=25,
+        metavar='N',
+        help='how many postings --enrich may read in one run (default 25)',
     )
     _add_filters(search)
     search.set_defaults(handler=run_search)

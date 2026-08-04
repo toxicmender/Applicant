@@ -62,6 +62,28 @@ def parse_experience(text: str | None) -> tuple[float | None, float | None]:
     return float(exact), float(exact)
 
 
+def experience_from(text: str | None) -> tuple[str, float | None, float | None] | None:
+    """What a free text description says about required experience.
+
+    -> (the phrase it used, low, high), or None when it says nothing usable.
+    The phrase comes back so a posting can record where its numbers came from
+    rather than storing a whole job description in `experience_text`.
+    """
+    if not text:
+        return None
+    match = FRESHER.search(text) or EXPERIENCE.search(text)
+    if match is None:
+        return None
+
+    phrase = match.group(0).strip()
+    low, high = parse_experience(phrase)
+    if low is None and high is None:
+        return None
+    if not _in_range(low) or not _in_range(high):
+        return None
+    return phrase, low, high
+
+
 class Job(BaseModel):
     """A posting, normalised across every board."""
 
