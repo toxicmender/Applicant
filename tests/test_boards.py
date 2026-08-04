@@ -53,6 +53,19 @@ class IndeedHostTest(unittest.TestCase):
         # 'Indiana' must not resolve to the Indian site
         self.assertEqual(host_for('Indianapolis, Indiana'), 'https://www.indeed.com')
 
+    def test_a_bare_city_reaches_its_own_country_site(self):
+        """'-l Bengaluru' is the spelling every other board wants.
+
+        Without this it fell through to the US site, so the one location string
+        that satisfies Naukri and the local filter answered with American jobs.
+        """
+        for location in ('Bengaluru', 'Hyderabad, Telangana', 'Pune'):
+            with self.subTest(location=location):
+                self.assertEqual(host_for(location), 'https://in.indeed.com')
+
+    def test_a_city_we_cannot_place_still_falls_back(self):
+        self.assertEqual(host_for('Springfield'), 'https://www.indeed.com')
+
 
 class IndeedUrlTest(unittest.TestCase):
     def setUp(self):

@@ -73,6 +73,13 @@ uv run applicant search "developer" -l India --title "senior python" \
 
 Location and date are handed to the boards themselves where they support it
 (LinkedIn and Indeed both filter by date server side), and applied locally otherwise.
+
+**A country filter understands its cities.** Boards answer `-l India` with bare
+city names, so `apply -l India` over a stored file checks "India" against
+"Bengaluru, Karnataka" itself and keeps it. A posting somewhere we can name is
+dropped; one we cannot place at all - "Remote", a town in no table - is kept and
+flagged `location-unverified`. The same table means `-l Bengaluru` reaches
+Indeed's Indian site rather than its US one.
 `-n/--limit` is how many to pull from each board *before* filtering, so a tight
 filter returns fewer than you asked for - raise it if you want more survivors.
 
@@ -241,6 +248,7 @@ src/applicant/
   salary.py      reading pay off a posting, normalised to an annual figure
   browser.py     launching Playwright in a way the boards accept
   filters.py     JobFilter, and the flags saying what could not be checked
+  places.py      whether a posting's location is inside the one you asked for
   storage.py     job_listing.json and applied_jobs.csv
   search.py      the facade over boards, filters and storage
   boards/        one module per job board, all returning Job

@@ -254,14 +254,27 @@ class LocationFilterTest(unittest.TestCase):
     def test_a_state_works_too_because_boards_include_it(self):
         self.assertEqual(len(kept(JobFilter(location='Karnataka'), shortlist())), 3)
 
-    def test_india_matches_nothing_locally(self):
-        """Every posting says 'Bengaluru, Karnataka'; none of them says India.
+    def test_india_recognises_its_own_cities(self):
+        """Not one posting says 'India'; all eight are in it all the same."""
+        self.assertEqual(len(kept(JobFilter(location='India'), shortlist())), len(SHORTLIST))
 
-        This is why `Jobs.search` hands location to the board and skips the local
-        check - see FacadeSearchTest. It also means `-l India` is wrong on the
-        `apply` command, which has no board to delegate to.
-        """
-        self.assertEqual(kept(JobFilter(location='India'), shortlist()), [])
+    def test_a_posting_somewhere_else_is_still_dropped(self):
+        elsewhere = posting('linkedin', 'Stripe', 'AI Engineer', 'Dublin, Ireland', '2-5 years')
+        keep, flags = JobFilter(location='India').matches(elsewhere)
+        self.assertFalse(keep)
+        self.assertEqual(flags, [])
+
+    def test_a_place_we_cannot_resolve_is_kept_and_flagged(self):
+        """The codebase's rule for anything it cannot check: keep it, say so."""
+        vague = posting('linkedin', 'Acme', 'AI Engineer', 'Remote', '2-5 years')
+        keep, flags = JobFilter(location='India').matches(vague)
+        self.assertTrue(keep)
+        self.assertEqual(flags, ['location-unverified'])
+
+    def test_strict_drops_what_it_could_not_place(self):
+        vague = posting('linkedin', 'Acme', 'AI Engineer', 'Remote', '2-5 years')
+        keep, _ = JobFilter(location='India', keep_unknown=False).matches(vague)
+        self.assertFalse(keep)
 
     def test_skipping_the_recheck_keeps_what_the_board_returned(self):
         survivors = kept(JobFilter(location='India'), shortlist(), skip=['location'])
@@ -484,14 +497,15 @@ class ApplyCommandTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn('3 of 12 stored jobs match', output)
 
-    def test_location_india_matches_nothing_here(self):
-        """`search -l India` works because the board answers it. `apply` has no
-        board, so the same flag is checked against 'Bengaluru, Karnataka' and
-        matches nothing. Filter the stored file by city, not by country.
+    def test_location_india_narrows_the_stored_file(self):
+        """`apply` has no board to delegate to, so it resolves the country itself.
+
+        Nine survive: the eight wanted plus an Indian frontend role, with the
+        Irish posting the only one the country filter sheds.
         """
         code, output = self.run_cli('-e', '3', '-l', 'India')
-        self.assertEqual(code, 1)
-        self.assertIn('0 of 12 stored jobs match', output)
+        self.assertEqual(code, 0)
+        self.assertIn('9 of 12 stored jobs match', output)
 
     def test_every_shortlisted_job_is_logged_for_manual_apply(self):
         """None of the shortlist is LinkedIn, so the CSV is a worklist of urls."""

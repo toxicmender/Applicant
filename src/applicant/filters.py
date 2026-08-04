@@ -8,6 +8,7 @@ from datetime import date, datetime, timezone
 from .boards import capability
 from .models import Job
 from .money import Rates, convert
+from .places import within
 from .salary import parse_salary
 
 
@@ -52,15 +53,18 @@ class JobFilter:
         """
         flags: list[str] = []
 
-        for value, field_name in (
-            (self.title, 'title'),
-            (self.company, 'company'),
-            (self.location, 'location'),
-        ):
+        for value, field_name in ((self.title, 'title'), (self.company, 'company')):
             if not value or field_name in skip:
                 continue
             actual = getattr(job, field_name) or ''
             if not self._text_matches(value, actual):
+                return False, flags
+
+        if self.location and 'location' not in skip:
+            keep, flag = self._location_ok(job, self.location)
+            if flag:
+                flags.append(flag)
+            if not keep:
                 return False, flags
 
         if self.min_salary is not None and 'salary' not in skip:
@@ -90,6 +94,18 @@ class JobFilter:
         """Every word of the filter must appear, in any order."""
         actual = actual.lower()
         return all(word in actual for word in wanted.lower().split())
+
+    def _location_ok(self, job: Job, wanted: str) -> tuple[bool, str | None]:
+        """Text first, then containment: 'India' has to accept 'Bengaluru'.
+
+        Only the boards spell a country out; `apply` reads a stored file where
+        the location is whatever the board said, so without this a country
+        filter empties the worklist instead of narrowing it.
+        """
+        verdict = within(wanted, job.location)
+        if verdict is None:
+            return self.keep_unknown, 'location-unverified'
+        return verdict, None
 
     def _unverifiable(self, job: Job, field: str, stem: str) -> tuple[bool, str]:
         """What becomes of a posting that could not be checked, and what to call it.
