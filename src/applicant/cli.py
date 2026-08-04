@@ -112,7 +112,13 @@ def run_search(args) -> int:
 
     wanted = ALL if 'all' in args.source else args.source
     board = Jobs(sources=wanted, headless=not args.show)
-    found = board.search(args.keywords, _filters(args), limit=args.limit)
+    found = board.search(
+        args.keywords,
+        _filters(args),
+        limit=args.limit,
+        want=args.want,
+        max_rounds=args.max_rounds,
+    )
 
     if not found:
         print('nothing matched')
@@ -345,6 +351,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     search.add_argument(
         '-n', '--limit', type=int, default=25, help='jobs to pull per board, before filtering'
+    )
+    search.add_argument(
+        '--want',
+        type=int,
+        metavar='N',
+        help='keep reading each board until this many jobs survive the filter, '
+        'rather than filtering a fixed pull of --limit',
+    )
+    search.add_argument(
+        '--max-rounds',
+        type=int,
+        default=4,
+        metavar='N',
+        help='how many times --want may re-read a board, each round doubling the '
+        'pull and re-reading what it already saw (default 4)',
     )
     search.add_argument(
         '-o', '--output', default='job_listing.json', help='file path to store the scraped jobs'

@@ -395,6 +395,65 @@ class FacadeSearchTest(unittest.TestCase):
                 self.assertIn('date-unknown', job.flags)
 
 
+class WantTest(unittest.TestCase):
+    """`--want` counts survivors; `-n` counts what was pulled to find them."""
+
+    def board(self, total=40, every=4):
+        """`total` postings, of which every `every`-th is one we are looking for."""
+        jobs = [
+            posting(
+                'naukri',
+                'Acme {}'.format(index),
+                'AI Engineer' if index % every == 0 else 'Frontend Developer',
+                'Pune, Maharashtra',
+                '2-4 Yrs',
+            )
+            for index in range(total)
+        ]
+        return StubBoard(jobs)
+
+    def run_search(self, board, **kwargs):
+        with patch.object(Jobs, '_client', return_value=board), redirect_stdout(io.StringIO()):
+            return Jobs(sources=['naukri']).search('ai', JobFilter(title='ai engineer'), **kwargs)
+
+    def pulls(self, board):
+        return [call[2] for call in board.calls]
+
+    def test_without_want_a_board_is_read_exactly_once(self):
+        board = self.board()
+        found = self.run_search(board, limit=5)
+        self.assertEqual(self.pulls(board), [5])
+        self.assertEqual(len(found), 2, 'two survivors in the first five, and that is that')
+
+    def test_the_pull_doubles_until_enough_survive(self):
+        board = self.board()
+        found = self.run_search(board, limit=5, want=4)
+        self.assertEqual(self.pulls(board), [5, 10, 20])
+        self.assertEqual(len(found), 4)
+
+    def test_it_stops_as_soon_as_the_first_round_is_enough(self):
+        board = self.board()
+        found = self.run_search(board, limit=20, want=3)
+        self.assertEqual(self.pulls(board), [20])
+        self.assertEqual(len(found), 3, 'trimmed to what was asked for')
+
+    def test_it_gives_up_when_the_board_runs_out(self):
+        board = self.board(total=6)
+        found = self.run_search(board, limit=5, want=10)
+        self.assertEqual(self.pulls(board), [5, 10], 'the second read returned fewer than asked')
+        self.assertEqual(len(found), 2)
+
+    def test_max_rounds_caps_the_re_reading(self):
+        board = self.board(total=400)
+        self.run_search(board, limit=5, want=100, max_rounds=2)
+        self.assertEqual(self.pulls(board), [5, 10])
+
+    def test_one_round_is_the_same_as_not_asking(self):
+        board = self.board()
+        self.run_search(board, limit=5, want=99, max_rounds=1)
+        self.assertEqual(self.pulls(board), [5])
+
+
 class CrossBoardTest(unittest.TestCase):
     """One job on three boards is one application, not three."""
 

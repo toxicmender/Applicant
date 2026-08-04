@@ -92,24 +92,26 @@ class Jobs:
         keywords: str,
         filters: JobFilter | None = None,
         limit: int = 25,
+        want: int | None = None,
+        max_rounds: int = 4,
         on_error: Callable[[str, Exception], None] | None = None,
     ) -> list[Job]:
         """Search every configured board and return the filtered, merged results.
 
         `limit` is per board *before* filtering, so a strict filter returns fewer.
+        `want` asks for a number of *survivors* instead: each board is re-read
+        with a larger limit until that many get through, the board runs out, or
+        `max_rounds` is reached. Left as None nothing changes and each board is
+        read exactly once.
         """
         filters = filters or JobFilter()
         collected: list[Job] = []
 
         for name in self.sources:
             client = self._client(name)
-            native = client.capability.filters
             try:
-                jobs = client.search(
-                    keywords,
-                    filters.location or '',
-                    limit=limit,
-                    posted_within_days=(filters.posted_within_days if 'posted' in native else None),
+                kept, seen = self._from_board(
+                    client, name, keywords, filters, limit, want, max_rounds
                 )
             except JobsError as error:
                 (on_error or self._report)(name, error)
@@ -119,9 +121,45 @@ class Jobs:
                 if name != 'linkedin':
                     client.close()
 
-            # whatever the board filtered for us, we must not filter again -
-            # see Capability.filters for why a second pass would be wrong
-            skip = sorted(native)
+            print('{}: {} of {} jobs match'.format(name, len(kept), seen))
+            collected.extend(kept)
+
+        return collected
+
+    def _from_board(
+        self,
+        client: Board,
+        name: str,
+        keywords: str,
+        filters: JobFilter,
+        limit: int,
+        want: int | None,
+        max_rounds: int,
+    ) -> tuple[list[Job], int]:
+        """One board's surviving jobs, and how many were read to get them.
+
+        Reading more means asking for a bigger page and re-reading what we
+        already saw: the boards page from the top, and Google Jobs only exists
+        as a scrolling list, so there is no offset to resume from. That is why
+        rounds are capped and why one round remains the default - each extra one
+        is a fresh set of requests against a site that is watching for exactly
+        that.
+        """
+        native = client.capability.filters
+        # whatever the board filtered for us, we must not filter again -
+        # see Capability.filters for why a second pass would be wrong
+        skip = sorted(native)
+        posted = filters.posted_within_days if 'posted' in native else None
+
+        pull = limit
+        kept: list[Job] = []
+        seen = 0
+
+        for round_number in range(max(1, max_rounds) if want else 1):
+            jobs = client.search(
+                keywords, filters.location or '', limit=pull, posted_within_days=posted
+            )
+            seen = len(jobs)
 
             kept = []
             for job in jobs:
@@ -131,10 +169,16 @@ class Jobs:
                 job.flags = flags
                 kept.append(job)
 
-            print('{}: {} of {} jobs match'.format(name, len(kept), len(jobs)))
-            collected.extend(kept)
+            if want is None or len(kept) >= want:
+                break
+            if seen < pull:
+                # the board gave us everything it had; asking again is pointless
+                break
+            if round_number + 1 < max_rounds:
+                pull *= 2
+                print('{}: {} of {} match, reading {}'.format(name, len(kept), seen, pull))
 
-        return collected
+        return (kept[:want] if want else kept), seen
 
     def _report(self, name: str, error: Exception) -> None:
         print('{}: {}'.format(name, error))

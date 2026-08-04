@@ -95,6 +95,12 @@ Indeed's Indian site rather than its US one.
 `-n/--limit` is how many to pull from each board *before* filtering, so a tight
 filter returns fewer than you asked for - raise it if you want more survivors.
 
+`--want N` asks for the number you actually have in mind: each board is re-read
+with a doubled pull until N jobs survive the filter, it runs out, or
+`--max-rounds` (default 4) is reached. It costs requests - the boards page from
+the top and Google Jobs is a scrolling list, so a second round re-reads what the
+first one saw - which is why it is off unless asked for.
+
 **The boards differ in what they will tell you**, which decides what `-e` and
 `--min-salary` can actually do:
 
