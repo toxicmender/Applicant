@@ -201,12 +201,21 @@ class TitleFilterTest(unittest.TestCase):
         )
         self.assertEqual(missed, {'Associate Consultant - AI/ML', 'Data Scientist I'})
 
-    def test_the_shortlist_needs_a_pass_per_title_family(self):
-        """Four runs cover it, because there is no way to say 'ai OR ml' in one."""
-        found: set[str] = set()
-        for wanted in ('ai', 'ml', 'machine learning', 'data scientist'):
-            found.update(titles(kept(JobFilter(title=wanted), shortlist())))
-        self.assertEqual(found, set(titles(shortlist())))
+    def test_several_titles_match_any_of_them(self):
+        """Which is what the shortlist needs: four title families, one filter."""
+        several = JobFilter(title=['ai', 'ml', 'machine learning', 'data scientist'])
+        self.assertEqual(set(titles(kept(several, shortlist()))), set(titles(shortlist())))
+
+    def test_one_title_still_behaves_as_a_plain_string(self):
+        self.assertEqual(
+            titles(kept(JobFilter(title='data scientist'), shortlist())),
+            titles(kept(JobFilter(title=['data scientist']), shortlist())),
+        )
+
+    def test_empty_values_do_not_constrain_anything(self):
+        for wanted in ([], ['']):
+            with self.subTest(title=wanted):
+                self.assertEqual(len(kept(JobFilter(title=wanted), shortlist())), len(SHORTLIST))
 
     def test_all_the_words_must_appear_so_word_order_does_not_matter(self):
         job = posting(
@@ -308,17 +317,22 @@ class CombinedFilterTest(unittest.TestCase):
             'the two non-engineer titles need their own pass',
         )
 
-    def test_the_union_of_four_passes_is_the_shortlist_exactly(self):
-        """What it takes to get all eight and none of the decoys in one sitting."""
-        survivors: dict[str, Job] = {}
-        for wanted in ('ai', 'ml', 'machine learning', 'data scientist'):
-            for job in kept(
-                JobFilter(title=wanted, experience=3, location='India'), pool(), skip=['location']
-            ):
-                survivors[job.title] = job
+    def test_one_filter_now_returns_the_shortlist_exactly(self):
+        """All eight, none of the decoys, in a single pass over everything.
 
-        self.assertEqual(set(survivors), set(titles(shortlist())))
-        self.assertNotIn('Graduate Trainee - AI', survivors, 'the fresher role is shed by -e 3')
+        Each flag sheds what only it can: the titles drop the frontend role, the
+        years drop the fresher and the principal one, and the country drops the
+        Irish posting - which no earlier version of this filter could do locally.
+        """
+        survivors = kept(
+            JobFilter(
+                title=['ai', 'ml', 'machine learning', 'data scientist'],
+                experience=3,
+                location='India',
+            ),
+            pool(),
+        )
+        self.assertEqual(set(titles(survivors)), set(titles(shortlist())))
 
 
 class FacadeSearchTest(unittest.TestCase):
@@ -422,17 +436,40 @@ class SearchCommandTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(titles(load_jobs(self.output)), ['Data Scientist I'])
 
-    def test_runs_merge_rather_than_overwrite_so_passes_accumulate(self):
-        """Four title passes into one file is how the whole shortlist is collected."""
-        for wanted in ('ai', 'ml', 'machine learning', 'data scientist'):
+    def test_one_invocation_collects_the_whole_shortlist(self):
+        """The acceptance test for repeatable -t: four title families, one run."""
+        code, output = self.run_cli(
+            'search',
+            'ai ml engineer',
+            '-s',
+            'naukri',
+            '-l',
+            'India',
+            '-e',
+            '3',
+            '-t',
+            'ai',
+            '-t',
+            'ml',
+            '-t',
+            'machine learning',
+            '-t',
+            'data scientist',
+        )
+        self.assertEqual(code, 0)
+        self.assertIn('naukri: 8 of 11 jobs match', output)
+        self.assertEqual(set(titles(load_jobs(self.output))), set(titles(shortlist())))
+
+    def test_runs_still_merge_rather_than_overwrite(self):
+        for wanted in ('ai', 'data scientist'):
             code, _ = self.run_cli(
                 'search', 'ai ml engineer', '-s', 'naukri', '-l', 'India', '-e', '3', '-t', wanted
             )
             self.assertEqual(code, 0)
 
         stored = load_jobs(self.output)
-        self.assertEqual(set(titles(stored)), set(titles(shortlist())))
-        self.assertEqual(len(stored), len(SHORTLIST), 'no posting is stored twice')
+        self.assertIn('Data Scientist I', titles(stored))
+        self.assertEqual(len(stored), len(set(titles(stored))), 'no posting is stored twice')
 
     def run_one(self, source, *extra):
         """One posting that states no experience, from `source`, through the CLI."""

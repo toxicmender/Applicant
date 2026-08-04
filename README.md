@@ -60,11 +60,23 @@ uv run applicant search "developer" -l India --title "senior python" \
     --company infosys --min-salary 1200000 --currency INR --posted-within 7
 ```
 
+**`--title` and `--company` may be repeated**, and a job needs to match only one
+of them. A search worth running usually spans more than one way of naming the
+same role:
+
+```
+uv run applicant search "AI ML engineer" -l India -e 3 \
+    -t ai -t ml -t "machine learning" -t "data scientist"
+```
+
+Each value keeps its own rule - every word of it must appear, in any order - so
+`-t "machine learning"` still means both words.
+
 | Flag | Filters on |
 |---|---|
 | `-l/--location` | where the job is |
-| `-t/--title` | words in the job title, any order |
-| `-c/--company` | the hiring company |
+| `-t/--title` | words in the job title, any order; repeat for any-of |
+| `-c/--company` | the hiring company; repeatable too |
 | `--min-salary` + `--currency` | annual pay floor |
 | `--salary-basis` | how to compare other currencies: `ppp`, `market` or `strict` |
 | `-e/--experience YEARS` | years you have; keeps jobs asking for that much |

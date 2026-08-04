@@ -239,8 +239,19 @@ def run_rates(args) -> int:
 
 
 def _add_filters(command) -> None:
-    command.add_argument('-t', '--title', help='keep jobs whose title contains these words')
-    command.add_argument('-c', '--company', help='keep jobs from companies matching this')
+    command.add_argument(
+        '-t',
+        '--title',
+        action='append',
+        help='keep jobs whose title contains these words. Repeat it to accept '
+        'any of several: -t ai -t ml -t "machine learning"',
+    )
+    command.add_argument(
+        '-c',
+        '--company',
+        action='append',
+        help='keep jobs from companies matching this. Repeatable, like --title',
+    )
     command.add_argument('--min-salary', type=float, help='annual salary floor, in --currency')
     command.add_argument('--currency', help='currency for --min-salary, e.g. INR or USD')
     command.add_argument(

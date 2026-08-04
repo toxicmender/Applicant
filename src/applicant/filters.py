@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
@@ -12,12 +13,27 @@ from .places import within
 from .salary import parse_salary
 
 
+def _values(wanted: str | Sequence[str] | None) -> list[str]:
+    """One filter or several, as a list. Empty means "does not constrain"."""
+    if wanted is None:
+        return []
+    if isinstance(wanted, str):
+        wanted = [wanted]
+    return [value for value in wanted if value and value.strip()]
+
+
 @dataclass
 class JobFilter:
-    """Every field is optional; unset fields simply do not constrain anything."""
+    """Every field is optional; unset fields simply do not constrain anything.
 
-    title: str | None = None
-    company: str | None = None
+    `title` and `company` take one value or several. Several match when *any* of
+    them does, because a shortlist worth having spans more title families than
+    one string of words can express - "AI", "ML", "Machine Learning" and "Data
+    Scientist" are one search to a person and four to a text match.
+    """
+
+    title: str | Sequence[str] | None = None
+    company: str | Sequence[str] | None = None
     location: str | None = None
     min_salary: float | None = None  # annual, in `currency`
     currency: str | None = None
@@ -54,10 +70,11 @@ class JobFilter:
         flags: list[str] = []
 
         for value, field_name in ((self.title, 'title'), (self.company, 'company')):
-            if not value or field_name in skip:
+            wanted = _values(value)
+            if not wanted or field_name in skip:
                 continue
             actual = getattr(job, field_name) or ''
-            if not self._text_matches(value, actual):
+            if not any(self._text_matches(one, actual) for one in wanted):
                 return False, flags
 
         if self.location and 'location' not in skip:
@@ -91,7 +108,12 @@ class JobFilter:
         return True, flags
 
     def _text_matches(self, wanted: str, actual: str) -> bool:
-        """Every word of the filter must appear, in any order."""
+        """Every word of one filter must appear, in any order.
+
+        Substring matching, deliberately: "ml" should find "AI/ML". The cost is
+        that a two letter filter overreaches - "ai" is inside "Trainee" - which
+        is why several narrow filters beat one short one.
+        """
         actual = actual.lower()
         return all(word in actual for word in wanted.lower().split())
 

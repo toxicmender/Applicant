@@ -82,7 +82,7 @@ class ParserTest(unittest.TestCase):
                         '--strict',
                     ]
                 )
-                self.assertEqual(args.title, 'senior')
+                self.assertEqual(args.title, ['senior'], '--title collects, so it can repeat')
                 self.assertEqual(args.min_salary, 1_200_000)
                 self.assertEqual(args.posted_within, 7)
                 self.assertTrue(args.strict)
