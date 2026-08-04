@@ -173,8 +173,19 @@ A small place table — the project is already India-centric (Naukri, AmbitionBo
 a checked-in INR PPP factor) — mapping a country to its states and metros:
 
 ```python
-CONTAINS = {'india': {'karnataka', 'bengaluru', 'bangalore', 'telangana',
-                      'hyderabad', 'maharashtra', 'pune', 'mumbai', ...}}
+CONTAINS = {
+    'india': {
+        'karnataka',
+        'bengaluru',
+        'bangalore',
+        'telangana',
+        'hyderabad',
+        'maharashtra',
+        'pune',
+        'mumbai',
+        ...,
+    }
+}
 ```
 
 Two uses, both of which pay for it:
