@@ -69,16 +69,39 @@ uv run applicant search "developer" -l India --title "senior python" \
 | `--salary-basis` | how to compare other currencies: `ppp`, `market` or `strict` |
 | `-e/--experience YEARS` | years you have; keeps jobs asking for that much |
 | `--posted-within DAYS` | how recently it was posted |
+| `--strict` / `--strict-published` | what to do with what could not be checked |
 
 Location and date are handed to the boards themselves where they support it
 (LinkedIn and Indeed both filter by date server side), and applied locally otherwise.
 `-n/--limit` is how many to pull from each board *before* filtering, so a tight
 filter returns fewer than you asked for - raise it if you want more survivors.
 
-**Unverifiable jobs are kept and flagged, not dropped.** Most postings state no
-salary, and only Naukri publishes required experience, so those come back marked
-`salary-unknown` / `experience-unknown` in the `flags` field. Pass `--strict` to drop
-anything that could not actually be checked.
+**The boards differ in what they will tell you**, which decides what `-e` and
+`--min-salary` can actually do:
+
+| | LinkedIn | Indeed | Naukri | Google Jobs |
+|---|---|---|---|---|
+| states required experience | no | no | **yes** | no |
+| states pay | no | yes | yes | sometimes |
+| filters by date itself | yes | yes | no | no |
+
+So `-e 5` is a real filter on Naukri and, on the other three, a request nobody
+answered.
+
+**Unverifiable jobs are kept and flagged, not dropped.** A flag ending `-unknown`
+means the posting did not say; one ending `-unpublished` means its board never
+says. So a LinkedIn result comes back `experience-unpublished` and a Naukri one
+that hid its range comes back `experience-unknown`.
+
+| | keeps | drops |
+|---|---|---|
+| *(default)* | everything, flagged | nothing |
+| `--strict-published` | boards that never publish the field | postings that could have said and did not |
+| `--strict` | only what was fully checked | both kinds of silence |
+
+`--strict` with `-e` therefore discards every LinkedIn, Indeed and Google Jobs
+result, since none of them publishes experience at all. `--strict-published` is
+usually the one you want: it tightens Naukri without deleting the other three.
 
 `--experience 5` keeps jobs whose stated range contains 5 years, so it excludes
 roles wanting 0-2 years as well as ones wanting 8+. `5+ years` is treated as having

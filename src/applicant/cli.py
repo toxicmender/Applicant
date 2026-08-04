@@ -99,7 +99,9 @@ def _filters(args):
         salary_basis=args.salary_basis,
         experience=args.experience,
         posted_within_days=args.posted_within,
-        keep_unknown=not args.strict,
+        keep_unknown=not (args.strict or args.strict_published),
+        # --strict is the stricter of the two, so it wins when both are given
+        keep_unpublished=args.strict_published and not args.strict,
     )
 
 
@@ -261,8 +263,16 @@ def _add_filters(command) -> None:
     command.add_argument(
         '--strict',
         action='store_true',
-        help='drop jobs whose salary or date could not be read '
-        '(they are kept and flagged by default)',
+        help='drop jobs whose salary, experience or date could not be read '
+        '(they are kept and flagged by default). Note that this drops every '
+        'board that does not publish the field at all',
+    )
+    command.add_argument(
+        '--strict-published',
+        action='store_true',
+        help='drop a job only when its board does publish the field and the '
+        'posting stayed silent, keeping boards that never publish it - which '
+        'for --experience is every board but Naukri',
     )
 
 

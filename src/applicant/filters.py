@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
+from .boards import capability
 from .models import Job
 from .money import Rates, convert
 from .salary import parse_salary
@@ -30,6 +31,10 @@ class JobFilter:
     experience: float | None = None  # years you have
     posted_within_days: int | None = None
     keep_unknown: bool = True  # unverifiable jobs survive, flagged
+    # only consulted when keep_unknown is False. A board that never publishes a
+    # field is not the same as a posting that declined to state it: set this to
+    # drop the second and keep the first, rather than deleting whole boards.
+    keep_unpublished: bool = False
 
     def matches(
         self, job: Job, today: date | None = None, skip: tuple[str, ...] | list[str] = ()
@@ -40,6 +45,10 @@ class JobFilter:
         locally is not merely wasted work, it is wrong: boards answer a country
         search with bare city names ("Bengaluru"), so a second pass over
         `job.location` would throw away every correct result.
+
+        A flag ending `-unknown` means the posting did not say; one ending
+        `-unpublished` means its board never says, which `job.source` decides
+        through `applicant.boards.capability`.
         """
         flags: list[str] = []
 
@@ -82,6 +91,20 @@ class JobFilter:
         actual = actual.lower()
         return all(word in actual for word in wanted.lower().split())
 
+    def _unverifiable(self, job: Job, field: str, stem: str) -> tuple[bool, str]:
+        """What becomes of a posting that could not be checked, and what to call it.
+
+        Silence has two very different sources. A posting on a board that
+        publishes experience and states none is being evasive; a posting on a
+        board that never publishes it at all has said nothing wrong. Only the
+        first is a reason to drop anything, which is why `--strict` alone -
+        drop everything unverifiable - deletes three of the four boards the
+        moment an experience filter is set.
+        """
+        if field not in capability(job.source).publishes:
+            return self.keep_unknown or self.keep_unpublished, '{}-unpublished'.format(stem)
+        return self.keep_unknown, '{}-unknown'.format(stem)
+
     def _experience_ok(self, job: Job, years: float) -> tuple[bool, str | None]:
         """You qualify when your years fall inside the range the job asks for.
 
@@ -91,7 +114,7 @@ class JobFilter:
         """
         low, high = job.experience_min, job.experience_max
         if low is None and high is None:
-            return self.keep_unknown, 'experience-unknown'
+            return self._unverifiable(job, 'experience', 'experience')
         if low is not None and years < low:
             return False, None
         if high is not None and years > high:
@@ -101,11 +124,11 @@ class JobFilter:
     def _salary_ok(self, job: Job, minimum: float) -> tuple[bool, str | None]:
         salary = parse_salary(job.salary)
         if salary is None:
-            return self.keep_unknown, 'salary-unknown'
+            return self._unverifiable(job, 'salary', 'salary')
 
         top = salary.annual_high
         if top is None:
-            return self.keep_unknown, 'salary-unknown'
+            return self._unverifiable(job, 'salary', 'salary')
 
         flag = None
         if self.currency and salary.currency and salary.currency != self.currency:
@@ -127,10 +150,12 @@ class JobFilter:
         self, job: Job, within_days: int, today: date | None = None
     ) -> tuple[bool, str | None]:
         if not job.posted:
-            return self.keep_unknown, 'date-unknown'
+            return self._unverifiable(job, 'posted', 'date')
         try:
             posted = datetime.strptime(job.posted[:10], '%Y-%m-%d').date()
         except ValueError:
+            # the board published a date and we could not read it, which is a
+            # parse failure of ours, not a board that stays silent
             return self.keep_unknown, 'date-unknown'
         today = today or datetime.now(timezone.utc).date()
         return (today - posted).days <= within_days, None

@@ -150,18 +150,41 @@ class ExperienceRangeTest(unittest.TestCase):
         counts = {years: len(kept(JobFilter(experience=years), shortlist())) for years in range(7)}
         self.assertEqual(counts, {0: 0, 1: 1, 2: 8, 3: 8, 4: 8, 5: 4, 6: 0})
 
-    def test_a_board_that_states_no_experience_is_kept_and_flagged(self):
-        """Only Naukri publishes required experience, so the rest survive flagged."""
+    def test_a_board_that_never_publishes_experience_says_so(self):
+        """Only Naukri publishes it, so the rest survive flagged as unpublished."""
         silent = posting('linkedin', 'Google', 'AI Engineer', 'Hyderabad, Telangana', None)
+        keep, flags = JobFilter(experience=3).matches(silent)
+        self.assertTrue(keep)
+        self.assertEqual(flags, ['experience-unpublished'])
+
+    def test_a_naukri_posting_that_states_nothing_is_merely_unknown(self):
+        """Same silence, different source: this board could have told us."""
+        silent = posting('naukri', 'Google', 'AI Engineer', 'Hyderabad, Telangana', None)
         keep, flags = JobFilter(experience=3).matches(silent)
         self.assertTrue(keep)
         self.assertEqual(flags, ['experience-unknown'])
 
-    def test_strict_drops_the_boards_that_state_nothing(self):
-        silent = posting('linkedin', 'Google', 'AI Engineer', 'Hyderabad, Telangana', None)
-        keep, flags = JobFilter(experience=3, keep_unknown=False).matches(silent)
-        self.assertFalse(keep)
-        self.assertEqual(flags, ['experience-unknown'])
+    def test_strict_drops_both_kinds_of_silence(self):
+        for source in ('linkedin', 'naukri'):
+            with self.subTest(source=source):
+                silent = posting(source, 'Google', 'AI Engineer', 'Hyderabad', None)
+                keep, _ = JobFilter(experience=3, keep_unknown=False).matches(silent)
+                self.assertFalse(keep)
+
+    def test_keeping_the_unpublished_spares_the_boards_that_never_say(self):
+        """What `--strict-published` is for: tighten Naukri, keep the other three."""
+        strict = JobFilter(experience=3, keep_unknown=False, keep_unpublished=True)
+
+        keep, flags = strict.matches(posting('linkedin', 'G', 'AI Engineer', 'Pune', None))
+        self.assertTrue(keep, 'LinkedIn never publishes experience; that is not the job hiding')
+        self.assertEqual(flags, ['experience-unpublished'])
+
+        keep, _ = strict.matches(posting('naukri', 'G', 'AI Engineer', 'Pune', None))
+        self.assertFalse(keep, 'Naukri does publish it, and this posting did not')
+
+    def test_the_shortlist_is_unaffected_because_it_states_its_range(self):
+        strict = JobFilter(experience=3, keep_unknown=False, keep_unpublished=True)
+        self.assertEqual(len(kept(strict, shortlist())), len(SHORTLIST))
 
 
 class TitleFilterTest(unittest.TestCase):
@@ -398,27 +421,38 @@ class SearchCommandTest(unittest.TestCase):
         self.assertEqual(set(titles(stored)), set(titles(shortlist())))
         self.assertEqual(len(stored), len(SHORTLIST), 'no posting is stored twice')
 
-    def test_strict_would_drop_a_board_that_states_no_experience(self):
-        board = StubBoard([posting('naukri', 'Google', 'AI Engineer', 'Hyderabad', None)])
+    def run_one(self, source, *extra):
+        """One posting that states no experience, from `source`, through the CLI."""
+        board = StubBoard([posting(source, 'Google', 'AI Engineer', 'Hyderabad', None)], source)
         buffer = io.StringIO()
         with patch.object(Jobs, '_client', return_value=board), redirect_stdout(buffer):
             code = main(
-                [
-                    'search',
-                    'ai',
-                    '-s',
-                    'naukri',
-                    '-l',
-                    'India',
-                    '-e',
-                    '3',
-                    '--strict',
-                    '-o',
-                    self.output,
-                ]
+                ['search', 'ai', '-s', source, '-l', 'India', '-e', '3', *extra, '-o', self.output]
             )
+        return code, buffer.getvalue()
+
+    def test_strict_would_drop_a_board_that_states_no_experience(self):
+        code, output = self.run_one('naukri', '--strict')
         self.assertEqual(code, 1)
-        self.assertIn('nothing matched', buffer.getvalue())
+        self.assertIn('nothing matched', output)
+
+    def test_strict_also_deletes_the_boards_that_never_state_it(self):
+        """The behaviour --strict-published exists to give an alternative to."""
+        code, _ = self.run_one('linkedin', '--strict')
+        self.assertEqual(code, 1)
+
+    def test_strict_published_keeps_the_board_that_never_states_it(self):
+        code, _ = self.run_one('linkedin', '--strict-published')
+        self.assertEqual(code, 0)
+        self.assertEqual(load_jobs(self.output)[0].flags, ['experience-unpublished'])
+
+    def test_strict_published_still_drops_a_board_that_could_have_said(self):
+        code, _ = self.run_one('naukri', '--strict-published')
+        self.assertEqual(code, 1)
+
+    def test_strict_wins_when_both_are_given(self):
+        code, _ = self.run_one('linkedin', '--strict', '--strict-published')
+        self.assertEqual(code, 1)
 
 
 class ApplyCommandTest(unittest.TestCase):
