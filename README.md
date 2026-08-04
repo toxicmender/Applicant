@@ -168,6 +168,15 @@ LinkedIn forms are left open rather than answered with guesses.
 
 ### The CSV
 
+**One job on three boards is one application.** The same posting found on
+LinkedIn, Indeed and Google Jobs is stored three times - each board carries
+different fields, and only some carry a url - but applying collapses them to the
+copy you can actually act on: Easy Apply over a plain url, a url over a Google
+Jobs row that has none. The boards that lost are recorded on the survivor as
+`also-on-indeed` flags, and a later run will not apply again through another
+board. Two postings from the *same* board stay two postings; there its own id is
+the authority.
+
 `applied_jobs.csv` appends across runs and never records the same posting twice. It
 is written UTF-8 with a BOM and a stable column order, so **Google Sheets imports it
 cleanly** via *File > Import > Upload* (currency symbols survive). Columns:

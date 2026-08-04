@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Protocol
 from .boards import Capability
 from .filters import JobFilter
 from .models import Job, JobsError
-from .storage import ApplicationLog, save_jobs
+from .storage import ApplicationLog, fingerprint, save_jobs
 
 if TYPE_CHECKING:
     from .boards.linkedin import LinkedIn
@@ -163,6 +163,7 @@ class Jobs:
                     kept.append(job)
             jobs = kept
 
+        jobs = self._one_per_job(jobs)
         entries: list[tuple[Job, str, str]] = []
         linkedin_targets = []
 
@@ -188,6 +189,60 @@ class Jobs:
             '{} new rows in {} ({} already recorded)'.format(written, log, len(entries) - written)
         )
         return entries
+
+    def _reach(self, job: Job) -> int:
+        """How far this copy of a posting gets you, highest first.
+
+        Easy Apply can be automated; a url can at least be opened; a Google Jobs
+        row has neither and leaves you searching for it again by hand.
+        """
+        if job.source == 'linkedin' and job.url and job.easy_apply is not False:
+            return 2
+        return 1 if job.url else 0
+
+    def _one_per_job(self, jobs: Iterable[Job]) -> list[Job]:
+        """Collapse the same posting from several boards into the usable copy.
+
+        Boards are searched independently, so a job advertised on three of them
+        arrives three times - and applying to each is three approaches to one
+        employer. The copies that lose are recorded on the survivor as
+        `also-on-<board>` flags, so nothing disappears silently.
+
+        Only across boards. Two postings from one board are two postings, however
+        alike they look: there the board's own id is the authority, and second
+        guessing it would throw away a job somebody really did advertise twice.
+        """
+        best: dict[str, Job] = {}
+        ordered: list[Job] = []
+
+        for job in jobs:
+            mark = fingerprint(job.to_dict())
+            rival = best.get(mark or '')
+            if mark is None or rival is None or rival.source == job.source:
+                # nothing to collapse against: not enough to be sure it is the
+                # same job, the first copy of it, or the same board again
+                if mark is not None and rival is None:
+                    best[mark] = job
+                ordered.append(job)
+                continue
+
+            winner, loser = (job, rival) if self._reach(job) > self._reach(rival) else (rival, job)
+            if winner is not rival:
+                ordered[ordered.index(rival)] = winner
+                best[mark] = winner
+            # the loser may itself have outlived an earlier copy, so carry its
+            # record of them across rather than losing it with the object
+            winner.flags = self._merge_flags(winner, loser)
+
+        return ordered
+
+    def _merge_flags(self, winner: Job, loser: Job) -> list[str]:
+        elsewhere = dict.fromkeys(
+            flag for flag in (*winner.flags, *loser.flags) if flag.startswith('also-on-')
+        )
+        elsewhere['also-on-{}'.format(loser.source)] = None
+        own = [flag for flag in winner.flags if not flag.startswith('also-on-')]
+        return [*own, *elsewhere]
 
     def _easy_apply(self, jobs: list[Job]) -> list[tuple[Job, str, str]]:
         client = self.linkedin()

@@ -24,7 +24,7 @@ from applicant.cli import main
 from applicant.filters import JobFilter
 from applicant.models import Job
 from applicant.search import Jobs
-from applicant.storage import load_jobs, save_jobs
+from applicant.storage import ApplicationLog, fingerprint, load_jobs, save_jobs
 
 # The shortlist, written the way a board hands it over: a title, the hiring
 # company, a city with its state, and the experience string in the form each
@@ -393,6 +393,81 @@ class FacadeSearchTest(unittest.TestCase):
         for job in found:
             with self.subTest(job=job.title):
                 self.assertIn('date-unknown', job.flags)
+
+
+class CrossBoardTest(unittest.TestCase):
+    """One job on three boards is one application, not three."""
+
+    def setUp(self):
+        self._dir = TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.log = str(Path(self._dir.name) / 'applied_jobs.csv')
+
+    def everywhere(self):
+        """The Cohere Health posting as each board would hand it over."""
+        return [
+            posting('googlejobs', 'Cohere Health', 'Machine Learning Engineer', 'Hyderabad', None),
+            posting('indeed', 'Cohere Health', 'Machine Learning Engineer', 'Hyderabad, TS', None),
+            posting(
+                'linkedin', 'Cohere Health', 'Machine Learning Engineer', 'Hyderabad, India', None
+            ),
+        ]
+
+    def apply(self, jobs, **kwargs):
+        with redirect_stdout(io.StringIO()):
+            return Jobs().apply(jobs, log=self.log, dry_run=True, **kwargs)
+
+    def test_the_same_job_fingerprints_the_same_from_every_board(self):
+        marks = {fingerprint(job.to_dict()) for job in self.everywhere()}
+        self.assertEqual(len(marks), 1, 'the city, not the whole location string')
+
+    def test_only_one_row_is_written(self):
+        self.apply(self.everywhere())
+        self.assertEqual(len(ApplicationLog(self.log).rows()), 1)
+
+    def test_the_copy_you_can_act_on_is_the_one_kept(self):
+        """Google Jobs gives no url at all, so its copy is the one to lose."""
+        row = self.apply(self.everywhere())
+        self.assertEqual(len(row), 1)
+        self.assertEqual(row[0][0].source, 'linkedin')
+        self.assertTrue(row[0][0].url)
+
+    def test_the_boards_that_lost_are_named_rather_than_forgotten(self):
+        job, _, _ = self.apply(self.everywhere())[0]
+        self.assertEqual(sorted(job.flags), ['also-on-googlejobs', 'also-on-indeed'])
+
+    def test_a_later_run_does_not_apply_again_through_another_board(self):
+        google, indeed, linked = self.everywhere()
+        self.apply([linked])
+        self.apply([google, indeed])
+        self.assertEqual(len(ApplicationLog(self.log).rows()), 1)
+
+    def test_two_postings_from_one_board_are_two_postings(self):
+        """However alike they look, the board's own id is the authority."""
+        first = posting('naukri', 'Acme', 'AI Engineer', 'Pune', '2-4 Yrs')
+        second = posting('naukri', 'Acme', 'AI Engineer', 'Pune', '2-4 Yrs')
+        second.id = 'naukri-a-different-listing'
+
+        self.apply([first, second])
+        self.assertEqual(len(ApplicationLog(self.log).rows()), 2)
+
+    def test_different_jobs_at_one_company_are_left_alone(self):
+        self.apply(
+            [
+                posting('naukri', 'Mastercard', 'AI Engineer', 'Pune', '1-5 Yrs'),
+                posting('naukri', 'Mastercard', 'Data Scientist I', 'Pune', '1-5 Yrs'),
+            ]
+        )
+        self.assertEqual(len(ApplicationLog(self.log).rows()), 2)
+
+    def test_a_posting_with_no_company_is_never_guessed_at(self):
+        anonymous = [
+            Job(source='indeed', id='a', title='AI Engineer', location='Pune'),
+            Job(source='linkedin', id='b', title='AI Engineer', location='Pune'),
+        ]
+        self.assertIsNone(fingerprint(anonymous[0].to_dict()))
+        self.apply(anonymous)
+        self.assertEqual(len(ApplicationLog(self.log).rows()), 2)
 
 
 class SearchCommandTest(unittest.TestCase):
