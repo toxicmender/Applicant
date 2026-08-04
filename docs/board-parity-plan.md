@@ -10,8 +10,8 @@ they will filter for us, and — more awkwardly — in what they will *tell* us.
 `JobFilter` is written as if they were uniform, and the gap between those two
 facts is where results are lost.
 
-**Status: phases 0-3 implemented, with four changes made while building them.
-Phases 4-6 are not built.**
+**Status: all six phases implemented, with seven changes made while building
+them.**
 
 | Change | Why |
 |---|---|
@@ -19,11 +19,19 @@ Phases 4-6 are not built.**
 | `-unstated` stayed `-unknown`; only `-unpublished` is new | renaming the existing flags would break the vocabulary the README documents and every `applied_jobs.csv` already written, for no new information |
 | `matches()` reads `publishes` off `job.source` rather than taking it as an argument | the posting knows which board produced it, so `apply` attributes silence correctly against a stored file with no plumbing at all |
 | Location matching became whole-word | a test caught the plain substring test putting "India" inside "Indianapolis, Indiana". Titles are unaffected and still match substrings |
+| Cross-board dedupe fires only across *different* boards | the first version collapsed two ids on one board, and the storage tests caught it. There the board's own id is the authority, and overruling it discards a job somebody really did advertise twice |
+| §3.5's paging re-reads instead of resuming | there is no offset to resume from — LinkedIn and Indeed page from the top, Naukri counts pages, and Google Jobs is a scrolling list. So `--want` doubles the pull and re-reads, which is why rounds are capped and one round is still the default |
+| §3.7 enriches experience only, not salary | `parse_salary` over free prose would read a relocation allowance or a bonus cap as a wage. Nothing in this project guesses, so `--min-salary` keeps saying honestly that it could not check |
 
 One thing §3.3 got wrong: the outbound country cannot be appended to the shared
 location string in `Jobs.search`, because Naukri slugs that string into its url
 and `/ai-jobs-in-bengaluru-india` is not a page. It is done inside Indeed's
 `host_for` instead, where the need actually is.
+
+§3.7 also assumed enrichment would work board by board. Only LinkedIn has a
+posting page reachable without a browser — Indeed's and Naukri's are behind the
+same bot checks their searches are, and Google Jobs has no url at all — so
+`describe()` exists there and boards without one are simply not read.
 
 ---
 
@@ -259,9 +267,9 @@ test throughout: it should take fewer runs and fewer surprises at each phase.
 | 1 | `-unpublished` flags; `--strict-published` | a LinkedIn posting survives `--strict-published -e 3`; a Naukri one that states nothing does not | **yes** |
 | 2 | Location containment, `location-unverified`, country resolved outbound | `apply -l India` keeps the eight; `host_for('Bengaluru')` reaches `in.indeed.com` | **yes** |
 | 3 | Repeatable `-t` / `-c` | one invocation returns all eight and none of the decoys | **yes** |
-| 4 | Cross-board fingerprint at apply time | the same job from three boards writes one worklist row, the actionable one | no |
-| 5 | `--want` / `--max-pages` | a stub board paged until N survivors, and stopping at the cap | no |
-| 6 | `--enrich` | fixture detail pages; a fetch failure leaves the flag, not a drop | no |
+| 4 | Cross-board fingerprint at apply time | the same job from three boards writes one worklist row, the actionable one | **yes** |
+| 5 | `--want` / `--max-rounds` | a stub board re-read until N survivors, and stopping at the cap | **yes** |
+| 6 | `--enrich` | a stub posting page; a refusal leaves the flag, not a drop | **yes** |
 
 **If only two land, make them 2 and 3.** They are what this shortlist needs, they
 are small, and neither depends on the refactor. Phase 0 and 1 are what make the
