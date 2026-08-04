@@ -13,11 +13,13 @@ from typing import ClassVar
 
 import httpx
 
+from applicant.boards import CAPABILITIES, capability
 from applicant.boards.googlejobs import GoogleJobs
 from applicant.boards.indeed import Indeed, host_for
 from applicant.boards.linkedin import LinkedIn
 from applicant.boards.naukri import Naukri, search_url
 from applicant.models import BlockedError, Job
+from applicant.search import SOURCES
 
 
 def mosaic_html(results: list[dict]) -> str:
@@ -421,6 +423,52 @@ class JobValidationTest(unittest.TestCase):
     def test_from_dict_ignores_fields_we_no_longer_know(self):
         job = Job.from_dict({'source': 'indeed', 'title': 'Dev', 'retired_field': 'x'})
         self.assertEqual(job.title, 'Dev')
+
+
+class CapabilityTest(unittest.TestCase):
+    """What each board declares it does, and what the declaration is used for."""
+
+    def test_every_source_declares_one(self):
+        self.assertEqual(set(CAPABILITIES), set(SOURCES))
+
+    def test_each_client_carries_its_own(self):
+        for client, name in (
+            (LinkedIn(), 'linkedin'),
+            (Indeed(), 'indeed'),
+            (Naukri(), 'naukri'),
+            (GoogleJobs(), 'googlejobs'),
+        ):
+            with self.subTest(board=name):
+                self.assertIs(client.capability, CAPABILITIES[name])
+
+    def test_every_board_filters_location_itself(self):
+        """Which is why `Jobs.search` never re-checks it locally."""
+        for name, declared in CAPABILITIES.items():
+            with self.subTest(board=name):
+                self.assertIn('location', declared.filters)
+
+    def test_only_linkedin_and_indeed_filter_by_date(self):
+        native = {name for name, cap in CAPABILITIES.items() if 'posted' in cap.filters}
+        self.assertEqual(native, {'linkedin', 'indeed'})
+
+    def test_naukri_is_the_only_board_publishing_experience(self):
+        publishes = {name for name, cap in CAPABILITIES.items() if 'experience' in cap.publishes}
+        self.assertEqual(publishes, {'naukri'})
+
+    def test_linkedin_guest_cards_publish_no_pay(self):
+        self.assertNotIn('salary', CAPABILITIES['linkedin'].publishes)
+
+    def test_google_jobs_publishes_no_url(self):
+        """Its applications route back to the originating board, reported as `via`."""
+        self.assertNotIn('url', CAPABILITIES['googlejobs'].publishes)
+        self.assertIn('via', CAPABILITIES['googlejobs'].publishes)
+
+    def test_an_unknown_source_is_assumed_to_publish_everything(self):
+        """So a board we have no entry for behaves as everything did before."""
+        assumed = capability('a-board-we-do-not-have')
+        self.assertEqual(assumed.filters, frozenset())
+        for wanted in ('experience', 'salary', 'posted'):
+            self.assertIn(wanted, assumed.publishes)
 
 
 if __name__ == '__main__':

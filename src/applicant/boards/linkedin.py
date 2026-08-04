@@ -26,6 +26,7 @@ import httpx
 
 from ..browser import BROWSER_ARGS, USER_AGENT
 from ..models import BlockedError, Job, JobsError
+from . import CAPABILITIES
 
 if TYPE_CHECKING:
     from playwright.sync_api import Browser as PlaywrightBrowser
@@ -55,6 +56,8 @@ def _clean(value):
 
 
 class LinkedIn:
+    capability = CAPABILITIES['linkedin']
+
     def __init__(
         self,
         path=None,

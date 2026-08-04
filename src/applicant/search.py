@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Protocol
 
+from .boards import Capability
 from .filters import JobFilter
 from .models import Job, JobsError
 from .storage import ApplicationLog, save_jobs
@@ -27,6 +28,8 @@ if TYPE_CHECKING:
 
 class Board(Protocol):
     """What every board module offers, and all this facade needs of one."""
+
+    capability: Capability
 
     def search(
         self,
@@ -40,9 +43,6 @@ class Board(Protocol):
 
 
 SOURCES = ('linkedin', 'indeed', 'naukri', 'googlejobs')
-
-# boards that can filter by age server side; the rest are filtered locally
-NATIVE_DATE = ('linkedin', 'indeed')
 
 # where jobs handed to _easy_apply are staged for the LinkedIn client to read back
 EASY_APPLY_LISTING = 'applied_via_jobs_interface.json'
@@ -103,14 +103,13 @@ class Jobs:
 
         for name in self.sources:
             client = self._client(name)
+            native = client.capability.filters
             try:
                 jobs = client.search(
                     keywords,
                     filters.location or '',
                     limit=limit,
-                    posted_within_days=(
-                        filters.posted_within_days if name in NATIVE_DATE else None
-                    ),
+                    posted_within_days=(filters.posted_within_days if 'posted' in native else None),
                 )
             except JobsError as error:
                 (on_error or self._report)(name, error)
@@ -120,8 +119,9 @@ class Jobs:
                 if name != 'linkedin':
                     client.close()
 
-            # location always went to the board itself; the date did too on some
-            skip = ['location'] + (['posted'] if name in NATIVE_DATE else [])
+            # whatever the board filtered for us, we must not filter again -
+            # see Capability.filters for why a second pass would be wrong
+            skip = sorted(native)
 
             kept = []
             for job in jobs:

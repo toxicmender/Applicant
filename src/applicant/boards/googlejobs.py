@@ -18,6 +18,7 @@ from urllib.parse import urlencode
 from ..browser import browser, looks_blocked
 from ..dates import relative_to_iso
 from ..models import BlockedError, Job
+from . import CAPABILITIES
 
 BASE = 'https://www.google.com/search'
 CARD = 'div[jsname="y1Aese"][role="button"]'
@@ -35,6 +36,8 @@ SALARY = re.compile(
 
 
 class GoogleJobs:
+    capability = CAPABILITIES['googlejobs']
+
     def __init__(self, headless=True, timeout=45000, hl='en'):
         self.headless = headless
         self.timeout = timeout

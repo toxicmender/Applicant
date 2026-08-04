@@ -19,6 +19,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from applicant.boards import capability
 from applicant.cli import main
 from applicant.filters import JobFilter
 from applicant.models import Job
@@ -88,13 +89,15 @@ def kept(filters: JobFilter, jobs, **kwargs) -> list[Job]:
 class StubBoard:
     """A board that answers with fixed postings, so no scrape and no network.
 
-    It honours the one thing the facade delegates - location - the way the real
-    boards do: a country search comes back as bare city names.
+    It carries the real board's capability declaration and honours it: the one
+    thing it filters is location, the way the real boards do, and a country
+    search comes back as bare city names.
     """
 
     def __init__(self, jobs, name='naukri'):
         self.jobs = jobs
         self.name = name
+        self.capability = capability(name)
         self.calls: list[tuple] = []
         self.closed = False
 

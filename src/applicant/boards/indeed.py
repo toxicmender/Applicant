@@ -18,6 +18,7 @@ import httpx
 from ..browser import USER_AGENT, browser, looks_blocked
 from ..dates import epoch_to_iso
 from ..models import BlockedError, Job
+from . import CAPABILITIES
 
 BASE = 'https://www.indeed.com'
 PAGE_SIZE = 10  # what Indeed advances `start` by, even though a page holds more
@@ -73,6 +74,8 @@ MOSAIC = re.compile(
 
 
 class Indeed:
+    capability = CAPABILITIES['indeed']
+
     def __init__(self, domain=None, delay=1.0, timeout=30.0, headless=True, client=None):
         # None means "work it out from the search location"
         self.domain = domain.rstrip('/') if domain else None
