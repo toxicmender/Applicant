@@ -10,7 +10,20 @@ they will filter for us, and — more awkwardly — in what they will *tell* us.
 `JobFilter` is written as if they were uniform, and the gap between those two
 facts is where results are lost.
 
-**Status: proposed. Nothing here is built.**
+**Status: phases 0-3 implemented, with four changes made while building them.
+Phases 4-6 are not built.**
+
+| Change | Why |
+|---|---|
+| `--strict published` became a separate `--strict-published` flag | an optional argument to `--strict` is ambiguous against the `search` keywords positional: `search --strict "python developer"` would consume the keywords as the flag's value |
+| `-unstated` stayed `-unknown`; only `-unpublished` is new | renaming the existing flags would break the vocabulary the README documents and every `applied_jobs.csv` already written, for no new information |
+| `matches()` reads `publishes` off `job.source` rather than taking it as an argument | the posting knows which board produced it, so `apply` attributes silence correctly against a stored file with no plumbing at all |
+| Location matching became whole-word | a test caught the plain substring test putting "India" inside "Indianapolis, Indiana". Titles are unaffected and still match substrings |
+
+One thing §3.3 got wrong: the outbound country cannot be appended to the shared
+location string in `Jobs.search`, because Naukri slugs that string into its url
+and `/ai-jobs-in-bengaluru-india` is not a page. It is done inside Indeed's
+`host_for` instead, where the need actually is.
 
 ---
 
@@ -240,15 +253,15 @@ Six phases, each independently shippable, each with tests that do not touch the
 network. The shortlist in `tests/test_target_job_filters.py` is the acceptance
 test throughout: it should take fewer runs and fewer surprises at each phase.
 
-| Phase | Change | Test |
-|---|---|---|
-| 0 | `Capability` per board; `search.py` derives `skip`; `NATIVE_DATE` removed | existing suite stays green unchanged — that is the point |
-| 1 | `-unstated` / `-unpublished` flags; `--strict published` | a LinkedIn posting survives `--strict published -e 3`; a Naukri one that states nothing does not |
-| 2 | Location containment, `location-unverified`, country appended outbound | `apply -l India` keeps the eight; `host_for('Bengaluru')` reaches `in.indeed.com` |
-| 3 | Repeatable `-t` / `-c` | one invocation returns all eight and none of the decoys |
-| 4 | Cross-board fingerprint at apply time | the same job from three boards writes one worklist row, the actionable one |
-| 5 | `--want` / `--max-pages` | a stub board paged until N survivors, and stopping at the cap |
-| 6 | `--enrich` | fixture detail pages; a fetch failure leaves the flag, not a drop |
+| Phase | Change | Test | Built |
+|---|---|---|---|
+| 0 | `Capability` per board; `search.py` derives `skip`; `NATIVE_DATE` removed | existing suite stays green unchanged — that is the point | **yes** |
+| 1 | `-unpublished` flags; `--strict-published` | a LinkedIn posting survives `--strict-published -e 3`; a Naukri one that states nothing does not | **yes** |
+| 2 | Location containment, `location-unverified`, country resolved outbound | `apply -l India` keeps the eight; `host_for('Bengaluru')` reaches `in.indeed.com` | **yes** |
+| 3 | Repeatable `-t` / `-c` | one invocation returns all eight and none of the decoys | **yes** |
+| 4 | Cross-board fingerprint at apply time | the same job from three boards writes one worklist row, the actionable one | no |
+| 5 | `--want` / `--max-pages` | a stub board paged until N survivors, and stopping at the cap | no |
+| 6 | `--enrich` | fixture detail pages; a fetch failure leaves the flag, not a drop | no |
 
 **If only two land, make them 2 and 3.** They are what this shortlist needs, they
 are small, and neither depends on the refactor. Phase 0 and 1 are what make the
