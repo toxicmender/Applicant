@@ -4,8 +4,11 @@ import json
 import re
 from contextlib import suppress
 
+from ..log import get
 from .errors import ChallengeError, ParseError, ReviewsError
 from .models import CompanyRating, Review
+
+logger = get(__name__)
 
 BASE = 'https://www.glassdoor.com'
 PAGE_SIZE = 10
@@ -155,7 +158,7 @@ class GlassdoorClient:
         try:
             context.storage_state(path='storage_state.json')
         except Exception as error:  # noqa: BLE001 - reported, never fatal to the scrape
-            print('could not write storage_state.json: {}'.format(error))
+            logger.warning('could not write storage_state.json: {}'.format(error))
 
     # -- parsing ----------------------------------------------------------
 

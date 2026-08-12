@@ -18,6 +18,7 @@ import json
 import re
 import time
 from contextlib import suppress
+from html import unescape
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlencode
@@ -25,16 +26,21 @@ from urllib.parse import urlencode
 import httpx
 
 from ..browser import BROWSER_ARGS, USER_AGENT
+from ..log import get
 from ..models import BlockedError, Job, JobsError
+from . import CAPABILITIES
 
 if TYPE_CHECKING:
     from playwright.sync_api import Browser as PlaywrightBrowser
     from playwright.sync_api import BrowserContext, Page, Playwright
 
 GUEST_SEARCH = 'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search'
+GUEST_POSTING = 'https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{}'
 GUEST_PAGE_SIZE = 10
 
 HEADERS = {'User-Agent': USER_AGENT, 'Accept-Language': 'en-US,en;q=0.9'}
+
+logger = get(__name__)
 
 CARD = re.compile(r'<li>(.*?)</li>', re.DOTALL)
 FIELDS = {
@@ -55,6 +61,8 @@ def _clean(value):
 
 
 class LinkedIn:
+    capability = CAPABILITIES['linkedin']
+
     def __init__(
         self,
         path=None,
@@ -142,6 +150,26 @@ class LinkedIn:
             easy_apply=None,  # the guest card does not say
         )
 
+    def describe(self, job: Job) -> str | None:
+        """The posting's own text, for what its search card never said.
+
+        The same guest surface `search` uses, so this needs no account and no
+        browser. Returns None when there is nothing to read - no id, or a page
+        that is not there - and raises on a rate limit, because carrying on
+        through one is how a working scrape becomes a blocked one.
+        """
+        if not job.id:
+            return None
+
+        response = self.client.get(GUEST_POSTING.format(job.id))
+        if response.status_code == 429:
+            raise BlockedError('LinkedIn rate limited the guest posting reads; slow down or retry')
+        if response.status_code != 200:
+            return None
+
+        text = unescape(TAGS.sub(' ', response.text))
+        return re.sub(r'\s+', ' ', text).strip() or None
+
     # -- browser session --------------------------------------------------
 
     def _start(self, storage_state=None) -> Page:
@@ -186,7 +214,7 @@ class LinkedIn:
     ):
         target = Path(filepath)
         if target.exists() and not overwrite:
-            print(
+            logger.warning(
                 '{} already exists. Pass overwrite to log in again, or use '
                 'restore_session() to reuse it.'.format(filepath)
             )
@@ -213,20 +241,20 @@ class LinkedIn:
             )
 
         context.storage_state(path=str(target))
-        print('session saved to {}'.format(target))
+        logger.info('session saved to {}'.format(target))
 
     def restore_session(self, filepath: str | Path = 'cookies.json'):
         state = self._load_state(filepath)
         if state is None:
-            print('no usable session in {}; call login() first'.format(filepath))
+            logger.warning('no usable session in {}; call login() first'.format(filepath))
             return False
 
         page = self._start(storage_state=state)
         page.goto('https://www.linkedin.com/feed/', wait_until='domcontentloaded')
         if '/login' in page.url or '/authwall' in page.url:
-            print('saved session is no longer valid; call login() again')
+            logger.warning('saved session is no longer valid; call login() again')
             return False
-        print('session restored from {}'.format(filepath))
+        logger.info('session restored from {}'.format(filepath))
         return True
 
     def _load_state(self, filepath: str | Path):
@@ -260,7 +288,7 @@ class LinkedIn:
                     'sameSite': 'Lax',
                 }
             )
-        print('converted {} Selenium cookies to a Playwright session'.format(len(converted)))
+        logger.info('converted {} Selenium cookies to a Playwright session'.format(len(converted)))
         return {'cookies': converted, 'origins': []}
 
     # -- logged in flows --------------------------------------------------
@@ -316,7 +344,7 @@ class LinkedIn:
             )
 
         total = save_jobs(jobs, filepath)
-        print('scraped {} recommended jobs ({} in {})'.format(len(jobs), total, filepath))
+        logger.info('scraped {} recommended jobs ({} in {})'.format(len(jobs), total, filepath))
         return jobs
 
     def easy_apply(self, filepath='job_listing.json'):
@@ -330,7 +358,7 @@ class LinkedIn:
             with open(filepath, encoding='utf-8') as file:
                 stored = json.load(file).get('list', [])
         except (FileNotFoundError, ValueError) as error:
-            print('could not read {}: {}'.format(filepath, error))
+            logger.warning('could not read {}: {}'.format(filepath, error))
             return []
 
         applied = []
@@ -356,11 +384,11 @@ class LinkedIn:
                 submit.click()
                 page.wait_for_timeout(1500)
                 applied.append(item['url'])
-                print('applied: {}'.format(item.get('title') or item['url']))
+                logger.info('applied: {}'.format(item.get('title') or item['url']))
             else:
                 # multi step form - close it and leave this one alone
                 page.keyboard.press('Escape')
-                print('skipped (multi step): {}'.format(item.get('title') or item['url']))
+                logger.info('skipped (multi step): {}'.format(item.get('title') or item['url']))
 
         return applied
 

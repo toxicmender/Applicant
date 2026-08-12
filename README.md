@@ -60,25 +60,81 @@ uv run applicant search "developer" -l India --title "senior python" \
     --company infosys --min-salary 1200000 --currency INR --posted-within 7
 ```
 
+**`--title` and `--company` may be repeated**, and a job needs to match only one
+of them. A search worth running usually spans more than one way of naming the
+same role:
+
+```
+uv run applicant search "AI ML engineer" -l India -e 3 \
+    -t ai -t ml -t "machine learning" -t "data scientist"
+```
+
+Each value keeps its own rule - every word of it must appear, in any order - so
+`-t "machine learning"` still means both words.
+
 | Flag | Filters on |
 |---|---|
 | `-l/--location` | where the job is |
-| `-t/--title` | words in the job title, any order |
-| `-c/--company` | the hiring company |
+| `-t/--title` | words in the job title, any order; repeat for any-of |
+| `-c/--company` | the hiring company; repeatable too |
 | `--min-salary` + `--currency` | annual pay floor |
 | `--salary-basis` | how to compare other currencies: `ppp`, `market` or `strict` |
 | `-e/--experience YEARS` | years you have; keeps jobs asking for that much |
 | `--posted-within DAYS` | how recently it was posted |
+| `--strict` / `--strict-published` | what to do with what could not be checked |
 
 Location and date are handed to the boards themselves where they support it
 (LinkedIn and Indeed both filter by date server side), and applied locally otherwise.
+
+**A country filter understands its cities.** Boards answer `-l India` with bare
+city names, so `apply -l India` over a stored file checks "India" against
+"Bengaluru, Karnataka" itself and keeps it. A posting somewhere we can name is
+dropped; one we cannot place at all - "Remote", a town in no table - is kept and
+flagged `location-unverified`. The same table means `-l Bengaluru` reaches
+Indeed's Indian site rather than its US one.
 `-n/--limit` is how many to pull from each board *before* filtering, so a tight
 filter returns fewer than you asked for - raise it if you want more survivors.
 
-**Unverifiable jobs are kept and flagged, not dropped.** Most postings state no
-salary, and only Naukri publishes required experience, so those come back marked
-`salary-unknown` / `experience-unknown` in the `flags` field. Pass `--strict` to drop
-anything that could not actually be checked.
+`--want N` asks for the number you actually have in mind: each board is re-read
+with a doubled pull until N jobs survive the filter, it runs out, or
+`--max-rounds` (default 4) is reached. It costs requests - the boards page from
+the top and Google Jobs is a scrolling list, so a second round re-reads what the
+first one saw - which is why it is off unless asked for.
+
+**The boards differ in what they will tell you**, which decides what `-e` and
+`--min-salary` can actually do:
+
+| | LinkedIn | Indeed | Naukri | Google Jobs |
+|---|---|---|---|---|
+| states required experience | no | no | **yes** | no |
+| states pay | no | yes | yes | sometimes |
+| filters by date itself | yes | yes | no | no |
+
+So `-e 5` is a real filter on Naukri and, on the other three, a request nobody
+answered.
+
+**`--enrich` reads the postings themselves** when a search card cannot answer an
+`-e` filter. It fetches at most `--enrich-limit` postings (default 25), only ones
+that survived every other filter, and only from a board with a readable posting
+page - today that is LinkedIn, whose guest pages need no account and no browser.
+What it finds is recorded as `experience-enriched` with the phrase the posting
+used, so a number in the CSV can always be traced back. Experience only: a salary
+read out of free prose is as likely to be a relocation allowance as a wage.
+
+**Unverifiable jobs are kept and flagged, not dropped.** A flag ending `-unknown`
+means the posting did not say; one ending `-unpublished` means its board never
+says. So a LinkedIn result comes back `experience-unpublished` and a Naukri one
+that hid its range comes back `experience-unknown`.
+
+| | keeps | drops |
+|---|---|---|
+| *(default)* | everything, flagged | nothing |
+| `--strict-published` | boards that never publish the field | postings that could have said and did not |
+| `--strict` | only what was fully checked | both kinds of silence |
+
+`--strict` with `-e` therefore discards every LinkedIn, Indeed and Google Jobs
+result, since none of them publishes experience at all. `--strict-published` is
+usually the one you want: it tightens Naukri without deleting the other three.
 
 `--experience 5` keeps jobs whose stated range contains 5 years, so it excludes
 roles wanting 0-2 years as well as ones wanting 8+. `5+ years` is treated as having
@@ -125,6 +181,15 @@ as `needs_manual_apply` with their url - the CSV doubles as your worklist. Multi
 LinkedIn forms are left open rather than answered with guesses.
 
 ### The CSV
+
+**One job on three boards is one application.** The same posting found on
+LinkedIn, Indeed and Google Jobs is stored three times - each board carries
+different fields, and only some carry a url - but applying collapses them to the
+copy you can actually act on: Easy Apply over a plain url, a url over a Google
+Jobs row that has none. The boards that lost are recorded on the survivor as
+`also-on-indeed` flags, and a later run will not apply again through another
+board. Two postings from the *same* board stay two postings; there its own id is
+the authority.
 
 `applied_jobs.csv` appends across runs and never records the same posting twice. It
 is written UTF-8 with a BOM and a stable column order, so **Google Sheets imports it
@@ -195,6 +260,42 @@ Google Jobs is the most fragile of the four: it is Google Search, its CSS classe
 obfuscated and rotate, and it gives no posting URL - applications route back to the
 originating board, which is reported as `via`.
 
+## How much it says
+
+Every subcommand takes `-v`, `-q`, `--log-file` and `--no-log-file`:
+
+```
+uv run applicant search "python developer" -l India -q
+uv run applicant search "python developer" -l India -v
+uv run applicant search "python developer" -l India --log-file today.log
+uv run applicant search "python developer" -l India --no-log-file
+```
+
+A normal run reads exactly as it always did. `-q` keeps warnings and failures and
+drops the progress; `-v` adds timestamps and says which module spoke.
+
+**Every run records itself.** Unless you pass `--no-log-file`, it writes
+`logs/run_20260812-143502.log` - named for when the run started, so they sort
+chronologically and two never collide. The directory is created on the way, and
+is gitignored. The file gets everything down to debug in full detail whatever
+the terminal is showing, which is the point: a scrape you left running is
+exactly the one whose output you no longer have.
+
+They accumulate, one per run, which is why they are not loose in the working
+directory next to `job_listing.json`. Nothing prunes them - `rm -rf logs/` when
+you have had enough. `--log-file` puts one somewhere else, creating whatever
+directory you name.
+
+**The library logs, the commands print.** A message about work in progress -
+which board answered, how many survived, which one refused - goes through
+`applicant.log`, so `-q` silences it. The answer a subcommand was asked for -
+`status`' tally, `rates`' table, where a file was written - is printed, because
+silencing the answer is not what asking for quiet means.
+
+Importing `applicant` configures no logging at all, so embedding it in another
+program is silent until that program calls `applicant.log.configure()` or handles
+the `applicant` logger itself.
+
 ## Usage
 `uv run applicant -h` lists everything. `python -m applicant` works identically, and is
 what to use without `uv`.
@@ -218,6 +319,8 @@ src/applicant/
   salary.py      reading pay off a posting, normalised to an annual figure
   browser.py     launching Playwright in a way the boards accept
   filters.py     JobFilter, and the flags saying what could not be checked
+  places.py      whether a posting's location is inside the one you asked for
+  log.py         where the running commentary goes, and how much of it
   storage.py     job_listing.json and applied_jobs.csv
   search.py      the facade over boards, filters and storage
   boards/        one module per job board, all returning Job

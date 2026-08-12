@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+import re
 from collections.abc import Iterable
 from datetime import datetime, timezone
 
@@ -53,6 +54,33 @@ def _key(item: dict) -> tuple:
     return item.get('source'), item.get('title'), item.get('company'), item.get('location')
 
 
+_PUNCTUATION = re.compile(r'[^a-z0-9]+')
+
+
+def _flatten(value: str | None) -> str:
+    return _PUNCTUATION.sub(' ', (value or '').lower()).strip()
+
+
+def fingerprint(item: dict) -> str | None:
+    """Identity *across* boards: one job, however many boards carried it.
+
+    `_key` is per source by design - each board's copy of a posting is worth
+    storing, since they carry different fields and only some carry a url. But
+    they are still one job, and applying to it three times is three emails to
+    the same employer.
+
+    The city alone, not the whole location string: boards write "Bengaluru",
+    "Bengaluru, Karnataka" and "Bengaluru, India" for the same office. Returns
+    None when company or title is missing, because a fingerprint that is not
+    sure is worse than none.
+    """
+    company, title = _flatten(item.get('company')), _flatten(item.get('title'))
+    if not company or not title:
+        return None
+    city = _flatten((item.get('location') or '').split(',')[0])
+    return '|'.join((company, title, city))
+
+
 def load_jobs(filepath: str) -> list[Job]:
     """Read a job listing file. Missing or malformed reads as empty."""
     try:
@@ -93,23 +121,36 @@ class ApplicationLog:
         self.path = path
 
     def existing_keys(self) -> set[tuple[str | None, str | None]]:
-        keys = set()
-        if not os.path.exists(self.path):
-            return keys
-        with open(self.path, encoding='utf-8-sig', newline='') as handle:
-            for row in csv.DictReader(handle):
-                keys.add((row.get('source'), row.get('id')))
-        return keys
+        return {(row.get('source'), row.get('id')) for row in self.rows()}
+
+    def existing_fingerprints(self) -> set[str]:
+        """What has been applied to already, whichever board it came from."""
+        found = (fingerprint(row) for row in self.rows())
+        return {value for value in found if value}
 
     def record(self, entries: Iterable[tuple[Job, str, str]]) -> int:
         """entries: iterable of (job, status, note). Returns rows written."""
-        seen = self.existing_keys()
+        rows = self.rows()
+        seen = {(row.get('source'), row.get('id')) for row in rows}
+        boards_of: dict[str, set[str | None]] = {}
+        for row in rows:
+            mark = fingerprint(row)
+            if mark:
+                boards_of.setdefault(mark, set()).add(row.get('source'))
         fresh = []
 
         for job, status, note in entries:
             if (job.source, job.id) in seen:
                 continue
+            # The same posting under another board's id is still one job. Two ids
+            # on the *same* board are not: there the id is authoritative, and
+            # collapsing them would throw away a posting the board thinks is real.
+            mark = fingerprint(job.to_dict())
+            if mark and boards_of.get(mark, set()) - {job.source}:
+                continue
             seen.add((job.source, job.id))
+            if mark:
+                boards_of.setdefault(mark, set()).add(job.source)
             salary = parse_salary(job.salary)
             fresh.append(
                 {

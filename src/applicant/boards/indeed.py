@@ -18,6 +18,8 @@ import httpx
 from ..browser import USER_AGENT, browser, looks_blocked
 from ..dates import epoch_to_iso
 from ..models import BlockedError, Job
+from ..places import country_for
+from . import CAPABILITIES
 
 BASE = 'https://www.indeed.com'
 PAGE_SIZE = 10  # what Indeed advances `start` by, even though a page holds more
@@ -52,12 +54,20 @@ COUNTRY_HOSTS = {
 
 
 def host_for(location):
-    """'Bengaluru, India' -> 'https://in.indeed.com'. Defaults to the US site."""
+    """'Bengaluru, India' -> 'https://in.indeed.com'. Defaults to the US site.
+
+    A bare city name is resolved through `applicant.places` rather than falling
+    through to the US site: '-l Bengaluru' is the spelling that satisfies every
+    other board, and answering it with American jobs is the worst of the
+    possible outcomes.
+    """
     text = (location or '').strip().lower()
     for country, code in COUNTRY_HOSTS.items():
         if re.search(r'\b{}\b'.format(re.escape(country)), text):
             return 'https://{}.indeed.com'.format(code)
-    return BASE
+
+    code = COUNTRY_HOSTS.get(country_for(text) or '')
+    return 'https://{}.indeed.com'.format(code) if code else BASE
 
 
 HEADERS = {
@@ -73,6 +83,8 @@ MOSAIC = re.compile(
 
 
 class Indeed:
+    capability = CAPABILITIES['indeed']
+
     def __init__(self, domain=None, delay=1.0, timeout=30.0, headless=True, client=None):
         # None means "work it out from the search location"
         self.domain = domain.rstrip('/') if domain else None

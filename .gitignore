@@ -6,6 +6,7 @@
 **/.money_cache.json
 **/storage_state.json
 .gd_profile/
+logs/
 
 # gitignore template for Jupyter Notebooks
 # website: http://jupyter.org/

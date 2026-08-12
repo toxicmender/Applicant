@@ -16,6 +16,7 @@ import re
 from ..browser import browser, looks_blocked
 from ..dates import relative_to_iso
 from ..models import BlockedError, Job
+from . import CAPABILITIES
 
 BASE = 'https://www.naukri.com'
 API = re.compile(r'/jobapi/v\d+/search')
@@ -35,6 +36,8 @@ def search_url(keywords, location='', page=1):
 
 
 class Naukri:
+    capability = CAPABILITIES['naukri']
+
     def __init__(self, headless=True, timeout=45000, delay=1.5):
         self.headless = headless
         self.timeout = timeout

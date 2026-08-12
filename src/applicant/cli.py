@@ -12,7 +12,10 @@ import json
 import sys
 from pathlib import Path
 
+from .log import QUIET, configure, default_file, get
 from .search import SOURCES
+
+logger = get(__name__)
 
 REVIEW_SOURCES = ('ambitionbox', 'glassdoor')
 
@@ -21,7 +24,7 @@ def run_jobs(args) -> int:
     from .boards.linkedin import LinkedIn
 
     if args.driver != 'chromedriver':
-        print(
+        logger.warning(
             'note: --driver is ignored now that LinkedIn runs on Playwright, '
             'which manages its own browser'
         )
@@ -64,7 +67,7 @@ def run_reviews(args) -> int:
             rating = client.fetch(args.company, max_reviews=args.max_reviews)
         except ReviewsError as error:
             # one blocked source should not throw away the other one's results
-            print('{}: {}'.format(source, error))
+            logger.warning('{}: {}'.format(source, error))
             continue
 
         print(
@@ -99,7 +102,9 @@ def _filters(args):
         salary_basis=args.salary_basis,
         experience=args.experience,
         posted_within_days=args.posted_within,
-        keep_unknown=not args.strict,
+        keep_unknown=not (args.strict or args.strict_published),
+        # --strict is the stricter of the two, so it wins when both are given
+        keep_unpublished=args.strict_published and not args.strict,
     )
 
 
@@ -110,7 +115,15 @@ def run_search(args) -> int:
 
     wanted = ALL if 'all' in args.source else args.source
     board = Jobs(sources=wanted, headless=not args.show)
-    found = board.search(args.keywords, _filters(args), limit=args.limit)
+    found = board.search(
+        args.keywords,
+        _filters(args),
+        limit=args.limit,
+        want=args.want,
+        max_rounds=args.max_rounds,
+        enrich=args.enrich,
+        enrich_limit=args.enrich_limit,
+    )
 
     if not found:
         print('nothing matched')
@@ -236,9 +249,48 @@ def run_rates(args) -> int:
     return 0
 
 
+def _add_logging(command) -> None:
+    """On every subcommand rather than before them.
+
+    A global flag would have to come first - `applicant -v search ...` - and
+    `normalise` reads a leading flag as the old bare-flag invocation of `jobs`,
+    so it would be rewritten into nonsense.
+    """
+    command.add_argument(
+        '-v',
+        '--verbose',
+        action='count',
+        default=0,
+        help='say more about what each board is doing, with timestamps',
+    )
+    command.add_argument('-q', '--quiet', action='store_true', help='only warnings and failures')
+    command.add_argument(
+        '--log-file',
+        metavar='PATH',
+        help='write everything, in full detail, to this file. Defaults to '
+        'logs/run_<timestamp>.log, and any directory named is created',
+    )
+    command.add_argument(
+        '--no-log-file',
+        action='store_true',
+        help='do not write a log file for this run',
+    )
+
+
 def _add_filters(command) -> None:
-    command.add_argument('-t', '--title', help='keep jobs whose title contains these words')
-    command.add_argument('-c', '--company', help='keep jobs from companies matching this')
+    command.add_argument(
+        '-t',
+        '--title',
+        action='append',
+        help='keep jobs whose title contains these words. Repeat it to accept '
+        'any of several: -t ai -t ml -t "machine learning"',
+    )
+    command.add_argument(
+        '-c',
+        '--company',
+        action='append',
+        help='keep jobs from companies matching this. Repeatable, like --title',
+    )
     command.add_argument('--min-salary', type=float, help='annual salary floor, in --currency')
     command.add_argument('--currency', help='currency for --min-salary, e.g. INR or USD')
     command.add_argument(
@@ -261,8 +313,16 @@ def _add_filters(command) -> None:
     command.add_argument(
         '--strict',
         action='store_true',
-        help='drop jobs whose salary or date could not be read '
-        '(they are kept and flagged by default)',
+        help='drop jobs whose salary, experience or date could not be read '
+        '(they are kept and flagged by default). Note that this drops every '
+        'board that does not publish the field at all',
+    )
+    command.add_argument(
+        '--strict-published',
+        action='store_true',
+        help='drop a job only when its board does publish the field and the '
+        'posting stayed silent, keeping boards that never publish it - which '
+        'for --experience is every board but Naukri',
     )
 
 
@@ -309,6 +369,7 @@ def build_parser() -> argparse.ArgumentParser:
         action='store_false',
         help='Whether to display the browser or not (headless mode)',
     )
+    _add_logging(jobs)
     jobs.set_defaults(handler=run_jobs)
 
     search = commands.add_parser('search', help='search job boards without signing in')
@@ -326,12 +387,42 @@ def build_parser() -> argparse.ArgumentParser:
         '-n', '--limit', type=int, default=25, help='jobs to pull per board, before filtering'
     )
     search.add_argument(
+        '--want',
+        type=int,
+        metavar='N',
+        help='keep reading each board until this many jobs survive the filter, '
+        'rather than filtering a fixed pull of --limit',
+    )
+    search.add_argument(
+        '--max-rounds',
+        type=int,
+        default=4,
+        metavar='N',
+        help='how many times --want may re-read a board, each round doubling the '
+        'pull and re-reading what it already saw (default 4)',
+    )
+    search.add_argument(
         '-o', '--output', default='job_listing.json', help='file path to store the scraped jobs'
     )
     search.add_argument(
         '--show', action='store_true', help='run the browser visibly, to solve a bot check yourself'
     )
+    search.add_argument(
+        '--enrich',
+        action='store_true',
+        help='read the postings themselves to answer an --experience filter their '
+        'search cards could not. Slow, and only where a board offers a readable '
+        'posting page - currently LinkedIn',
+    )
+    search.add_argument(
+        '--enrich-limit',
+        type=int,
+        default=25,
+        metavar='N',
+        help='how many postings --enrich may read in one run (default 25)',
+    )
     _add_filters(search)
+    _add_logging(search)
     search.set_defaults(handler=run_search)
 
     apply_ = commands.add_parser(
@@ -349,6 +440,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     apply_.add_argument('--show', action='store_true', help='run the browser visibly')
     _add_filters(apply_)
+    _add_logging(apply_)
     apply_.set_defaults(handler=run_apply)
 
     reviews = commands.add_parser('reviews', help='fetch company ratings and pros/cons')
@@ -389,6 +481,7 @@ def build_parser() -> argparse.ArgumentParser:
         action='store_false',
         help='Whether to display the browser or not (headless mode)',
     )
+    _add_logging(reviews)
     reviews.set_defaults(handler=run_reviews)
 
     rates = commands.add_parser(
@@ -409,6 +502,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar='CODE',
         help='limit the refresh to these currencies, e.g. GBP SEK NZD',
     )
+    _add_logging(rates)
     rates.set_defaults(handler=run_rates)
 
     status = commands.add_parser('status', help='summarise stored jobs and applications')
@@ -419,6 +513,7 @@ def build_parser() -> argparse.ArgumentParser:
         '--log', default='applied_jobs.csv', help='CSV the applications were appended to'
     )
     status.add_argument('--json', help='also write the summary to this file as JSON')
+    _add_logging(status)
     status.set_defaults(handler=run_status)
 
     return parser
@@ -445,4 +540,19 @@ def main(argv: list[str] | None = None) -> int:
     if handler is None:
         parser.print_help()
         return 1
+
+    # a run records itself unless told not to; the file is only created once
+    # there is something to put in it
+    filepath = None if args.no_log_file else (args.log_file or default_file())
+    try:
+        configure(verbosity=QUIET if args.quiet else args.verbose, filepath=filepath)
+    except OSError as error:
+        # a log file we cannot open is a mistake in the invocation, not a
+        # reason to run the scrape and lose the record of it
+        print('could not open {}: {}'.format(filepath, error))
+        return 2
+
+    if filepath:
+        logger.info('logging this run to {}'.format(filepath))
+
     return handler(args) or 0
