@@ -275,12 +275,16 @@ A normal run reads exactly as it always did. `-q` keeps warnings and failures an
 drops the progress; `-v` adds timestamps and says which module spoke.
 
 **Every run records itself.** Unless you pass `--no-log-file`, it writes
-`run_20260812-143502.log` in the current directory - named for when it started,
-so runs sort chronologically and two of them never collide. The file gets
-everything down to debug in full detail whatever the terminal is showing, which
-is the point: a scrape you left running is exactly the one whose output you no
-longer have. `--log-file` names it yourself, and a path whose directory does not
-exist is refused up front rather than halfway through the run.
+`logs/run_20260812-143502.log` - named for when the run started, so they sort
+chronologically and two never collide. The directory is created on the way, and
+is gitignored. The file gets everything down to debug in full detail whatever
+the terminal is showing, which is the point: a scrape you left running is
+exactly the one whose output you no longer have.
+
+They accumulate, one per run, which is why they are not loose in the working
+directory next to `job_listing.json`. Nothing prunes them - `rm -rf logs/` when
+you have had enough. `--log-file` puts one somewhere else, creating whatever
+directory you name.
 
 **The library logs, the commands print.** A message about work in progress -
 which board answered, how many survived, which one refused - goes through

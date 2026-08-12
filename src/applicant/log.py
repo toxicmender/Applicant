@@ -36,18 +36,25 @@ DETAILED = logging.Formatter('%(asctime)s %(levelname)-7s %(name)s: %(message)s'
 
 QUIET, NORMAL = -1, 0
 
-# One file per run, named for when the run started, in the directory the command
-# was invoked from - beside job_listing.json and applied_jobs.csv, which is
-# where this tool already keeps what it produces.
+# One file per run, named for when the run started. In a directory of their own
+# rather than beside job_listing.json and applied_jobs.csv, because those two are
+# one stable file each and these accumulate - a working directory that gains a
+# file every time you run anything is one nobody keeps working in.
+FOLDER = 'logs'
 FILENAME = 'run_{}.log'
 STAMP = '%Y%m%d-%H%M%S'
 
 logging.getLogger(ROOT).addHandler(logging.NullHandler())
 
 
-def default_file(now: datetime | None = None) -> str:
-    """`run_20260812-143502.log`. Local time, like the timestamps inside it."""
-    return FILENAME.format((now or datetime.now()).strftime(STAMP))
+def default_file(now: datetime | None = None, folder: str = FOLDER) -> str:
+    """`logs/run_20260812-143502.log`.
+
+    Local time, matching the timestamps inside the file rather than the UTC the
+    application log records - one feature, one clock. Seconds are enough to keep
+    two runs apart; nobody starts two of these in the same second.
+    """
+    return os.path.join(folder, FILENAME.format((now or datetime.now()).strftime(STAMP)))
 
 
 def get(name: str) -> logging.Logger:
@@ -99,12 +106,12 @@ def configure(
     logger.addHandler(console)
 
     if filepath:
-        # delay defers opening until the first record, so the directory is
-        # checked here instead - a mistyped path should fail now, while it can
-        # still be corrected, rather than halfway through a scrape
-        folder = os.path.dirname(os.path.abspath(filepath))
-        if not os.path.isdir(folder):
-            raise FileNotFoundError('no directory {} to write {} into'.format(folder, filepath))
+        # The directory is made here rather than left to the handler: `delay`
+        # defers opening the file until the first record, and a path that cannot
+        # be written should fail now, while it can still be corrected, rather
+        # than halfway through a scrape. Making it also means `logs/` exists
+        # without anyone having to create it first.
+        os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
 
         # delay=True so a command that says nothing leaves no file behind: with
         # a file written on every run, an empty one is just litter

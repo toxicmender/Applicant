@@ -267,8 +267,8 @@ def _add_logging(command) -> None:
     command.add_argument(
         '--log-file',
         metavar='PATH',
-        help='write everything, in full detail, to this file. Defaults to a '
-        'run_<timestamp>.log in the current directory',
+        help='write everything, in full detail, to this file. Defaults to '
+        'logs/run_<timestamp>.log, and any directory named is created',
     )
     command.add_argument(
         '--no-log-file',

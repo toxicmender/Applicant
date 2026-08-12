@@ -733,16 +733,24 @@ class SearchCommandTest(unittest.TestCase):
         with open(target, encoding='utf-8') as handle:
             self.assertIn('jobs match', handle.read())
 
-    def test_a_run_records_itself_without_being_asked(self):
-        """The default is a run_<timestamp>.log beside the other output files."""
+    def test_a_run_records_itself_into_the_logs_directory(self):
+        """Made on the way, so nobody has to create `logs/` first."""
         here = Path(self._dir.name)
         with _in_directory(here):
             code, _ = self.run_cli('search', 'ai', '-s', 'naukri', '-l', 'India', log_file=True)
 
         self.assertEqual(code, 0)
-        written = list(here.glob('run_*.log'))
+        written = list((here / 'logs').glob('run_*.log'))
         self.assertEqual(len(written), 1)
         self.assertIn('jobs match', written[0].read_text(encoding='utf-8'))
+
+    def test_the_working_directory_gains_nothing_but_that(self):
+        """The point of the directory: one file per run does not belong loose."""
+        here = Path(self._dir.name)
+        with _in_directory(here):
+            self.run_cli('search', 'ai', '-s', 'naukri', '-l', 'India', log_file=True)
+
+        self.assertEqual(list(here.glob('*.log')), [])
 
     def test_no_log_file_leaves_the_directory_alone(self):
         here = Path(self._dir.name)
@@ -750,7 +758,7 @@ class SearchCommandTest(unittest.TestCase):
             code, _ = self.run_cli('search', 'ai', '-s', 'naukri', '-l', 'India', '--no-log-file')
 
         self.assertEqual(code, 0)
-        self.assertEqual(list(here.glob('run_*.log')), [])
+        self.assertFalse((here / 'logs').exists(), 'not even the directory')
 
     def test_runs_still_merge_rather_than_overwrite(self):
         for wanted in ('ai', 'data scientist'):

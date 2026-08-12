@@ -162,10 +162,21 @@ class LogFileTest(LogTest):
         self.assertIn('applicant.boards.indeed', self.written())
         self.assertIn('INFO', self.written())
 
-    def test_a_path_that_cannot_be_opened_says_so(self):
+    def test_a_missing_directory_is_made_rather_than_refused(self):
+        """Which is how `logs/` comes to exist without anyone creating it."""
+        target = Path(self._dir.name) / 'deep' / 'down' / 'run.log'
+        log.configure(stream=self.stream, filepath=str(target))
+        log.get('applicant.search').info('recorded')
+
+        self.assertTrue(target.exists())
+
+    def test_a_path_that_cannot_be_written_says_so(self):
         """And says it now, not halfway through a scrape."""
+        blocked = Path(self._dir.name) / 'not-a-directory'
+        blocked.write_text('a file is standing where the directory would go')
+
         with self.assertRaises(OSError):
-            log.configure(filepath=str(Path(self._dir.name) / 'no' / 'such' / 'dir' / 'run.log'))
+            log.configure(filepath=str(blocked / 'run.log'))
 
     def test_a_run_that_says_nothing_leaves_no_file(self):
         """With a file written on every run, an empty one is just litter.
@@ -185,7 +196,7 @@ class LogFileTest(LogTest):
 class DefaultFileTest(LogTest):
     def test_it_is_named_for_when_the_run_started(self):
         moment = datetime(2026, 8, 12, 14, 35, 2)
-        self.assertEqual(log.default_file(moment), 'run_20260812-143502.log')
+        self.assertEqual(log.default_file(moment), os.path.join('logs', 'run_20260812-143502.log'))
 
     def test_it_sorts_chronologically(self):
         earlier = log.default_file(datetime(2026, 8, 12, 9, 0, 0))
@@ -197,11 +208,15 @@ class DefaultFileTest(LogTest):
         second = log.default_file(datetime(2026, 8, 12, 14, 35, 3))
         self.assertNotEqual(first, second)
 
-    def test_it_is_a_bare_filename_in_the_working_directory(self):
-        """Beside job_listing.json and applied_jobs.csv, where the rest goes."""
+    def test_it_lives_in_a_directory_of_its_own(self):
+        """These accumulate, one per run, so they do not go in the cwd."""
         name = log.default_file()
-        self.assertEqual(os.path.basename(name), name)
-        self.assertTrue(name.endswith('.log'))
+        self.assertEqual(os.path.dirname(name), log.FOLDER)
+        self.assertTrue(os.path.basename(name).endswith('.log'))
+
+    def test_the_directory_can_be_named(self):
+        name = log.default_file(datetime(2026, 8, 12, 14, 35, 2), folder='elsewhere')
+        self.assertEqual(name, os.path.join('elsewhere', 'run_20260812-143502.log'))
 
 
 if __name__ == '__main__':
