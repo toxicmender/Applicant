@@ -21,7 +21,9 @@ wants the commentary.
 from __future__ import annotations
 
 import logging
+import os
 import sys
+from datetime import datetime
 from typing import TextIO
 
 ROOT = 'applicant'
@@ -34,7 +36,18 @@ DETAILED = logging.Formatter('%(asctime)s %(levelname)-7s %(name)s: %(message)s'
 
 QUIET, NORMAL = -1, 0
 
+# One file per run, named for when the run started, in the directory the command
+# was invoked from - beside job_listing.json and applied_jobs.csv, which is
+# where this tool already keeps what it produces.
+FILENAME = 'run_{}.log'
+STAMP = '%Y%m%d-%H%M%S'
+
 logging.getLogger(ROOT).addHandler(logging.NullHandler())
+
+
+def default_file(now: datetime | None = None) -> str:
+    """`run_20260812-143502.log`. Local time, like the timestamps inside it."""
+    return FILENAME.format((now or datetime.now()).strftime(STAMP))
 
 
 def get(name: str) -> logging.Logger:
@@ -86,7 +99,16 @@ def configure(
     logger.addHandler(console)
 
     if filepath:
-        record = logging.FileHandler(filepath, encoding='utf-8')
+        # delay defers opening until the first record, so the directory is
+        # checked here instead - a mistyped path should fail now, while it can
+        # still be corrected, rather than halfway through a scrape
+        folder = os.path.dirname(os.path.abspath(filepath))
+        if not os.path.isdir(folder):
+            raise FileNotFoundError('no directory {} to write {} into'.format(folder, filepath))
+
+        # delay=True so a command that says nothing leaves no file behind: with
+        # a file written on every run, an empty one is just litter
+        record = logging.FileHandler(filepath, encoding='utf-8', delay=True)
         record.setLevel(logging.DEBUG)
         record.setFormatter(DETAILED)
         logger.addHandler(record)

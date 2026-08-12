@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 from applicant import log
@@ -161,8 +163,45 @@ class LogFileTest(LogTest):
         self.assertIn('INFO', self.written())
 
     def test_a_path_that_cannot_be_opened_says_so(self):
+        """And says it now, not halfway through a scrape."""
         with self.assertRaises(OSError):
             log.configure(filepath=str(Path(self._dir.name) / 'no' / 'such' / 'dir' / 'run.log'))
+
+    def test_a_run_that_says_nothing_leaves_no_file(self):
+        """With a file written on every run, an empty one is just litter.
+
+        Note that the console's level does not come into it: a file that was
+        asked for records everything, so anything logged at all creates it.
+        """
+        log.configure(log.QUIET, stream=self.stream, filepath=self.path)
+        self.assertFalse(Path(self.path).exists())
+
+    def test_the_first_record_is_what_creates_it(self):
+        log.configure(log.QUIET, stream=self.stream, filepath=self.path)
+        log.get('applicant.search').debug('below the console, still recorded')
+        self.assertTrue(Path(self.path).exists())
+
+
+class DefaultFileTest(LogTest):
+    def test_it_is_named_for_when_the_run_started(self):
+        moment = datetime(2026, 8, 12, 14, 35, 2)
+        self.assertEqual(log.default_file(moment), 'run_20260812-143502.log')
+
+    def test_it_sorts_chronologically(self):
+        earlier = log.default_file(datetime(2026, 8, 12, 9, 0, 0))
+        later = log.default_file(datetime(2026, 8, 12, 14, 0, 0))
+        self.assertLess(earlier, later)
+
+    def test_two_runs_a_second_apart_do_not_collide(self):
+        first = log.default_file(datetime(2026, 8, 12, 14, 35, 2))
+        second = log.default_file(datetime(2026, 8, 12, 14, 35, 3))
+        self.assertNotEqual(first, second)
+
+    def test_it_is_a_bare_filename_in_the_working_directory(self):
+        """Beside job_listing.json and applied_jobs.csv, where the rest goes."""
+        name = log.default_file()
+        self.assertEqual(os.path.basename(name), name)
+        self.assertTrue(name.endswith('.log'))
 
 
 if __name__ == '__main__':

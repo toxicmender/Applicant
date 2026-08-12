@@ -12,7 +12,7 @@ import json
 import sys
 from pathlib import Path
 
-from .log import QUIET, configure, get
+from .log import QUIET, configure, default_file, get
 from .search import SOURCES
 
 logger = get(__name__)
@@ -267,7 +267,13 @@ def _add_logging(command) -> None:
     command.add_argument(
         '--log-file',
         metavar='PATH',
-        help='also write everything, in full detail, to this file',
+        help='write everything, in full detail, to this file. Defaults to a '
+        'run_<timestamp>.log in the current directory',
+    )
+    command.add_argument(
+        '--no-log-file',
+        action='store_true',
+        help='do not write a log file for this run',
     )
 
 
@@ -535,15 +541,18 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 1
 
+    # a run records itself unless told not to; the file is only created once
+    # there is something to put in it
+    filepath = None if args.no_log_file else (args.log_file or default_file())
     try:
-        configure(
-            verbosity=QUIET if args.quiet else args.verbose,
-            filepath=args.log_file,
-        )
+        configure(verbosity=QUIET if args.quiet else args.verbose, filepath=filepath)
     except OSError as error:
         # a log file we cannot open is a mistake in the invocation, not a
         # reason to run the scrape and lose the record of it
-        print('could not open {}: {}'.format(args.log_file, error))
+        print('could not open {}: {}'.format(filepath, error))
         return 2
+
+    if filepath:
+        logger.info('logging this run to {}'.format(filepath))
 
     return handler(args) or 0

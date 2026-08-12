@@ -128,7 +128,7 @@ class StatusCommandTest(unittest.TestCase):
     def run_status(self, *extra: str) -> tuple[int, str]:
         buffer = io.StringIO()
         with redirect_stdout(buffer):
-            code = main(['status', '-i', self.listing, '--log', self.log, *extra])
+            code = main(['status', '-i', self.listing, '--log', self.log, '--no-log-file', *extra])
         return code, buffer.getvalue()
 
     def test_empty_state_reports_zeroes_rather_than_failing(self):
@@ -179,7 +179,7 @@ class RatesCommandTest(unittest.TestCase):
     def run_rates(self, *extra: str) -> tuple[int, str]:
         buffer = io.StringIO()
         with redirect_stdout(buffer):
-            code = main(['rates', *extra])
+            code = main(['rates', '--no-log-file', *extra])
         return code, buffer.getvalue()
 
     def test_it_lists_every_mapped_currency(self):
@@ -210,7 +210,7 @@ class ApplyCommandTest(unittest.TestCase):
     def test_a_missing_listing_fails_cleanly(self):
         buffer = io.StringIO()
         with redirect_stdout(buffer):
-            code = main(['apply', '-i', str(self.root / 'nope.json')])
+            code = main(['apply', '-i', str(self.root / 'nope.json'), '--no-log-file'])
 
         self.assertEqual(code, 1)
         self.assertIn('no jobs to apply to', buffer.getvalue())
@@ -221,7 +221,7 @@ class ApplyCommandTest(unittest.TestCase):
 
         buffer = io.StringIO()
         with redirect_stdout(buffer):
-            code = main(['apply', '-i', listing, '--title', 'python'])
+            code = main(['apply', '-i', listing, '--title', 'python', '--no-log-file'])
 
         self.assertEqual(code, 1)
         self.assertIn('0 of 1 stored jobs match', buffer.getvalue())
@@ -243,7 +243,19 @@ class ApplyCommandTest(unittest.TestCase):
         )
 
         with redirect_stdout(io.StringIO()):
-            code = main(['apply', '-i', listing, '--log', log, '--dry-run', '--title', 'python'])
+            code = main(
+                [
+                    'apply',
+                    '-i',
+                    listing,
+                    '--log',
+                    log,
+                    '--dry-run',
+                    '--title',
+                    'python',
+                    '--no-log-file',
+                ]
+            )
 
         self.assertEqual(code, 0)
         rows = ApplicationLog(log).rows()

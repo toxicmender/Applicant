@@ -13,8 +13,9 @@ fixed postings, and no filter under test needs a currency conversion.
 from __future__ import annotations
 
 import io
+import os
 import unittest
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -84,6 +85,17 @@ def titles(jobs) -> list[str]:
 
 def kept(filters: JobFilter, jobs, **kwargs) -> list[Job]:
     return [job for job in jobs if filters.matches(job, **kwargs)[0]]
+
+
+@contextmanager
+def _in_directory(path):
+    """Run from `path`, because a default log file lands where you invoked it."""
+    previous = os.getcwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(previous)
 
 
 class StubBoard:
@@ -635,11 +647,17 @@ class SearchCommandTest(unittest.TestCase):
         self.addCleanup(self._dir.cleanup)
         self.output = str(Path(self._dir.name) / 'job_listing.json')
 
-    def run_cli(self, *argv):
+    def run_cli(self, *argv, log_file=False):
+        """`log_file=True` lets the run write its default log.
+
+        Otherwise it is suppressed, so the suite does not leave a trail of
+        run_<timestamp>.log files in whatever directory pytest was started from.
+        """
         board = StubBoard(pool())
         buffer = io.StringIO()
+        quiet = [] if log_file or '--log-file' in argv else ['--no-log-file']
         with patch.object(Jobs, '_client', return_value=board), redirect_stdout(buffer):
-            code = main([*argv, '-o', self.output])
+            code = main([*argv, '-o', self.output, *quiet])
         return code, buffer.getvalue()
 
     def test_a_full_invocation_stores_the_shortlist(self):
@@ -707,10 +725,32 @@ class SearchCommandTest(unittest.TestCase):
 
     def test_a_run_can_be_recorded_to_a_file(self):
         target = str(Path(self._dir.name) / 'run.log')
-        code, _ = self.run_cli('search', 'ai', '-s', 'naukri', '-l', 'India', '--log-file', target)
+        code, output = self.run_cli(
+            'search', 'ai', '-s', 'naukri', '-l', 'India', '--log-file', target
+        )
         self.assertEqual(code, 0)
+        self.assertIn('logging this run to', output, 'a log nobody can find is no use')
         with open(target, encoding='utf-8') as handle:
             self.assertIn('jobs match', handle.read())
+
+    def test_a_run_records_itself_without_being_asked(self):
+        """The default is a run_<timestamp>.log beside the other output files."""
+        here = Path(self._dir.name)
+        with _in_directory(here):
+            code, _ = self.run_cli('search', 'ai', '-s', 'naukri', '-l', 'India', log_file=True)
+
+        self.assertEqual(code, 0)
+        written = list(here.glob('run_*.log'))
+        self.assertEqual(len(written), 1)
+        self.assertIn('jobs match', written[0].read_text(encoding='utf-8'))
+
+    def test_no_log_file_leaves_the_directory_alone(self):
+        here = Path(self._dir.name)
+        with _in_directory(here):
+            code, _ = self.run_cli('search', 'ai', '-s', 'naukri', '-l', 'India', '--no-log-file')
+
+        self.assertEqual(code, 0)
+        self.assertEqual(list(here.glob('run_*.log')), [])
 
     def test_runs_still_merge_rather_than_overwrite(self):
         for wanted in ('ai', 'data scientist'):
@@ -729,7 +769,20 @@ class SearchCommandTest(unittest.TestCase):
         buffer = io.StringIO()
         with patch.object(Jobs, '_client', return_value=board), redirect_stdout(buffer):
             code = main(
-                ['search', 'ai', '-s', source, '-l', 'India', '-e', '3', *extra, '-o', self.output]
+                [
+                    'search',
+                    'ai',
+                    '-s',
+                    source,
+                    '-l',
+                    'India',
+                    '-e',
+                    '3',
+                    *extra,
+                    '-o',
+                    self.output,
+                    '--no-log-file',
+                ]
             )
         return code, buffer.getvalue()
 
@@ -771,7 +824,18 @@ class ApplyCommandTest(unittest.TestCase):
     def run_cli(self, *filters):
         buffer = io.StringIO()
         with redirect_stdout(buffer):
-            code = main(['apply', '-i', self.listing, '--log', self.log, '--dry-run', *filters])
+            code = main(
+                [
+                    'apply',
+                    '-i',
+                    self.listing,
+                    '--log',
+                    self.log,
+                    '--dry-run',
+                    '--no-log-file',
+                    *filters,
+                ]
+            )
         return code, buffer.getvalue()
 
     def test_experience_selects_the_shortlist_out_of_the_stored_file(self):

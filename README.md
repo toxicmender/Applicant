@@ -262,18 +262,25 @@ originating board, which is reported as `via`.
 
 ## How much it says
 
-Every subcommand takes `-v`, `-q` and `--log-file`:
+Every subcommand takes `-v`, `-q`, `--log-file` and `--no-log-file`:
 
 ```
 uv run applicant search "python developer" -l India -q
 uv run applicant search "python developer" -l India -v
-uv run applicant search "python developer" -l India --log-file run.log
+uv run applicant search "python developer" -l India --log-file today.log
+uv run applicant search "python developer" -l India --no-log-file
 ```
 
 A normal run reads exactly as it always did. `-q` keeps warnings and failures and
-drops the progress; `-v` adds timestamps and says which module spoke; a
-`--log-file` gets everything down to debug in full detail whatever the terminal
-is showing, which is what you want from a scrape you left running.
+drops the progress; `-v` adds timestamps and says which module spoke.
+
+**Every run records itself.** Unless you pass `--no-log-file`, it writes
+`run_20260812-143502.log` in the current directory - named for when it started,
+so runs sort chronologically and two of them never collide. The file gets
+everything down to debug in full detail whatever the terminal is showing, which
+is the point: a scrape you left running is exactly the one whose output you no
+longer have. `--log-file` names it yourself, and a path whose directory does not
+exist is refused up front rather than halfway through the run.
 
 **The library logs, the commands print.** A message about work in progress -
 which board answered, how many survived, which one refused - goes through
