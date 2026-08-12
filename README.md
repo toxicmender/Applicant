@@ -260,6 +260,31 @@ Google Jobs is the most fragile of the four: it is Google Search, its CSS classe
 obfuscated and rotate, and it gives no posting URL - applications route back to the
 originating board, which is reported as `via`.
 
+## How much it says
+
+Every subcommand takes `-v`, `-q` and `--log-file`:
+
+```
+uv run applicant search "python developer" -l India -q
+uv run applicant search "python developer" -l India -v
+uv run applicant search "python developer" -l India --log-file run.log
+```
+
+A normal run reads exactly as it always did. `-q` keeps warnings and failures and
+drops the progress; `-v` adds timestamps and says which module spoke; a
+`--log-file` gets everything down to debug in full detail whatever the terminal
+is showing, which is what you want from a scrape you left running.
+
+**The library logs, the commands print.** A message about work in progress -
+which board answered, how many survived, which one refused - goes through
+`applicant.log`, so `-q` silences it. The answer a subcommand was asked for -
+`status`' tally, `rates`' table, where a file was written - is printed, because
+silencing the answer is not what asking for quiet means.
+
+Importing `applicant` configures no logging at all, so embedding it in another
+program is silent until that program calls `applicant.log.configure()` or handles
+the `applicant` logger itself.
+
 ## Usage
 `uv run applicant -h` lists everything. `python -m applicant` works identically, and is
 what to use without `uv`.
@@ -284,6 +309,7 @@ src/applicant/
   browser.py     launching Playwright in a way the boards accept
   filters.py     JobFilter, and the flags saying what could not be checked
   places.py      whether a posting's location is inside the one you asked for
+  log.py         where the running commentary goes, and how much of it
   storage.py     job_listing.json and applied_jobs.csv
   search.py      the facade over boards, filters and storage
   boards/        one module per job board, all returning Job

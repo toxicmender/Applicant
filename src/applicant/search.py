@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from .boards import Capability
 from .filters import JobFilter
+from .log import get
 from .models import Job, JobsError, experience_from
 from .storage import ApplicationLog, fingerprint, save_jobs
 
@@ -58,6 +59,8 @@ class _Enrichment:
     described: dict[tuple[str | None, str | None], str | None] = field(default_factory=dict)
     stopped: bool = False
 
+
+logger = get(__name__)
 
 # where jobs handed to _easy_apply are staged for the LinkedIn client to read back
 EASY_APPLY_LISTING = 'applied_via_jobs_interface.json'
@@ -142,7 +145,7 @@ class Jobs:
                 if name != 'linkedin':
                     client.close()
 
-            print('{}: {} of {} jobs match'.format(name, len(kept), seen))
+            logger.info('{}: {} of {} jobs match'.format(name, len(kept), seen))
             collected.extend(kept)
 
         return collected
@@ -212,7 +215,7 @@ class Jobs:
                 break
             if round_number + 1 < max_rounds:
                 pull *= 2
-                print('{}: {} of {} match, reading {}'.format(name, len(kept), seen, pull))
+                logger.info('{}: {} of {} match, reading {}'.format(name, len(kept), seen, pull))
 
         return (kept[:want] if want else kept), seen
 
@@ -240,7 +243,7 @@ class Jobs:
                     plan.described[key] = describe(job)
                 except JobsError as error:
                     # one refusal means the next request is worse than useless
-                    print('{}: {} (enrichment stopped)'.format(job.source, error))
+                    logger.warning('{}: {} (enrichment stopped)'.format(job.source, error))
                     plan.stopped = True
                     continue
                 plan.budget -= 1
@@ -270,7 +273,7 @@ class Jobs:
         return kept
 
     def _report(self, name: str, error: Exception) -> None:
-        print('{}: {}'.format(name, error))
+        logger.warning('{}: {}'.format(name, error))
 
     def apply(
         self,
@@ -318,7 +321,7 @@ class Jobs:
             entries.extend((job, 'would_apply', 'dry run') for job in linkedin_targets)
 
         written = ApplicationLog(log).record(entries)
-        print(
+        logger.info(
             '{} new rows in {} ({} already recorded)'.format(written, log, len(entries) - written)
         )
         return entries
@@ -385,7 +388,7 @@ class Jobs:
         try:
             applied = set(client.easy_apply(EASY_APPLY_LISTING))
         except JobsError as error:
-            print('linkedin: {}'.format(error))
+            logger.warning('linkedin: {}'.format(error))
             return [(job, 'failed', str(error)) for job in jobs]
 
         for job in jobs:

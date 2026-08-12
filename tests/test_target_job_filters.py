@@ -692,6 +692,26 @@ class SearchCommandTest(unittest.TestCase):
         self.assertIn('naukri: 8 of 11 jobs match', output)
         self.assertEqual(set(titles(load_jobs(self.output))), set(titles(shortlist())))
 
+    def test_quiet_drops_the_commentary_and_keeps_the_answer(self):
+        """The board's progress is logging; where the file went is the result."""
+        code, output = self.run_cli('search', 'ai', '-s', 'naukri', '-l', 'India', '-q')
+        self.assertEqual(code, 0)
+        self.assertNotIn('jobs match', output)
+        self.assertIn('jobs written to', output)
+
+    def test_verbose_says_which_module_spoke(self):
+        code, output = self.run_cli('search', 'ai', '-s', 'naukri', '-l', 'India', '-v')
+        self.assertEqual(code, 0)
+        self.assertIn('applicant.search', output)
+        self.assertIn('jobs match', output)
+
+    def test_a_run_can_be_recorded_to_a_file(self):
+        target = str(Path(self._dir.name) / 'run.log')
+        code, _ = self.run_cli('search', 'ai', '-s', 'naukri', '-l', 'India', '--log-file', target)
+        self.assertEqual(code, 0)
+        with open(target, encoding='utf-8') as handle:
+            self.assertIn('jobs match', handle.read())
+
     def test_runs_still_merge_rather_than_overwrite(self):
         for wanted in ('ai', 'data scientist'):
             code, _ = self.run_cli(

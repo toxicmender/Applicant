@@ -12,7 +12,10 @@ import json
 import sys
 from pathlib import Path
 
+from .log import QUIET, configure, get
 from .search import SOURCES
+
+logger = get(__name__)
 
 REVIEW_SOURCES = ('ambitionbox', 'glassdoor')
 
@@ -21,7 +24,7 @@ def run_jobs(args) -> int:
     from .boards.linkedin import LinkedIn
 
     if args.driver != 'chromedriver':
-        print(
+        logger.warning(
             'note: --driver is ignored now that LinkedIn runs on Playwright, '
             'which manages its own browser'
         )
@@ -64,7 +67,7 @@ def run_reviews(args) -> int:
             rating = client.fetch(args.company, max_reviews=args.max_reviews)
         except ReviewsError as error:
             # one blocked source should not throw away the other one's results
-            print('{}: {}'.format(source, error))
+            logger.warning('{}: {}'.format(source, error))
             continue
 
         print(
@@ -246,6 +249,28 @@ def run_rates(args) -> int:
     return 0
 
 
+def _add_logging(command) -> None:
+    """On every subcommand rather than before them.
+
+    A global flag would have to come first - `applicant -v search ...` - and
+    `normalise` reads a leading flag as the old bare-flag invocation of `jobs`,
+    so it would be rewritten into nonsense.
+    """
+    command.add_argument(
+        '-v',
+        '--verbose',
+        action='count',
+        default=0,
+        help='say more about what each board is doing, with timestamps',
+    )
+    command.add_argument('-q', '--quiet', action='store_true', help='only warnings and failures')
+    command.add_argument(
+        '--log-file',
+        metavar='PATH',
+        help='also write everything, in full detail, to this file',
+    )
+
+
 def _add_filters(command) -> None:
     command.add_argument(
         '-t',
@@ -338,6 +363,7 @@ def build_parser() -> argparse.ArgumentParser:
         action='store_false',
         help='Whether to display the browser or not (headless mode)',
     )
+    _add_logging(jobs)
     jobs.set_defaults(handler=run_jobs)
 
     search = commands.add_parser('search', help='search job boards without signing in')
@@ -390,6 +416,7 @@ def build_parser() -> argparse.ArgumentParser:
         help='how many postings --enrich may read in one run (default 25)',
     )
     _add_filters(search)
+    _add_logging(search)
     search.set_defaults(handler=run_search)
 
     apply_ = commands.add_parser(
@@ -407,6 +434,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     apply_.add_argument('--show', action='store_true', help='run the browser visibly')
     _add_filters(apply_)
+    _add_logging(apply_)
     apply_.set_defaults(handler=run_apply)
 
     reviews = commands.add_parser('reviews', help='fetch company ratings and pros/cons')
@@ -447,6 +475,7 @@ def build_parser() -> argparse.ArgumentParser:
         action='store_false',
         help='Whether to display the browser or not (headless mode)',
     )
+    _add_logging(reviews)
     reviews.set_defaults(handler=run_reviews)
 
     rates = commands.add_parser(
@@ -467,6 +496,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar='CODE',
         help='limit the refresh to these currencies, e.g. GBP SEK NZD',
     )
+    _add_logging(rates)
     rates.set_defaults(handler=run_rates)
 
     status = commands.add_parser('status', help='summarise stored jobs and applications')
@@ -477,6 +507,7 @@ def build_parser() -> argparse.ArgumentParser:
         '--log', default='applied_jobs.csv', help='CSV the applications were appended to'
     )
     status.add_argument('--json', help='also write the summary to this file as JSON')
+    _add_logging(status)
     status.set_defaults(handler=run_status)
 
     return parser
@@ -503,4 +534,16 @@ def main(argv: list[str] | None = None) -> int:
     if handler is None:
         parser.print_help()
         return 1
+
+    try:
+        configure(
+            verbosity=QUIET if args.quiet else args.verbose,
+            filepath=args.log_file,
+        )
+    except OSError as error:
+        # a log file we cannot open is a mistake in the invocation, not a
+        # reason to run the scrape and lose the record of it
+        print('could not open {}: {}'.format(args.log_file, error))
+        return 2
+
     return handler(args) or 0

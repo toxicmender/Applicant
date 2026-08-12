@@ -26,6 +26,7 @@ from urllib.parse import urlencode
 import httpx
 
 from ..browser import BROWSER_ARGS, USER_AGENT
+from ..log import get
 from ..models import BlockedError, Job, JobsError
 from . import CAPABILITIES
 
@@ -38,6 +39,8 @@ GUEST_POSTING = 'https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{}'
 GUEST_PAGE_SIZE = 10
 
 HEADERS = {'User-Agent': USER_AGENT, 'Accept-Language': 'en-US,en;q=0.9'}
+
+logger = get(__name__)
 
 CARD = re.compile(r'<li>(.*?)</li>', re.DOTALL)
 FIELDS = {
@@ -211,7 +214,7 @@ class LinkedIn:
     ):
         target = Path(filepath)
         if target.exists() and not overwrite:
-            print(
+            logger.warning(
                 '{} already exists. Pass overwrite to log in again, or use '
                 'restore_session() to reuse it.'.format(filepath)
             )
@@ -238,20 +241,20 @@ class LinkedIn:
             )
 
         context.storage_state(path=str(target))
-        print('session saved to {}'.format(target))
+        logger.info('session saved to {}'.format(target))
 
     def restore_session(self, filepath: str | Path = 'cookies.json'):
         state = self._load_state(filepath)
         if state is None:
-            print('no usable session in {}; call login() first'.format(filepath))
+            logger.warning('no usable session in {}; call login() first'.format(filepath))
             return False
 
         page = self._start(storage_state=state)
         page.goto('https://www.linkedin.com/feed/', wait_until='domcontentloaded')
         if '/login' in page.url or '/authwall' in page.url:
-            print('saved session is no longer valid; call login() again')
+            logger.warning('saved session is no longer valid; call login() again')
             return False
-        print('session restored from {}'.format(filepath))
+        logger.info('session restored from {}'.format(filepath))
         return True
 
     def _load_state(self, filepath: str | Path):
@@ -285,7 +288,7 @@ class LinkedIn:
                     'sameSite': 'Lax',
                 }
             )
-        print('converted {} Selenium cookies to a Playwright session'.format(len(converted)))
+        logger.info('converted {} Selenium cookies to a Playwright session'.format(len(converted)))
         return {'cookies': converted, 'origins': []}
 
     # -- logged in flows --------------------------------------------------
@@ -341,7 +344,7 @@ class LinkedIn:
             )
 
         total = save_jobs(jobs, filepath)
-        print('scraped {} recommended jobs ({} in {})'.format(len(jobs), total, filepath))
+        logger.info('scraped {} recommended jobs ({} in {})'.format(len(jobs), total, filepath))
         return jobs
 
     def easy_apply(self, filepath='job_listing.json'):
@@ -355,7 +358,7 @@ class LinkedIn:
             with open(filepath, encoding='utf-8') as file:
                 stored = json.load(file).get('list', [])
         except (FileNotFoundError, ValueError) as error:
-            print('could not read {}: {}'.format(filepath, error))
+            logger.warning('could not read {}: {}'.format(filepath, error))
             return []
 
         applied = []
@@ -381,11 +384,11 @@ class LinkedIn:
                 submit.click()
                 page.wait_for_timeout(1500)
                 applied.append(item['url'])
-                print('applied: {}'.format(item.get('title') or item['url']))
+                logger.info('applied: {}'.format(item.get('title') or item['url']))
             else:
                 # multi step form - close it and leave this one alone
                 page.keyboard.press('Escape')
-                print('skipped (multi step): {}'.format(item.get('title') or item['url']))
+                logger.info('skipped (multi step): {}'.format(item.get('title') or item['url']))
 
         return applied
 
