@@ -13,11 +13,16 @@ history reads as a change log rather than a copy per run.
 
 from __future__ import annotations
 
-import json
+import logging
 import re
 from datetime import datetime, timezone
 
+from pydantic import ValidationError
+
+from ..files import read_document, write_document
 from .models import CompanyFinancials, FundingRound, Money
+
+logger = logging.getLogger(__name__)
 
 # field -> label, in the order changes are reported
 TRACKED = [
@@ -47,21 +52,30 @@ class FinancialsTracker:
         self.data = self._load()
 
     def _load(self):
-        try:
-            with open(self.path, encoding='utf-8') as file:
-                data = json.load(file)
-        except (FileNotFoundError, ValueError):
-            data = {}
-        data.setdefault('companies', {})
+        # the tracker exists to write: an unreadable history is moved aside
+        # rather than replaced, since it is the only copy of every snapshot
+        data = read_document(self.path, quarantine=True)
+        if not isinstance(data.get('companies'), dict):
+            data['companies'] = {}
         return data
 
     def save(self):
-        with open(self.path, 'w', encoding='utf-8') as file:
-            json.dump(self.data, file, indent=2, ensure_ascii=False)
+        write_document(self.path, self.data)
 
     def latest(self, key):
         entry = self.data['companies'].get(key)
-        return CompanyFinancials(**entry['latest']) if entry else None
+        return self._previous(key, entry) if entry else None
+
+    def _previous(self, key, entry):
+        """The stored latest record, or None if it no longer validates."""
+        try:
+            return CompanyFinancials(**entry['latest'])
+        except (KeyError, TypeError, ValidationError) as error:
+            logger.warning(
+                f'{self.path}: stored record for {key} is invalid ({type(error).__name__}); '
+                'comparing against nothing this time, earlier snapshots are kept'
+            )
+            return None
 
     def history(self, key):
         return list((self.data['companies'].get(key) or {}).get('snapshots', []))
@@ -77,28 +91,40 @@ class FinancialsTracker:
         entry = self.data['companies'].get(key)
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
-        if entry is None:
+        previous = self._previous(key, entry) if entry else None
+        if previous is None:
             merged, changes = financials, []
             first_seen = True
         else:
-            previous = CompanyFinancials(**entry['latest'])
             merged, changes = merge(previous, financials)
             first_seen = False
 
-        snapshots = entry['snapshots'] if entry else []
+        snapshots = entry.get('snapshots') if entry else None
+        if not isinstance(snapshots, list):
+            snapshots = []
         if first_seen or changes:
             snapshots.append({'recorded_at': now, 'changes': changes, 'data': merged.to_dict()})
 
         self.data['companies'][key] = {
             'source': financials.source,
             'company': merged.company,
-            'first_seen': entry['first_seen'] if entry else now,
+            'first_seen': (entry or {}).get('first_seen') or now,
             'last_checked': now,
             'latest': merged.to_dict(),
             'snapshots': snapshots,
         }
         if save:
             self.save()
+        logger.debug(
+            f'{key}: '
+            + (
+                'first snapshot'
+                if first_seen
+                else f'{len(changes)} change(s)'
+                if changes
+                else 'unchanged, no snapshot'
+            )
+        )
         return changes
 
 

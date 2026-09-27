@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 import time
@@ -8,6 +9,7 @@ from datetime import datetime, timezone
 
 import httpx
 
+from .. import logs
 from .errors import AuthError, ChallengeError, CompanyNotFound, FinancialsError, ParseError
 from .models import CompanyFinancials, FundingRound
 from .parsing import (
@@ -20,6 +22,8 @@ from .parsing import (
     to_money,
     walk,
 )
+
+logger = logging.getLogger(__name__)
 
 # Tracxn publishes no SDK in any registry; its API is distributed as a Postman
 # collection (postman.com/tracxnapi/tracxn-api), which is what these calls follow.
@@ -137,6 +141,8 @@ class TracxnClient:
         client=None,
     ):
         self.api_key = api_key if api_key is not None else os.environ.get('TRACXN_API_KEY')
+        # masked in every log line from here on (ASVS 16.2.5)
+        logs.register_secret(self.api_key)
         self.profile_dir = profile_dir
         self.login = login
         self.headless = False if login else headless
@@ -146,6 +152,22 @@ class TracxnClient:
         self._client = client
 
     def fetch(self, company, max_rounds=20):
+        """Every failure leaves as a FinancialsError, so a caller trying several
+        sources can report this one and carry on with the rest."""
+        try:
+            financials = self._fetch(company, max_rounds)
+        except httpx.HTTPStatusError as error:
+            raise FinancialsError(f'Tracxn answered HTTP {error.response.status_code}') from error
+        except httpx.HTTPError as error:
+            raise FinancialsError(f'could not reach Tracxn: {error}') from error
+        logger.info(
+            f'tracxn: {financials.company}: {len(financials.rounds)} round(s), '
+            f'{len(financials.notes)} gap(s) noted'
+        )
+        return financials
+
+    def _fetch(self, company, max_rounds):
+        logger.debug(f'tracxn: {company!r} via the {"api" if self.api_key else "web"}')
         if self.api_key:
             financials = self._fetch_api(company, max_rounds)
         elif PROFILE_URL.match(company.strip()):
@@ -187,6 +209,7 @@ class TracxnClient:
             # no Retry-After is sent, so plain backoff is all we can do
             if response.status_code not in (429, 502, 503):
                 break
+            logger.debug(f'tracxn: HTTP {response.status_code} for {path}; backing off')
         assert response is not None  # every attempt either assigned it or raised
 
         if response.status_code == 401:
@@ -232,6 +255,7 @@ class TracxnClient:
                     {'filter': {'companiesId': [entity_id]}, 'from': start, 'size': size},
                 )
             except AuthError as error:
+                logger.warning(f'tracxn: funding rounds unavailable: {error}')
                 financials.notes.append('funding rounds: {}'.format(error))
                 break
             page = self._rounds(payload)
@@ -248,6 +272,7 @@ class TracxnClient:
                     {'filter': {'companyId': [entity_id]}, 'from': 0},
                 )
             except (AuthError, FinancialsError) as error:
+                logger.info(f'tracxn: {metric} series unavailable: {error}')
                 financials.notes.append('{}: {}'.format(metric, error))
                 continue
             money, year = self._latest_point(payload)

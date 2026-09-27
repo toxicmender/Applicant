@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 import time
@@ -7,6 +8,7 @@ from contextlib import suppress
 
 import httpx
 
+from .. import logs
 from .errors import AuthError, ChallengeError, CompanyNotFound, FinancialsError, ParseError
 from .models import CompanyFinancials, FundingRound
 from .parsing import (
@@ -20,6 +22,8 @@ from .parsing import (
     to_money,
     walk,
 )
+
+logger = logging.getLogger(__name__)
 
 API = 'https://api.crunchbase.com/api/v4'
 WEB = 'https://www.crunchbase.com'
@@ -103,6 +107,8 @@ class CrunchbaseClient:
         client=None,
     ):
         self.api_key = api_key if api_key is not None else os.environ.get('CRUNCHBASE_API_KEY')
+        # masked in every log line from here on (ASVS 16.2.5)
+        logs.register_secret(self.api_key)
         self.profile_dir = profile_dir
         self.login = login
         self.headless = False if login else headless
@@ -112,11 +118,28 @@ class CrunchbaseClient:
         self._client = client
 
     def fetch(self, company, max_rounds=20):
-        if self.api_key:
-            financials = self._fetch_api(company, max_rounds)
-        else:
-            financials = self._fetch_web(company, max_rounds)
+        """Every failure leaves as a FinancialsError, so a caller trying several
+        sources can report this one and carry on with the rest."""
+        mode = 'api' if self.api_key else 'web'
+        logger.debug(f'crunchbase: {company!r} via the {mode}')
+        try:
+            if self.api_key:
+                financials = self._fetch_api(company, max_rounds)
+            else:
+                financials = self._fetch_web(company, max_rounds)
+        except httpx.HTTPStatusError as error:
+            raise FinancialsError(
+                f'Crunchbase answered HTTP {error.response.status_code}'
+            ) from error
+        except httpx.HTTPError as error:
+            raise FinancialsError(f'could not reach Crunchbase: {error}') from error
+        except ValueError as error:  # a response body that was not JSON
+            raise ParseError(f'Crunchbase sent unreadable data: {error}') from error
         financials.fill_from_rounds()
+        logger.info(
+            f'crunchbase: {financials.company}: {len(financials.rounds)} round(s), '
+            f'{len(financials.notes)} gap(s) noted'
+        )
         return financials
 
     # -- api --------------------------------------------------------------
@@ -145,6 +168,7 @@ class CrunchbaseClient:
                 continue
             if response.status_code not in (429, 502, 503):
                 break
+            logger.debug(f'crunchbase: HTTP {response.status_code} for {path}; backing off')
         assert response is not None  # every attempt either assigned it or raised
 
         if response.status_code == 401:
@@ -171,6 +195,7 @@ class CrunchbaseClient:
         if response.status_code == 404 and not ORG_URL.search(company):
             # a name rather than a permalink - let Crunchbase's own autocomplete resolve it
             slug = self._resolve(company)
+            logger.info(f'crunchbase: {company!r} resolved to the permalink {slug!r}')
             response = self._get('/entities/organizations/{}'.format(slug), params)
         if response.status_code == 404:
             raise CompanyNotFound('no Crunchbase organization {!r}'.format(company))
