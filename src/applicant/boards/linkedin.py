@@ -18,6 +18,7 @@ import json
 import logging
 import re
 import time
+from html import unescape
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlencode
@@ -25,7 +26,9 @@ from urllib.parse import urlencode
 import httpx
 
 from ..browser import BROWSER_ARGS, USER_AGENT
+from ..log import get
 from ..models import BlockedError, Job, JobsError
+from . import CAPABILITIES
 
 if TYPE_CHECKING:
     from playwright.sync_api import Browser as PlaywrightBrowser
@@ -34,9 +37,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 GUEST_SEARCH = 'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search'
+GUEST_POSTING = 'https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{}'
 GUEST_PAGE_SIZE = 10
 
 HEADERS = {'User-Agent': USER_AGENT, 'Accept-Language': 'en-US,en;q=0.9'}
+
+logger = get(__name__)
 
 CARD = re.compile(r'<li>(.*?)</li>', re.DOTALL)
 FIELDS = {
@@ -57,6 +63,8 @@ def _clean(value):
 
 
 class LinkedIn:
+    capability = CAPABILITIES['linkedin']
+
     def __init__(
         self,
         path=None,
@@ -150,6 +158,26 @@ class LinkedIn:
             easy_apply=None,  # the guest card does not say
         )
 
+    def describe(self, job: Job) -> str | None:
+        """The posting's own text, for what its search card never said.
+
+        The same guest surface `search` uses, so this needs no account and no
+        browser. Returns None when there is nothing to read - no id, or a page
+        that is not there - and raises on a rate limit, because carrying on
+        through one is how a working scrape becomes a blocked one.
+        """
+        if not job.id:
+            return None
+
+        response = self.client.get(GUEST_POSTING.format(job.id))
+        if response.status_code == 429:
+            raise BlockedError('LinkedIn rate limited the guest posting reads; slow down or retry')
+        if response.status_code != 200:
+            return None
+
+        text = unescape(TAGS.sub(' ', response.text))
+        return re.sub(r'\s+', ' ', text).strip() or None
+
     # -- browser session --------------------------------------------------
 
     def _start(self, storage_state=None) -> Page:
@@ -194,7 +222,7 @@ class LinkedIn:
     ):
         target = Path(filepath)
         if target.exists() and not overwrite:
-            print(
+            logger.warning(
                 '{} already exists. Pass overwrite to log in again, or use '
                 'restore_session() to reuse it.'.format(filepath)
             )
@@ -224,6 +252,7 @@ class LinkedIn:
             )
 
         context.storage_state(path=str(target))
+        logger.info('session saved to {}'.format(target))
         logger.info(f'linkedin: signed in{" with 2FA" if twoFA else ""}; session saved to {target}')
         print('session saved to {}'.format(target))
 
@@ -340,6 +369,7 @@ class LinkedIn:
             )
 
         total = save_jobs(jobs, filepath)
+        logger.info('scraped {} recommended jobs ({} in {})'.format(len(jobs), total, filepath))
         logger.info(f'linkedin: {len(jobs)} recommended job(s) scraped')
         print('scraped {} recommended jobs ({} in {})'.format(len(jobs), total, filepath))
         return jobs

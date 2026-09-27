@@ -19,6 +19,7 @@ from urllib.parse import urlencode
 from ..browser import browser, looks_blocked
 from ..dates import relative_to_iso
 from ..models import BlockedError, Job
+from . import CAPABILITIES
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,8 @@ SALARY = re.compile(
 
 
 class GoogleJobs:
+    capability = CAPABILITIES['googlejobs']
+
     def __init__(self, headless=True, timeout=45000, hl='en'):
         self.headless = headless
         self.timeout = timeout

@@ -9,6 +9,7 @@
 # unreadable stores moved aside by applicant.files - personal data, like the originals
 **/*.corrupt-*
 .gd_profile/
+logs/
 .cb_profile/
 .tx_profile/
 

@@ -51,12 +51,14 @@ class SkipTest(unittest.TestCase):
     """The board already filtered these; re-checking locally throws away good results."""
 
     def test_location_is_not_rechecked_when_skipped(self):
-        # a country search answers with bare city names, which would never match 'India'
+        # a country search answers with bare city names. 'India' now recognises
+        # its own cities (see applicant.places), so the vehicle here is a
+        # country whose cities we cannot enumerate
         posting = job(location='Bengaluru')
-        keep, _ = JobFilter(location='India').matches(posting)
+        keep, _ = JobFilter(location='Ireland').matches(posting)
         self.assertFalse(keep, 'sanity: a local check does reject this')
 
-        keep, _ = JobFilter(location='India').matches(posting, skip=['location'])
+        keep, _ = JobFilter(location='Ireland').matches(posting, skip=['location'])
         self.assertTrue(keep, 'the board already applied the location filter')
 
     def test_posted_is_not_rechecked_when_skipped(self):

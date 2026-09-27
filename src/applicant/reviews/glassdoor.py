@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import json
-import logging
 import re
 from contextlib import suppress
 
+from ..log import get
 from .errors import ChallengeError, ParseError, ReviewsError
 from .models import CompanyRating, Review
 
-logger = logging.getLogger(__name__)
+logger = get(__name__)
 
 BASE = 'https://www.glassdoor.com'
 PAGE_SIZE = 10
