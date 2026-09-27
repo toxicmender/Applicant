@@ -702,7 +702,7 @@ above, or goes beyond it:
   with the rest of the orchestration.
 
 **Phase 2 status: done.** `tests/test_filters.py`, `tests/test_target_job_filters.py`
-and every other existing test pass unchanged. A new `tests/test_domain.py` (38 tests)
+and every other existing test pass unchanged. A new `tests/test_domain.py` (39 tests)
 holds the layer rule and the rest. Where it differs from the row above, or goes
 beyond it:
 
