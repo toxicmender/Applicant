@@ -1,4 +1,5 @@
-"""Scrapes applicable job postings, applies to them, and looks up company ratings.
+"""Scrapes applicable job postings, applies to them, and looks up company ratings
+and financials.
 
     from applicant.search import Jobs
     from applicant.filters import JobFilter
@@ -15,6 +16,7 @@ The layout, roughly in dependency order:
 * `storage`   - the job listing file and the application log
 * `boards/`   - one module per job board, all returning `Job`
 * `reviews/`  - company ratings from AmbitionBox and Glassdoor
+* `financials/` - company funding from Crunchbase and Tracxn, tracked over time
 * `search`    - the facade tying the boards, filters and storage together
 * `cli`       - argument parsing and the subcommand handlers
 """
