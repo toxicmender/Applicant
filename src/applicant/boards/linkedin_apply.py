@@ -40,21 +40,15 @@ class LinkedIn(LinkedInGuest):
 
     def __init__(
         self,
-        path=None,
         headless=True,
-        state='linkedin_state.json',
         timeout=45000,
         delay=1.0,
         client=None,
         interaction: Interaction | None = None,
     ):
         super().__init__(headless=headless, timeout=timeout, delay=delay, client=client)
-        # `path` was the chromedriver location under Selenium; Playwright ships its
-        # own browser, so it is accepted only so old call sites keep working
-        self.driver_path = path
         # asked for the one-time code when a sign in needs two factors
         self.interaction = interaction or Terminal()
-        self.state = state
         self._browser_session: BrowserSession | None = None
 
     # -- the Applier port -------------------------------------------------

@@ -24,15 +24,13 @@ from ..errors import AuthFailed, Blocked, ConfigError, NotFound, SourceError, Un
 from ..log import QUIET, configure, default_file, get
 from ..settings import Settings
 from . import apply, financials, jobs, rates, reviews, search, status
-from .common import add_filters, add_logging, add_settings, filters_from
+from .common import add_filters, filters_from, shared_flags
 
 __all__ = [
     'add_filters',
-    'add_logging',
     'build_parser',
     'filters_from',
     'main',
-    'normalise',
     'run_apply',
     'run_financials',
     'run_jobs',
@@ -72,13 +70,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog='applicant',
         description='Scrape and apply to jobs, and look up company ratings and financials',
+        parents=[shared_flags(suppress=False)],
     )
-    commands = parser.add_subparsers(dest='command')
+    commands = parser.add_subparsers(dest='command', metavar='command')
+    every_command = shared_flags(suppress=True)
 
     def add(name: str, **options) -> argparse.ArgumentParser:
-        command = commands.add_parser(name, **options)
-        add_settings(command)
-        return command
+        return commands.add_parser(name, parents=[every_command], **options)
 
     # the names are read here, at call time, so a patched run_* is the one bound
     jobs.add_parser(add).set_defaults(handler=run_jobs)
@@ -91,32 +89,16 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def normalise(argv: list[str]) -> list[str]:
-    """`applicant` and `applicant -c cookies.json` still mean the LinkedIn job run.
-
-    The README documented those before subcommands existed, so a bare invocation
-    or one that opens with a flag is rewritten to `jobs` - with a deprecation
-    warning from `main`, since it goes away in a future release. Once it has,
-    flags that apply to every command can go before the subcommand again.
-    """
-    if not argv:
-        return ['jobs']
-    if argv[0].startswith('-') and argv[0] not in ('-h', '--help'):
-        return ['jobs', *argv]
-    return argv
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    given = list(sys.argv[1:] if argv is None else argv)
-    args = parser.parse_args(normalise(given))
-    # the pre-subcommand spelling: still works, not for much longer
-    legacy = normalise(given) != given
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     handler = getattr(args, 'handler', None)
     if handler is None:
-        parser.print_help()
-        return 1
+        # `applicant` alone used to mean the LinkedIn job run; since 0.2.0 a
+        # command is required, and that one is `applicant jobs`
+        parser.print_help(sys.stderr)
+        return 2
 
     try:
         settings = Settings.load(
@@ -153,12 +135,6 @@ def main(argv: list[str] | None = None) -> int:
 
     if filepath:
         logger.info('logging this run to {}'.format(filepath))
-    if legacy:
-        instead = ' '.join(['applicant', 'jobs', *given])
-        logger.warning(
-            'running applicant without a subcommand is deprecated and will stop working '
-            f'in a future release: use `{instead}`'
-        )
     logger.debug(f'{args.command}: {_loggable(args)}')
 
     try:

@@ -6,7 +6,7 @@ import argparse
 
 from ..log import get
 from ..services.search import SOURCES
-from .common import add_filters, add_logging, filters_from
+from .common import add_filters, filters_from
 
 logger = get(__name__)
 
@@ -62,7 +62,6 @@ def add_parser(add) -> argparse.ArgumentParser:
         help='how many postings --enrich may read in one run (default 25)',
     )
     add_filters(search)
-    add_logging(search)
     return search
 
 

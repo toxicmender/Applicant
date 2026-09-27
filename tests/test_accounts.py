@@ -15,7 +15,6 @@ import sys
 import tempfile
 import textwrap
 import unittest
-import warnings
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
@@ -205,11 +204,10 @@ class ApplyServiceTest(TempDir):
         results = EasyApply(made).apply([posting('linkedin', '1')], dry_run=True)
         self.assertEqual(results[0].status, 'would_apply')
 
-    def test_leaving_dry_run_out_of_the_facade_warns(self):
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter('always')
-            Jobs().apply([], log=str(self.root / 'log.csv'))
-        self.assertTrue(any(issubclass(w.category, DeprecationWarning) for w in caught))
+    def test_the_facade_needs_dry_run_too(self):
+        """It warned in 0.1.x; since 0.2.0 leaving it out is an error."""
+        with self.assertRaises(TypeError):
+            Jobs().apply([], log=str(self.root / 'log.csv'))  # type: ignore[call-arg]
 
 
 class ConfirmCommandTest(TempDir):
@@ -255,30 +253,6 @@ class ConfirmCommandTest(TempDir):
         self.assertNotIn('about to submit', out)
         statuses = {row['id']: row['status'] for row in ApplicationLog(self.log).rows()}
         self.assertEqual(statuses['1'], 'applied')
-
-
-class BareFlagDeprecationTest(unittest.TestCase):
-    def run_main(self, argv) -> str:
-        err = io.StringIO()
-        with (
-            mock.patch('applicant.cli.run_jobs', return_value=0),
-            redirect_stdout(io.StringIO()),
-            redirect_stderr(err),
-        ):
-            main([*argv, '--no-log-file'] if argv and argv[0] == 'jobs' else argv)
-        return err.getvalue()
-
-    def test_the_old_spelling_still_runs_and_says_what_to_use(self):
-        with mock.patch('applicant.cli.run_jobs', return_value=0) as run_jobs:
-            err = io.StringIO()
-            with redirect_stdout(io.StringIO()), redirect_stderr(err):
-                main(['-c', 'cookies.json', '--no-log-file'])
-        run_jobs.assert_called_once()
-        self.assertIn('deprecated', err.getvalue())
-        self.assertIn('applicant jobs -c cookies.json --no-log-file', err.getvalue())
-
-    def test_the_subcommand_spelling_is_quiet(self):
-        self.assertNotIn('deprecated', self.run_main(['jobs']))
 
 
 if __name__ == '__main__':

@@ -6,7 +6,6 @@ import argparse
 from pathlib import Path
 
 from ..log import get
-from .common import add_logging
 from .render import terminal
 
 logger = get(__name__)
@@ -27,12 +26,6 @@ def add_parser(add) -> argparse.ArgumentParser:
         help='overwrite existing session if it already exists',
     )
     jobs.add_argument(
-        '-d',
-        '--driver',
-        default='chromedriver',
-        help='accepted for compatibility; Playwright manages its own browser',
-    )
-    jobs.add_argument(
         '-t',
         '--twofa',
         action='store_true',
@@ -45,27 +38,17 @@ def add_parser(add) -> argparse.ArgumentParser:
         help='file path to where jobs urls are or to store them',
     )
     jobs.add_argument(
-        '-D',
-        '--Display',
-        action='store_false',
-        help='Whether to display the browser or not (headless mode)',
+        '--show', action='store_true', help='run the browser visibly, e.g. to clear a checkpoint'
     )
-    add_logging(jobs)
     return jobs
 
 
 def run(args) -> int:
-    from ..boards.linkedin import LinkedIn
-
-    if args.driver != 'chromedriver':
-        logger.warning(
-            'note: --driver is ignored now that LinkedIn runs on Playwright, '
-            'which manages its own browser'
-        )
+    from ..boards.linkedin_apply import LinkedIn
 
     settings = args.settings
     fp = Path(settings.path(args.cookies))
-    with LinkedIn(path=args.driver, headless=args.Display, interaction=terminal()) as operator:
+    with LinkedIn(headless=not args.show, interaction=terminal()) as operator:
         if fp.exists() and not fp.is_dir() and not args.overwrite:
             logger.info(f'jobs: restoring the LinkedIn session from {fp}')
             if operator.restore_session(fp):

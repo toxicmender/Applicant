@@ -10,35 +10,58 @@ import io
 import json
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from applicant.cli import build_parser, main, normalise
+from applicant.cli import build_parser, main
 from applicant.financials import CompanyFinancials, FinancialsError, Money
 from applicant.models import Job
 from applicant.storage import ApplicationLog, save_jobs
 
 
-class NormaliseTest(unittest.TestCase):
-    """Bare-flag invocations the README documented before subcommands existed."""
+class NoCommandTest(unittest.TestCase):
+    """Since 0.2.0 a command is required: `applicant` alone no longer means `jobs`."""
 
-    def test_no_arguments_means_the_linkedin_job_run(self):
-        self.assertEqual(normalise([]), ['jobs'])
+    def test_no_command_is_a_usage_error_with_help(self):
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            code = main([])
+        self.assertEqual(code, 2)
+        self.assertIn('usage: applicant', err.getvalue())
 
-    def test_a_leading_flag_means_the_linkedin_job_run(self):
-        self.assertEqual(normalise(['-c', 'cookies.json']), ['jobs', '-c', 'cookies.json'])
+    def test_the_old_bare_flag_spelling_is_rejected(self):
+        with self.assertRaises(SystemExit) as raised, redirect_stderr(io.StringIO()):
+            main(['-c', 'cookies.json'])
+        self.assertEqual(raised.exception.code, 2)
 
-    def test_a_long_leading_flag_too(self):
-        self.assertEqual(normalise(['--overwrite']), ['jobs', '--overwrite'])
 
-    def test_help_is_left_alone(self):
-        self.assertEqual(normalise(['-h']), ['-h'])
-        self.assertEqual(normalise(['--help']), ['--help'])
+class SharedFlagsTest(unittest.TestCase):
+    """Logging and settings flags go before or after the command."""
 
-    def test_a_named_subcommand_is_left_alone(self):
-        self.assertEqual(normalise(['search', 'python']), ['search', 'python'])
-        self.assertEqual(normalise(['reviews', 'tcs']), ['reviews', 'tcs'])
+    def setUp(self):
+        self.parser = build_parser()
+
+    def test_before_the_command(self):
+        args = self.parser.parse_args(['-v', '--data-dir', 'here', '--no-log-file', 'status'])
+        self.assertEqual((args.verbose, args.data_dir, args.no_log_file), (1, 'here', True))
+
+    def test_after_the_command(self):
+        args = self.parser.parse_args(['status', '-vv', '--store', 'files'])
+        self.assertEqual((args.verbose, args.store), (2, 'files'))
+
+    def test_a_flag_before_is_not_undone_by_the_commands_defaults(self):
+        args = self.parser.parse_args(['--data-dir', 'here', 'status', '-q'])
+        self.assertEqual((args.data_dir, args.quiet), ('here', True))
+
+    def test_every_command_has_them_with_their_defaults(self):
+        for command in (['jobs'], ['search', 'x'], ['apply'], ['reviews', 'tcs'], ['status']):
+            with self.subTest(command=command[0]):
+                args = self.parser.parse_args(command)
+                self.assertEqual(
+                    (args.verbose, args.quiet, args.log_file, args.data_dir, args.store),
+                    (0, False, None, None, None),
+                )
 
 
 class ParserTest(unittest.TestCase):
@@ -104,15 +127,17 @@ class ParserTest(unittest.TestCase):
     def test_reviews_accepts_both(self):
         self.assertEqual(self.parser.parse_args(['reviews', 'tcs', '-s', 'both']).source, 'both')
 
-    def test_display_flag_stores_false(self):
-        """-D exists to *show* the browser, so its stored value is headless."""
-        self.assertTrue(self.parser.parse_args(['jobs']).Display)
-        self.assertFalse(self.parser.parse_args(['jobs', '-D']).Display)
+    def test_show_is_the_one_way_to_see_the_browser(self):
+        """-D/--Display (inverted: it stored False to show) is gone since 0.2.0."""
+        for command in (['jobs'], ['reviews', 'tcs']):
+            with self.subTest(command=command[0]):
+                self.assertFalse(self.parser.parse_args(command).show)
+                self.assertTrue(self.parser.parse_args([*command, '--show']).show)
 
 
 class MainTest(unittest.TestCase):
     def test_the_bare_parser_binds_no_handler(self):
-        """Which is exactly why normalise() rewrites an empty argv to `jobs`."""
+        """Which is why `main([])` is a usage error rather than a run."""
         self.assertIsNone(getattr(build_parser().parse_args([]), 'handler', None))
 
     def test_help_exits_zero(self):

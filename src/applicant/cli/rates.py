@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 
-from .common import add_logging
 from .render import Renderer
 
 
@@ -25,7 +24,6 @@ def add_parser(add) -> argparse.ArgumentParser:
         metavar='CODE',
         help='limit the refresh to these currencies, e.g. GBP SEK NZD',
     )
-    add_logging(rates)
     rates.add_argument(
         '--into',
         metavar='PATH',

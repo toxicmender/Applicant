@@ -2,36 +2,74 @@
 
 from __future__ import annotations
 
+import argparse
+
 from ..filters import JobFilter
 
 
-def add_logging(command) -> None:
-    """On every subcommand rather than before them.
+def shared_flags(*, suppress: bool) -> argparse.ArgumentParser:
+    """The flags every command takes, as a parent parser.
 
-    A global flag would have to come first - `applicant -v search ...` - and
-    `normalise` reads a leading flag as the old bare-flag invocation of `jobs`,
-    so it would be rewritten into nonsense.
+    Used twice: by the top-level parser, so `applicant -v search x` works, and
+    by every subcommand, so `applicant search x -v` does too. The subcommands'
+    copies default to SUPPRESS - argparse copies a subcommand's namespace over
+    the top-level one, so a real default there would overwrite a flag given
+    before the subcommand.
     """
-    command.add_argument(
+
+    def default(value):
+        return argparse.SUPPRESS if suppress else value
+
+    flags = argparse.ArgumentParser(add_help=False)
+    flags.add_argument(
         '-v',
         '--verbose',
         action='count',
-        default=0,
+        default=default(0),
         help='say more about what each board is doing, with timestamps; '
         '-vv also logs each HTTP request',
     )
-    command.add_argument('-q', '--quiet', action='store_true', help='only warnings and failures')
-    command.add_argument(
+    flags.add_argument(
+        '-q',
+        '--quiet',
+        action='store_true',
+        default=default(False),
+        help='only warnings and failures',
+    )
+    flags.add_argument(
         '--log-file',
         metavar='PATH',
+        default=default(None),
         help='write everything, in full detail, to this file. Defaults to '
         'logs/run_<timestamp>.log, and any directory named is created',
     )
-    command.add_argument(
+    flags.add_argument(
         '--no-log-file',
         action='store_true',
+        default=default(False),
         help='do not write a log file for this run',
     )
+    flags.add_argument(
+        '--data-dir',
+        metavar='DIR',
+        default=default(None),
+        help='where applicant keeps its files and database; relative file names '
+        'go here (default: the current directory, or $APPLICANT_HOME)',
+    )
+    flags.add_argument(
+        '--store',
+        choices=['sqlite', 'files'],
+        default=default(None),
+        help='sqlite (default): applicant.db beside the files is the record and the '
+        'JSON/CSV are exports; files: the JSON/CSV alone',
+    )
+    flags.add_argument(
+        '--config',
+        metavar='PATH',
+        default=default(None),
+        help='settings file to read (default: applicant.toml here, if there is one)',
+    )
+    return flags
 
 
 def add_filters(command) -> None:
@@ -97,25 +135,4 @@ def filters_from(args) -> JobFilter:
         keep_unknown=not (args.strict or args.strict_published),
         # --strict is the stricter of the two, so it wins when both are given
         keep_unpublished=args.strict_published and not args.strict,
-    )
-
-
-def add_settings(command) -> None:
-    """Where the data lives and how it is kept - on every subcommand."""
-    command.add_argument(
-        '--data-dir',
-        metavar='DIR',
-        help='where applicant keeps its files and database; relative file names '
-        'go here (default: the current directory, or $APPLICANT_HOME)',
-    )
-    command.add_argument(
-        '--store',
-        choices=['sqlite', 'files'],
-        help='sqlite (default): applicant.db beside the files is the record and the '
-        'JSON/CSV are exports; files: the JSON/CSV alone',
-    )
-    command.add_argument(
-        '--config',
-        metavar='PATH',
-        help='settings file to read (default: applicant.toml here, if there is one)',
     )

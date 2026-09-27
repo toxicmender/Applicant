@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 
 from ..services.reviews import REVIEW_SOURCES
-from .common import add_logging
 from .render import Renderer, terminal
 
 
@@ -42,13 +41,7 @@ def add_parser(add) -> argparse.ArgumentParser:
         default='.gd_profile',
         help='directory holding the reused Glassdoor browser profile',
     )
-    reviews.add_argument(
-        '-D',
-        '--Display',
-        action='store_false',
-        help='Whether to display the browser or not (headless mode)',
-    )
-    add_logging(reviews)
+    reviews.add_argument('--show', action='store_true', help='run the browser visibly')
     return reviews
 
 
@@ -65,7 +58,7 @@ def clients(args) -> dict:
             made[source] = GlassdoorClient(
                 profile_dir=args.settings.path(args.profile),
                 login=args.login,
-                headless=args.Display,
+                headless=not args.show,
                 interaction=terminal(),
             )
     return made

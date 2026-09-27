@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 
 from ..services.financials import FINANCIAL_SOURCES
-from .common import add_logging
 from .render import Renderer, terminal
 
 
@@ -65,7 +64,6 @@ def add_parser(add) -> argparse.ArgumentParser:
         default='.tx_profile',
         help='directory holding the reused Tracxn browser profile',
     )
-    add_logging(financials)
     return financials
 
 

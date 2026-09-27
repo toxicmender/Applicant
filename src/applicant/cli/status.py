@@ -6,7 +6,6 @@ import argparse
 import json
 
 from ..log import get
-from .common import add_logging
 
 logger = get(__name__)
 
@@ -20,7 +19,6 @@ def add_parser(add) -> argparse.ArgumentParser:
         '--log', default='applied_jobs.csv', help='CSV the applications were appended to'
     )
     status.add_argument('--json', help='also write the summary to this file as JSON')
-    add_logging(status)
     return status
 
 

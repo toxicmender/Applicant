@@ -15,7 +15,6 @@ search and an apply. The work itself is in `applicant.services.search` and
 
 from __future__ import annotations
 
-import warnings
 from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING
 
@@ -147,26 +146,16 @@ class Jobs:
         jobs: Iterable[Job],
         log: str = 'applied_jobs.csv',
         filters: JobFilter | None = None,
-        dry_run: bool | None = None,
+        *,
+        dry_run: bool,
         confirm: Confirm | None = None,
     ) -> list[Entry]:
         """Apply where it is actually possible, and record everything.
 
-        Only LinkedIn Easy Apply can be automated; see `ApplyToJobs`. Pass
-        `dry_run` explicitly: leaving it out still submits, as it always did,
-        but warns - the default is going away, because a call that sends
-        applications in your name should say so. `confirm` is asked before
-        anything is submitted.
+        Only LinkedIn Easy Apply can be automated; see `ApplyToJobs`.
+        `dry_run` has no default: a call that sends applications in your name
+        has to say so. `confirm` is asked before anything is submitted.
         """
-        if dry_run is None:
-            warnings.warn(
-                'Jobs.apply() without dry_run submits applications; pass dry_run=False '
-                'to keep doing so, or dry_run=True to only record them. The default '
-                'will be removed.',
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            dry_run = False
         service = ApplyToJobs(
             {'linkedin': EasyApply(self.linkedin)}, backend=self.backend, confirm=confirm
         )

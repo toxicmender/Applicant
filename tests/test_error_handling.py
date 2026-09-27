@@ -174,7 +174,7 @@ class EasyApplyTest(TempDir):
             mock.patch('applicant.search.EASY_APPLY_LISTING', str(self.root / 'stage.json')),
             redirect_stdout(io.StringIO()),
         ):
-            Jobs(linkedin=linkedin).apply(jobs, log=log)
+            Jobs(linkedin=linkedin).apply(jobs, log=log, dry_run=False)
 
         statuses = {row['id']: row['status'] for row in ApplicationLog(log).rows()}
         self.assertEqual(statuses, {'1': 'failed', '2': 'needs_manual_apply'})
