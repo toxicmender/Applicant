@@ -21,11 +21,16 @@ and falls back to a market rate rather than being handed an invented number.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
 
 import httpx
+
+from .files import read_document, write_document
+
+logger = logging.getLogger(__name__)
 
 FX_URL = 'https://api.frankfurter.dev/v1/latest'
 WB_URL = 'https://api.worldbank.org/v2/country/{}/indicator/PA.NUS.PPP?format=json'
@@ -112,9 +117,12 @@ def load_factors(path: str | Path = FACTORS_PATH):
     try:
         with open(path, encoding='utf-8') as handle:
             payload = json.load(handle)
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return {}
-    factors = payload.get('factors')
+    except (OSError, ValueError) as error:
+        logger.warning(f'PPP table {path} unreadable ({type(error).__name__}); fetching on demand')
+        return {}
+    factors = payload.get('factors') if isinstance(payload, dict) else None
     return factors if isinstance(factors, dict) else {}
 
 
@@ -134,11 +142,8 @@ class Rates:
         self._cache = self._load()
 
     def _load(self):
-        try:
-            with open(self.path, encoding='utf-8') as handle:
-                cache = json.load(handle)
-        except (FileNotFoundError, ValueError):
-            cache = {}
+        # only a cache: an unreadable one is reported and rebuilt, not kept
+        cache = read_document(self.path)
         cache.setdefault('fx', {})
         cache.setdefault('ppp', {})
         for country, entry in PPP_SEED.items():
@@ -147,10 +152,10 @@ class Rates:
 
     def _save(self):
         try:
-            with open(self.path, 'w', encoding='utf-8') as handle:
-                json.dump(self._cache, handle, indent=1)
-        except OSError:
-            pass  # a read only cwd should not break a search
+            write_document(self.path, self._cache)
+        except OSError as error:
+            # a read only cwd should not break a search, but it should be visible
+            logger.warning(f'could not write the rate cache {self.path}: {error}')
 
     # -- exchange rates ---------------------------------------------------
 
@@ -167,8 +172,13 @@ class Rates:
                 payload = client.get(FX_URL, params={'base': base}).json()
             rates = dict(payload['rates'])
             rates[base] = 1.0
-        except Exception:  # noqa: BLE001 - any FX failure falls back to the cache
+        except Exception as error:  # noqa: BLE001 - any FX failure falls back to the cache
+            logger.warning(
+                f'exchange rates for {base} unavailable ({type(error).__name__}: {error}); '
+                + ('using the cached ones' if entry else 'market conversion is off')
+            )
             return entry['rates'] if entry else {}
+        logger.info(f'fetched {len(rates)} exchange rates against {base}')
 
         self._cache['fx'][base] = {
             'rates': rates,
@@ -194,6 +204,10 @@ class Rates:
 
         newest = fetch_factor(country, timeout=self.timeout)
         if newest is None:
+            logger.warning(
+                f'no PPP factor for {country}; '
+                + ('using the stale one' if entry else 'falling back to market rates')
+            )
             # the World Bank throttles hard; a stale or seeded value beats nothing
             return entry['value'] if entry else None
 
@@ -219,7 +233,10 @@ def fetch_factor(country, timeout=20.0, attempts=3, pause=2.0, client=None):
                     response = owned.get(WB_URL.format(country), params=WB_PARAMS)
             payload = response.json()
             rows = [row for row in payload[1] if row.get('value') is not None]
-        except Exception:  # noqa: BLE001 - throttled, reshaped, or offline
+        except Exception as error:  # noqa: BLE001 - throttled, reshaped, or offline
+            logger.debug(
+                f'PPP factor for {country}, attempt {attempt + 1}: {type(error).__name__}: {error}'
+            )
             continue
         if not rows:
             return None  # a real answer: the series has no data for this country
@@ -254,12 +271,12 @@ def refresh_factors(
         ]
     )
 
-    try:
-        with open(path, encoding='utf-8') as handle:
-            document = json.load(handle)
-    except (OSError, ValueError):
-        document = {}
+    # quarantined, not overwritten: this is the checked in table, and writing only
+    # this run's factors over an unreadable copy would silently drop the rest
+    document = read_document(path, quarantine=True)
     factors = document.setdefault('factors', {})
+    if not isinstance(factors, dict):
+        factors = document['factors'] = {}
 
     updated, failed, skipped = [], [], []
     today = time.strftime('%Y-%m-%d')
@@ -283,9 +300,8 @@ def refresh_factors(
 
     if updated:
         document['factors'] = dict(sorted(factors.items()))
-        with open(path, 'w', encoding='utf-8') as handle:
-            json.dump(document, handle, indent=2)
-            handle.write('\n')
+        write_document(path, document, trailing_newline=True)
+        logger.info(f'PPP table {path}: {len(updated)} factor(s) written')
 
     return updated, failed, skipped
 

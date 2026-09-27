@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
 from .models import Job
 from .money import Rates, convert
 from .salary import parse_salary
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -52,30 +55,38 @@ class JobFilter:
                 continue
             actual = getattr(job, field_name) or ''
             if not self._text_matches(value, actual):
-                return False, flags
+                return self._drop(job, f'{field_name} {actual!r} does not match {value!r}', flags)
 
         if self.min_salary is not None and 'salary' not in skip:
             keep, flag = self._salary_ok(job, self.min_salary)
             if flag:
                 flags.append(flag)
             if not keep:
-                return False, flags
+                return self._drop(job, f'salary {job.salary!r} under {self.min_salary}', flags)
 
         if self.experience is not None and 'experience' not in skip:
             keep, flag = self._experience_ok(job, self.experience)
             if flag:
                 flags.append(flag)
             if not keep:
-                return False, flags
+                return self._drop(job, f'experience does not fit {self.experience} years', flags)
 
         if self.posted_within_days is not None and 'posted' not in skip:
             keep, flag = self._date_ok(job, self.posted_within_days, today)
             if flag:
                 flags.append(flag)
             if not keep:
-                return False, flags
+                return self._drop(
+                    job, f'posted {job.posted!r}, over {self.posted_within_days} days ago', flags
+                )
 
         return True, flags
+
+    def _drop(self, job: Job, reason: str, flags: list[str]) -> tuple[bool, list[str]]:
+        """Why a job was filtered out: the first thing to check when a search
+        comes back empty. Debug only - there is one line per job."""
+        logger.debug(f'{job.source}: dropped {job.title!r}: {reason}')
+        return False, flags
 
     def _text_matches(self, wanted: str, actual: str) -> bool:
         """Every word of the filter must appear, in any order."""
