@@ -13,11 +13,12 @@ import logging
 import re
 from urllib.parse import urlencode
 
-from ..dates import epoch_to_iso
+from ..domain.dates import epoch_to_iso
+from ..domain.job import Job
+from ..domain.places import country_for
+from ..errors import Blocked, SourceError
 from ..infra.browser import browser, looks_blocked
 from ..infra.http import USER_AGENT, HttpClient
-from ..models import BlockedError, Job, JobsError
-from ..places import country_for
 from . import CAPABILITIES
 
 logger = logging.getLogger(__name__)
@@ -160,7 +161,7 @@ class Indeed:
                 'retrying in a browser'
             )
         # unreachable after the retries, or rate limited
-        except JobsError as error:
+        except SourceError as error:
             logger.info(f'indeed: plain request failed ({error}); retrying in a browser')
         # Indeed challenged or reshaped the plain request - try it in a browser
         return self._html_via_browser(url)
@@ -169,7 +170,7 @@ class Indeed:
         with browser(headless=self.headless) as page:
             page.goto(url, wait_until='domcontentloaded')
             if looks_blocked(page):
-                raise BlockedError(
+                raise Blocked(
                     'Indeed served a bot check instead of results. Retry later, or run '
                     'with --show to solve it in a visible window.'
                 )
@@ -178,11 +179,11 @@ class Indeed:
     def _results(self, html):
         match = MOSAIC.search(html)
         if not match:
-            raise BlockedError('no job cards found in the Indeed response')
+            raise Blocked('no job cards found in the Indeed response')
         try:
             payload = json.loads(match.group(1))
         except ValueError:
-            raise BlockedError('Indeed job card payload was not valid JSON') from None
+            raise Blocked('Indeed job card payload was not valid JSON') from None
         model = (payload.get('metaData') or {}).get('mosaicProviderJobCardsModel') or {}
         return model.get('results') or []
 

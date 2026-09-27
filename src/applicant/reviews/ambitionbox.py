@@ -6,8 +6,8 @@ import re
 
 import httpx
 
+from ..errors import NotFound, SourceError, Unparseable
 from ..infra.http import HEADERS, HttpClient
-from .errors import CompanyNotFound, ParseError, ReviewsError
 from .models import CompanyRating, Review
 
 logger = logging.getLogger(__name__)
@@ -65,20 +65,20 @@ class AmbitionBoxClient:
         return self.http.get(url, **kwargs)
 
     def fetch(self, company, max_reviews=PAGE_SIZE):
-        """Every failure leaves as a ReviewsError, so a caller trying several
+        """Every failure leaves as a SourceError, so a caller trying several
         sources can report this one and carry on with the rest. The network
         failing through every retry arrives as `Unreachable`, a rate limit that
-        outlasts them as `Blocked` - both ReviewsErrors."""
+        outlasts them as `Blocked` - both SourceErrors."""
         try:
             rating = self._fetch(company, max_reviews)
         except httpx.HTTPStatusError as error:
-            raise ReviewsError(
+            raise SourceError(
                 f'AmbitionBox answered HTTP {error.response.status_code} for {company!r}'
             ) from error
         except httpx.HTTPError as error:
-            raise ReviewsError(f'could not reach AmbitionBox: {error}') from error
+            raise SourceError(f'could not reach AmbitionBox: {error}') from error
         except ValueError as error:  # a JSON body that did not parse
-            raise ParseError(f'AmbitionBox sent unreadable data: {error}') from error
+            raise Unparseable(f'AmbitionBox sent unreadable data: {error}') from error
         logger.info(
             f'ambitionbox: {rating.company}: {rating.overall_rating} from '
             f'{rating.review_count} ratings, {len(rating.reviews)} review(s)'
@@ -91,12 +91,12 @@ class AmbitionBoxClient:
 
         response = self._get(url)
         if response.status_code == 404:
-            raise CompanyNotFound('no AmbitionBox page for {!r} (tried {})'.format(company, url))
+            raise NotFound('no AmbitionBox page for {!r} (tried {})'.format(company, url))
         response.raise_for_status()
 
         try:
             props = self._page_props(response.text)
-        except ParseError as error:
+        except Unparseable as error:
             # shape changed on us - the JSON-LD aggregate still carries rating + count
             logger.warning(f'ambitionbox: {error}; falling back to the JSON-LD summary')
             return self._from_json_ld(response.text, company, url)
@@ -150,15 +150,15 @@ class AmbitionBoxClient:
     def _page_props(self, html):
         match = NEXT_DATA.search(html)
         if not match:
-            raise ParseError('__NEXT_DATA__ script not found')
+            raise Unparseable('__NEXT_DATA__ script not found')
         try:
             payload = json.loads(match.group(1))
         except ValueError as error:
-            raise ParseError('__NEXT_DATA__ is not valid JSON: {}'.format(error)) from error
+            raise Unparseable('__NEXT_DATA__ is not valid JSON: {}'.format(error)) from error
 
         props = (payload.get('props') or {}).get('pageProps')
         if not props:
-            raise ParseError('__NEXT_DATA__ has no props.pageProps')
+            raise Unparseable('__NEXT_DATA__ has no props.pageProps')
         # stash the build id here so callers get it alongside the data it belongs to
         props['__buildId'] = payload.get('buildId')
         return props
@@ -218,6 +218,6 @@ class AmbitionBoxClient:
                 overall_rating=float(block['ratingValue']) if block.get('ratingValue') else None,
                 review_count=block.get('ratingCount'),
             )
-        raise ParseError(
+        raise Unparseable(
             'neither __NEXT_DATA__ nor EmployerAggregateRating found on {}'.format(url)
         )

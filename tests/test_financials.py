@@ -9,15 +9,8 @@ import unittest
 
 import httpx
 
-from applicant.financials import (
-    AuthError,
-    CompanyNotFound,
-    CrunchbaseClient,
-    FinancialsError,
-    FinancialsTracker,
-    TracxnClient,
-    parse_money,
-)
+from applicant.errors import AuthFailed, NotFound, SourceError
+from applicant.financials import CrunchbaseClient, FinancialsTracker, TracxnClient, parse_money
 from applicant.financials.crunchbase import employee_band, permalink
 from applicant.financials.models import CompanyFinancials, FundingRound, Money
 from applicant.financials.parsing import clean_name, embedded_json, humanize, labelled, to_money
@@ -221,7 +214,7 @@ class Crunchbase(unittest.TestCase):
 
     def test_basic_plan_is_explained(self):
         client = crunchbase(lambda request: httpx.Response(403, json=[{'message': 'nope'}]))
-        with self.assertRaisesRegex(AuthError, 'Basic'):
+        with self.assertRaisesRegex(AuthFailed, 'Basic'):
             client.fetch('zomato')
 
     def test_single_attempt_reports_transport_error(self):
@@ -230,7 +223,7 @@ class Crunchbase(unittest.TestCase):
 
         client = crunchbase(handler)
         client.retries = 0  # still one attempt, and its failure must be reported
-        with self.assertRaisesRegex(FinancialsError, 'could not reach Crunchbase'):
+        with self.assertRaisesRegex(SourceError, 'could not reach Crunchbase'):
             client.fetch('zomato')
 
     def test_not_found(self):
@@ -239,7 +232,7 @@ class Crunchbase(unittest.TestCase):
                 return httpx.Response(200, json={'entities': []})
             return httpx.Response(404)
 
-        with self.assertRaises(CompanyNotFound):
+        with self.assertRaises(NotFound):
             crunchbase(handler).fetch('no such company')
 
 
@@ -351,12 +344,12 @@ class Tracxn(unittest.TestCase):
             calls.append(request)
             return httpx.Response(403, json={'errorCode': 900, 'message': 'API out of credits'})
 
-        with self.assertRaisesRegex(AuthError, 'out of credits'):
+        with self.assertRaisesRegex(AuthFailed, 'out of credits'):
             tracxn(handler).fetch(TX_ID)
         self.assertEqual(len(calls), 1)
 
     def test_name_without_token_is_explained(self):
-        with self.assertRaisesRegex(FinancialsError, 'profile url'):
+        with self.assertRaisesRegex(SourceError, 'profile url'):
             TracxnClient(api_key='').fetch('Zomato')
 
 

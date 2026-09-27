@@ -8,9 +8,6 @@ Apply - lives in `applicant.boards.linkedin_apply`, which a search never
 imports (a test checks). Reading public job cards and submitting applications
 on your real account are different risks, and the code that can do the second
 is kept small and on its own.
-
-`LinkedIn`, the class that does both, is still importable from here for code
-written before the split; it is loaded from `linkedin_apply` only when asked for.
 """
 
 from __future__ import annotations
@@ -18,15 +15,12 @@ from __future__ import annotations
 import logging
 import re
 from html import unescape
-from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
+from ..domain.job import Job
+from ..errors import SourceError
 from ..infra.http import HEADERS, HttpClient
-from ..models import Job, JobsError
 from . import CAPABILITIES
-
-if TYPE_CHECKING:
-    from .linkedin_apply import LinkedIn as LinkedIn
 
 logger = logging.getLogger(__name__)
 
@@ -89,10 +83,10 @@ class LinkedInGuest:
                 # LinkedIn wants the window in seconds, as r<seconds>
                 query['f_TPR'] = 'r{}'.format(int(posted_within_days) * 86400)
             logger.debug(f'linkedin: guest search page at offset {start}')
-            # an unreachable host or a 429 leaves HttpClient as a JobsError
+            # an unreachable host or a 429 leaves HttpClient as a SourceError
             response = self.http.get('{}?{}'.format(GUEST_SEARCH, urlencode(query)))
             if response.is_error:
-                raise JobsError(f'LinkedIn guest search answered HTTP {response.status_code}')
+                raise SourceError(f'LinkedIn guest search answered HTTP {response.status_code}')
 
             cards = CARD.findall(response.text)
             if not cards:
@@ -167,12 +161,3 @@ class LinkedInGuest:
 
     def __exit__(self, *exc_info):
         self.close()
-
-
-def __getattr__(name: str) -> Any:
-    """`LinkedIn` - the signed in client - loaded only when someone asks for it."""
-    if name == 'LinkedIn':
-        from .linkedin_apply import LinkedIn
-
-        return LinkedIn
-    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')

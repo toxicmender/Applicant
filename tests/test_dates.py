@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timezone
 
-from applicant.dates import epoch_to_iso, relative_to_iso
+from applicant.domain.dates import epoch_to_iso, relative_to_iso
 
 NOW = datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc)
 

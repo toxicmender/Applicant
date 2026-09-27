@@ -9,8 +9,7 @@ name. `search` never imports this module; `apply` loads it only to submit.
 calls. `dry_run` has no default: whoever calls it has to say which they mean,
 and a dry run never opens a browser.
 
-Session state is Playwright's storage_state. Cookie files written by the older
-Selenium version are converted on read, so an existing cookies.json keeps working.
+Session state is Playwright's storage_state, saved by `login`.
 """
 
 from __future__ import annotations
@@ -21,10 +20,11 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..domain.job import Job
 from ..domain.ports import ApplicationResult
+from ..errors import Blocked, SourceError
 from ..infra.browser import BrowserSession
 from ..interaction import Interaction, Terminal
-from ..models import BlockedError, Job, JobsError
 from .linkedin import LinkedInGuest
 
 if TYPE_CHECKING:
@@ -91,7 +91,7 @@ class LinkedIn(LinkedInGuest):
         """The live context, started if it is not already."""
         self._start()
         if self._browser_session is None:  # pragma: no cover - _start always sets it
-            raise JobsError('the browser session did not start')
+            raise SourceError('the browser session did not start')
         return self._browser_session.context
 
     def login(
@@ -128,7 +128,7 @@ class LinkedIn(LinkedInGuest):
         # password never are - this is the user's own account on their machine
         if '/login' in page.url or '/checkpoint/' in page.url:
             logger.warning(f'linkedin: sign in did not complete (stopped at {page.url})')
-            raise BlockedError(
+            raise Blocked(
                 'LinkedIn did not complete the login (still on {}). '
                 'A manual challenge is probably waiting - rerun with '
                 'headless disabled.'.format(page.url)
@@ -153,7 +153,7 @@ class LinkedIn(LinkedInGuest):
         return True
 
     def _load_state(self, filepath: str | Path):
-        """Accepts Playwright storage_state or the old Selenium cookies.json."""
+        """A Playwright storage_state saved by `login`, or None."""
         try:
             with open(filepath, encoding='utf-8') as file:
                 payload = json.load(file)
@@ -166,35 +166,13 @@ class LinkedIn(LinkedInGuest):
         if isinstance(payload, dict) and 'cookies' in payload:
             return payload
 
-        cookies = payload.get('list') if isinstance(payload, dict) else None
-        if not cookies:
-            return None
-
-        converted = []
-        for cookie in cookies:
-            try:
-                if not cookie.get('name'):
-                    continue
-                converted.append(
-                    {
-                        'name': cookie['name'],
-                        'value': cookie.get('value', ''),
-                        'domain': cookie.get('domain', '.linkedin.com'),
-                        'path': cookie.get('path', '/'),
-                        'expires': float(cookie.get('expiry', -1)),
-                        'httpOnly': bool(cookie.get('httpOnly')),
-                        'secure': bool(cookie.get('secure', True)),
-                        'sameSite': 'Lax',
-                    }
-                )
-            except (AttributeError, TypeError, ValueError) as error:
-                # one malformed cookie; its value is a credential, so only the
-                # error type is logged
-                logger.warning(f'linkedin: skipped a malformed cookie ({type(error).__name__})')
-        logger.info(
-            f'linkedin: converted {len(converted)} Selenium cookie(s) to a Playwright session'
+        # A Selenium-era cookies.json ({'list': [...]}) was converted until 0.2.0;
+        # now it is simply not a session, and signing in again writes one
+        logger.warning(
+            f'linkedin: {filepath} is not a saved session (an old Selenium cookie file?); '
+            'sign in again to replace it'
         )
-        return {'cookies': converted, 'origins': []}
+        return None
 
     # -- logged in flows --------------------------------------------------
 
@@ -207,7 +185,7 @@ class LinkedIn(LinkedInGuest):
             'https://www.linkedin.com/jobs/collections/recommended/', wait_until='domcontentloaded'
         )
         if '/authwall' in page.url or '/login' in page.url:
-            raise BlockedError('not signed in - call login() or restore_session() first')
+            raise Blocked('not signed in - call login() or restore_session() first')
 
         cards = page.locator('[data-job-id], .job-card-container')
         seen = 0

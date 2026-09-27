@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import unittest
 
-from applicant.places import COUNTRIES, COUNTRY_OF_PLACE, countries_in, country_for, within
+from applicant.domain.places import COUNTRIES, COUNTRY_OF_PLACE, countries_in, country_for, within
 
 
 class WithinTest(unittest.TestCase):

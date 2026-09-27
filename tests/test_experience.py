@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import unittest
 
+from applicant.domain.job import Job, parse_experience
 from applicant.filters import JobFilter
-from applicant.models import Job, parse_experience
 
 
 class ParseExperienceTest(unittest.TestCase):

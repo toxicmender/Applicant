@@ -16,9 +16,10 @@ import httpx
 from applicant.boards import CAPABILITIES, capability
 from applicant.boards.googlejobs import GoogleJobs
 from applicant.boards.indeed import Indeed, host_for
-from applicant.boards.linkedin import LinkedIn
+from applicant.boards.linkedin import LinkedInGuest
 from applicant.boards.naukri import Naukri, search_url
-from applicant.models import BlockedError, Job, experience_from
+from applicant.domain.job import Job, experience_from
+from applicant.errors import Blocked
 from applicant.search import SOURCES
 
 
@@ -134,14 +135,14 @@ class IndeedParseTest(unittest.TestCase):
         self.assertEqual(len(results), 1)
 
     def test_a_page_without_the_blob_reads_as_blocked(self):
-        with self.assertRaises(BlockedError):
+        with self.assertRaises(Blocked):
             self.client._results('<html>Access Denied</html>')
 
     def test_a_malformed_blob_reads_as_blocked(self):
         html = (
             '<script>window.mosaic.providerData["mosaic-provider-jobcards"] = {not json};</script>'
         )
-        with self.assertRaises(BlockedError):
+        with self.assertRaises(Blocked):
             self.client._results(html)
 
 
@@ -328,7 +329,7 @@ class LinkedInGuestCardTest(unittest.TestCase):
     """
 
     def setUp(self):
-        self.client = LinkedIn()
+        self.client = LinkedInGuest()
         self.addCleanup(self.client.close)
 
     def test_fields_are_extracted(self):
@@ -366,8 +367,10 @@ class LinkedInGuestSearchTest(unittest.TestCase):
             '<h3 class="base-search-card__title">Dev {0}</h3></div></li>'.format(job_id)
         )
 
-    def client(self, handler) -> LinkedIn:
-        instance = LinkedIn(delay=0, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    def client(self, handler) -> LinkedInGuest:
+        instance = LinkedInGuest(
+            delay=0, client=httpx.Client(transport=httpx.MockTransport(handler))
+        )
         self.addCleanup(instance.close)
         return instance
 
@@ -392,7 +395,7 @@ class LinkedInGuestSearchTest(unittest.TestCase):
         def handler(request):
             return httpx.Response(429)
 
-        with self.assertRaises(BlockedError):
+        with self.assertRaises(Blocked):
             self.client(handler).search('python', limit=5)
 
     def test_the_age_filter_is_sent_in_seconds(self):
@@ -414,8 +417,10 @@ class LinkedInDescribeTest(unittest.TestCase):
         '<ul><li>3+ years of experience with Python &amp; PyTorch</li></ul></section>'
     )
 
-    def client(self, handler) -> LinkedIn:
-        instance = LinkedIn(delay=0, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    def client(self, handler) -> LinkedInGuest:
+        instance = LinkedInGuest(
+            delay=0, client=httpx.Client(transport=httpx.MockTransport(handler))
+        )
         self.addCleanup(instance.close)
         return instance
 
@@ -454,7 +459,7 @@ class LinkedInDescribeTest(unittest.TestCase):
     def test_rate_limiting_is_reported_not_swallowed(self):
         """Carrying on through a 429 is how a working scrape becomes a blocked one."""
         client = self.client(lambda request: httpx.Response(429))
-        with self.assertRaises(BlockedError):
+        with self.assertRaises(Blocked):
             client.describe(self.job())
 
 
@@ -525,7 +530,7 @@ class CapabilityTest(unittest.TestCase):
 
     def test_each_client_carries_its_own(self):
         for client, name in (
-            (LinkedIn(), 'linkedin'),
+            (LinkedInGuest(), 'linkedin'),
             (Indeed(), 'indeed'),
             (Naukri(), 'naukri'),
             (GoogleJobs(), 'googlejobs'),

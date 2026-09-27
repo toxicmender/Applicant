@@ -18,11 +18,11 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING
 
+from .domain.job import Job
 from .errors import SourceError
 from .filters import JobFilter
 from .infra.store.repositories import Backend
 from .log import get
-from .models import Job
 from .services.apply import ApplyToJobs, Confirm, EasyApply, Entry
 from .services.events import Emit, Event, SourceFailed, ignore
 from .services.search import SOURCES, Board, SearchJobs, close_quietly
@@ -30,14 +30,9 @@ from .services.search import SOURCES, Board, SearchJobs, close_quietly
 if TYPE_CHECKING:
     from .boards.linkedin_apply import LinkedIn
 
-__all__ = ['EASY_APPLY_LISTING', 'SOURCES', 'Board', 'Jobs']
+__all__ = ['SOURCES', 'Board', 'Jobs']
 
 logger = get(__name__)
-
-# Deprecated and unused: Easy Apply used to stage jobs in this file for the
-# LinkedIn client to read back. They are handed over directly now; the name is
-# kept only so code that patched it does not break.
-EASY_APPLY_LISTING = 'applied_via_jobs_interface.json'
 
 
 class Jobs:

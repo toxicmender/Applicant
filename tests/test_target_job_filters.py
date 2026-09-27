@@ -22,8 +22,9 @@ from unittest.mock import patch
 
 from applicant.boards import capability
 from applicant.cli import main
+from applicant.domain.job import Job
+from applicant.errors import Blocked
 from applicant.filters import JobFilter
-from applicant.models import BlockedError, Job
 from applicant.search import Jobs
 from applicant.storage import ApplicationLog, fingerprint, load_jobs, save_jobs
 
@@ -418,7 +419,7 @@ class DescribingBoard(StubBoard):
 
     def describe(self, job):
         if self.fail:
-            raise BlockedError('rate limited')
+            raise Blocked('rate limited')
         self.read.append(job.id)
         return self.pages.get(job.id)
 

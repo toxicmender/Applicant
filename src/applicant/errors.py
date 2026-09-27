@@ -17,13 +17,10 @@ which area it went wrong in, so a caller handles "blocked", "not found" or
     ├── StoreError
     └── ConfigError
 
-The old names stay importable from where they always were - `JobsError` and
-`BlockedError` from `applicant.models`, `ReviewsError` and friends from
-`applicant.reviews`, `FinancialsError` and friends from `applicant.financials` -
-as aliases of these classes, so existing `except` clauses keep working. Since
-they are aliases rather than subclasses, `except ReviewsError` now also catches
-a job board's failure; nothing calls both inside one `try`, and a failing
-source is a failing source whichever area it serves.
+Before 0.2.0 each area had its own names for these - `JobsError`,
+`ReviewsError`, `FinancialsError`, `ChallengeError`, `CompanyNotFound`,
+`ParseError`, `AuthError` - kept for a while as aliases. They are gone; these
+are the only names.
 """
 
 from __future__ import annotations

@@ -15,8 +15,9 @@ from pathlib import Path
 from unittest import mock
 
 from applicant.cli import build_parser, main
-from applicant.financials import CompanyFinancials, FinancialsError, Money
-from applicant.models import Job
+from applicant.domain.job import Job
+from applicant.errors import SourceError
+from applicant.financials import CompanyFinancials, Money
 from applicant.storage import ApplicationLog, save_jobs
 
 
@@ -317,7 +318,7 @@ class FinancialsCommandTest(unittest.TestCase):
         def fetch(client, company, max_rounds=20):
             self.asked.append((source, company))
             if source == 'tracxn':
-                raise FinancialsError('Tracxn needs an API token or a profile url')
+                raise SourceError('Tracxn needs an API token or a profile url')
             return CompanyFinancials(
                 source=source,
                 company=company,

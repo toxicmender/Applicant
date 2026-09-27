@@ -19,7 +19,7 @@ import httpx
 from applicant.boards import CAPABILITIES, Field
 from applicant.boards.googlejobs import GoogleJobs
 from applicant.boards.indeed import Indeed
-from applicant.boards.linkedin import LinkedIn
+from applicant.boards.linkedin import LinkedInGuest
 from applicant.boards.naukri import Naukri
 from applicant.domain import dedupe, flags
 from applicant.domain.capability import Capability
@@ -128,7 +128,7 @@ class LayerRuleTest(unittest.TestCase):
 
 def parsed_samples() -> dict[str, Job]:
     """One job per board, from the same fixtures test_boards parses."""
-    linkedin = LinkedIn(delay=0)
+    linkedin = LinkedInGuest(delay=0)
     try:
         card = linkedin._card_to_job(LinkedInGuestCardTest.CARD)
     finally:

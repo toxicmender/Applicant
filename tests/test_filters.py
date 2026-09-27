@@ -4,8 +4,8 @@ import unittest
 from datetime import date
 from typing import Any
 
+from applicant.domain.job import Job
 from applicant.filters import JobFilter
-from applicant.models import Job
 from applicant.money import Rates
 
 # every currency test runs off a fixed table, so no test reaches the network and

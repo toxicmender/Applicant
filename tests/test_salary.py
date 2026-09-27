@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import unittest
 
-from applicant.salary import parse_salary
+from applicant.domain.salary import parse_salary
 
 
 class ParseSalaryTest(unittest.TestCase):

@@ -20,21 +20,20 @@ import httpx
 
 from applicant import log
 from applicant.boards import Capability
-from applicant.boards.linkedin import LinkedIn
+from applicant.boards.linkedin_apply import LinkedIn
 from applicant.cli import main
+from applicant.domain.job import Job
+from applicant.errors import SourceError, Unparseable
 from applicant.files import read_document, write_document
 from applicant.financials import (
     CompanyFinancials,
     CrunchbaseClient,
-    FinancialsError,
     FinancialsTracker,
     Money,
-    ParseError,
     TracxnClient,
 )
-from applicant.models import Job, JobsError
 from applicant.money import refresh_factors
-from applicant.reviews import AmbitionBoxClient, GlassdoorClient, ReviewsError
+from applicant.reviews import AmbitionBoxClient, GlassdoorClient
 from applicant.search import Jobs
 from applicant.storage import ApplicationLog, load_jobs, save_jobs
 
@@ -171,7 +170,6 @@ class EasyApplyTest(TempDir):
             Job(source='indeed', id='2', title='Dev', url='https://indeed.example/2'),
         ]
         with (
-            mock.patch('applicant.search.EASY_APPLY_LISTING', str(self.root / 'stage.json')),
             redirect_stdout(io.StringIO()),
         ):
             Jobs(linkedin=linkedin).apply(jobs, log=log, dry_run=False)
@@ -190,11 +188,11 @@ class LinkedInGuestSearchErrorTest(unittest.TestCase):
         return instance
 
     def test_a_server_error_is_a_jobs_error(self):
-        with self.assertRaisesRegex(JobsError, 'HTTP 500'):
+        with self.assertRaisesRegex(SourceError, 'HTTP 500'):
             self.client(lambda request: httpx.Response(500)).search('python')
 
     def test_an_unreachable_host_is_a_jobs_error(self):
-        with self.assertRaisesRegex(JobsError, 'could not reach LinkedIn'):
+        with self.assertRaisesRegex(SourceError, 'could not reach LinkedIn'):
             self.client(offline).search('python')
 
 
@@ -203,17 +201,17 @@ class ReviewsErrorTest(unittest.TestCase):
         return AmbitionBoxClient(delay=0, retries=1, client=mock_client(handler))
 
     def test_ambitionbox_offline_is_a_reviews_error(self):
-        with self.assertRaisesRegex(ReviewsError, 'could not reach AmbitionBox'):
+        with self.assertRaisesRegex(SourceError, 'could not reach AmbitionBox'):
             self.ambitionbox(offline).fetch('tcs')
 
     def test_ambitionbox_server_error_is_a_reviews_error(self):
-        with self.assertRaisesRegex(ReviewsError, 'HTTP 500'):
+        with self.assertRaisesRegex(SourceError, 'HTTP 500'):
             self.ambitionbox(lambda request: httpx.Response(500)).fetch('tcs')
 
     def test_a_glassdoor_browser_failure_is_a_reviews_error(self):
         with (
             mock.patch.object(GlassdoorClient, '_fetch', side_effect=RuntimeError('no chrome')),
-            self.assertRaisesRegex(ReviewsError, 'browser session failed: RuntimeError'),
+            self.assertRaisesRegex(SourceError, 'browser session failed: RuntimeError'),
         ):
             GlassdoorClient().fetch('Google-E9079')
 
@@ -239,21 +237,21 @@ class FinancialsErrorTest(unittest.TestCase):
         client = CrunchbaseClient(
             api_key='k', delay=0, client=mock_client(lambda request: httpx.Response(500))
         )
-        with self.assertRaisesRegex(FinancialsError, 'HTTP 500'):
+        with self.assertRaisesRegex(SourceError, 'HTTP 500'):
             client.fetch('zomato')
 
     def test_a_crunchbase_body_that_is_not_json_is_a_parse_error(self):
         client = CrunchbaseClient(
             api_key='k', delay=0, client=mock_client(lambda request: httpx.Response(200, text='<'))
         )
-        with self.assertRaises(ParseError):
+        with self.assertRaises(Unparseable):
             client.fetch('zomato')
 
     def test_a_tracxn_server_error_is_a_financials_error(self):
         client = TracxnClient(
             api_key='t', delay=0, client=mock_client(lambda request: httpx.Response(500))
         )
-        with self.assertRaisesRegex(FinancialsError, 'HTTP 500'):
+        with self.assertRaisesRegex(SourceError, 'HTTP 500'):
             client.fetch('5c1c697b8f088f5b6f55226c')
 
     def test_constructing_a_client_registers_its_key_for_masking(self):

@@ -5,7 +5,8 @@ import unittest
 
 import httpx
 
-from applicant.reviews import AmbitionBoxClient, CompanyNotFound, ParseError, ReviewsError
+from applicant.errors import NotFound, SourceError, Unparseable
+from applicant.reviews import AmbitionBoxClient
 from applicant.reviews.ambitionbox import slugify
 from applicant.reviews.glassdoor import GlassdoorClient, reviews_url
 from applicant.reviews.models import CompanyRating, Review
@@ -78,15 +79,15 @@ class AmbitionBoxParseTest(unittest.TestCase):
         self.assertEqual(props['companyName'], 'TCS')
 
     def test_a_missing_blob_is_a_parse_error(self):
-        with self.assertRaises(ParseError):
+        with self.assertRaises(Unparseable):
             self.client._page_props('<html>nothing here</html>')
 
     def test_a_malformed_blob_is_a_parse_error(self):
-        with self.assertRaises(ParseError):
+        with self.assertRaises(Unparseable):
             self.client._page_props('<script id="__NEXT_DATA__">{not json}</script>')
 
     def test_missing_page_props_is_a_parse_error(self):
-        with self.assertRaises(ParseError):
+        with self.assertRaises(Unparseable):
             self.client._page_props('<script id="__NEXT_DATA__">{"props": {}}</script>')
 
     def test_rating_is_built_from_the_props(self):
@@ -120,7 +121,7 @@ class AmbitionBoxParseTest(unittest.TestCase):
         self.assertEqual(rating.review_count, 117_600)
 
     def test_neither_blob_present_is_a_parse_error(self):
-        with self.assertRaises(ParseError):
+        with self.assertRaises(Unparseable):
             self.client._from_json_ld('<html></html>', 'tcs', 'url')
 
 
@@ -134,7 +135,7 @@ class AmbitionBoxFetchTest(unittest.TestCase):
         def handler(request):
             return httpx.Response(404)
 
-        with self.assertRaises(CompanyNotFound):
+        with self.assertRaises(NotFound):
             self.client(handler).fetch('nope')
 
     def test_the_first_page_is_enough_for_a_small_request(self):
@@ -197,7 +198,7 @@ class GlassdoorUrlTest(unittest.TestCase):
 
     def test_a_bare_name_cannot_be_resolved(self):
         """Glassdoor's company search is behind the same bot check, so we refuse."""
-        with self.assertRaises(ReviewsError):
+        with self.assertRaises(SourceError):
             reviews_url('Google')
 
 
@@ -253,7 +254,7 @@ class GlassdoorExtractTest(unittest.TestCase):
         self.assertIsNone(self.client._read_review({'summary': 'no body'}))
 
     def test_no_data_at_all_is_a_parse_error(self):
-        with self.assertRaises(ParseError):
+        with self.assertRaises(Unparseable):
             self.client._build([], [], 'Google', '9079', 'url')
 
 

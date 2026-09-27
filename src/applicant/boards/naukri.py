@@ -14,9 +14,10 @@ from __future__ import annotations
 import logging
 import re
 
-from ..dates import relative_to_iso
+from ..domain.dates import relative_to_iso
+from ..domain.job import Job
+from ..errors import Blocked
 from ..infra.browser import browser, looks_blocked
-from ..models import BlockedError, Job
 from . import CAPABILITIES
 
 logger = logging.getLogger(__name__)
@@ -64,7 +65,7 @@ class Naukri:
                     search_url(keywords, location, page_number), wait_until='domcontentloaded'
                 )
                 if looks_blocked(page):
-                    raise BlockedError(
+                    raise Blocked(
                         'Naukri served a bot check. Retry later, or run with --show '
                         'to solve it in a visible window.'
                     )

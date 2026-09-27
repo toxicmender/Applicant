@@ -71,10 +71,6 @@ def restore(value):
     return value
 
 
-# identity within a board, and across boards - see applicant.domain.dedupe
-_key = key
-
-
 def _stored(document: dict) -> list[dict]:
     items = document.get('list', [])
     return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
@@ -97,12 +93,12 @@ def save_jobs(jobs: Iterable[Job], filepath: str) -> int:
     """
     merged = {}
     for item in _stored(read_document(filepath, quarantine=True)):
-        merged[_key(item)] = item
+        merged[key(item)] = item
 
     before = len(merged)
     for job in jobs:
         item = job.to_dict()
-        merged[_key(item)] = item
+        merged[key(item)] = item
 
     write_document(filepath, {'list': list(merged.values())})
     logger.info(f'{filepath}: {len(merged) - before} new job(s), {len(merged)} stored')

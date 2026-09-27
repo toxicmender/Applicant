@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from applicant.boards.linkedin import LinkedIn
+from applicant.boards.linkedin_apply import LinkedIn
 from applicant.errors import SourceError
 from applicant.infra.browser import STATE_FILE, BrowserSession, browser
 from applicant.reviews import GlassdoorClient

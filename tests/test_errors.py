@@ -1,12 +1,13 @@
-"""applicant.errors: one hierarchy, with the old names still in place."""
+"""applicant.errors: one hierarchy, and the only place its names live."""
 
 from __future__ import annotations
 
+import importlib
 import unittest
 
 import httpx
 
-from applicant import errors, financials, models, reviews
+from applicant import errors, financials, reviews
 
 
 class HierarchyTest(unittest.TestCase):
@@ -37,30 +38,30 @@ class HierarchyTest(unittest.TestCase):
         self.assertEqual((str(error), error.source), ('bot check', 'naukri'))
 
 
-class AliasTest(unittest.TestCase):
-    """The names every caller already imports are the shared classes."""
+class OldNamesGoneTest(unittest.TestCase):
+    """The 0.1.x aliases and shim modules were removed in 0.2.0."""
 
-    def test_job_board_names(self):
-        self.assertIs(models.JobsError, errors.SourceError)
-        self.assertIs(models.BlockedError, errors.Blocked)
+    def test_the_areas_no_longer_carry_their_own_error_names(self):
+        for module, names in (
+            (reviews, ('ReviewsError', 'ChallengeError', 'CompanyNotFound', 'ParseError')),
+            (financials, ('FinancialsError', 'AuthError', 'ChallengeError', 'ParseError')),
+        ):
+            for name in names:
+                with self.subTest(module=module.__name__, name=name):
+                    self.assertFalse(hasattr(module, name))
 
-    def test_reviews_names(self):
-        self.assertIs(reviews.ReviewsError, errors.SourceError)
-        self.assertIs(reviews.ChallengeError, errors.Blocked)
-        self.assertIs(reviews.CompanyNotFound, errors.NotFound)
-        self.assertIs(reviews.ParseError, errors.Unparseable)
-
-    def test_financials_names(self):
-        self.assertIs(financials.FinancialsError, errors.SourceError)
-        self.assertIs(financials.ChallengeError, errors.Blocked)
-        self.assertIs(financials.CompanyNotFound, errors.NotFound)
-        self.assertIs(financials.ParseError, errors.Unparseable)
-        self.assertIs(financials.AuthError, errors.AuthFailed)
-        self.assertIs(financials.QuotaExhausted, errors.QuotaExhausted)
-
-    def test_a_bot_check_is_one_thing_whichever_area_hit_it(self):
-        with self.assertRaises(reviews.ChallengeError):
-            raise models.BlockedError('Naukri served a bot check')
+    def test_the_shim_modules_are_gone(self):
+        for name in (
+            'applicant.models',
+            'applicant.dates',
+            'applicant.salary',
+            'applicant.places',
+            'applicant.browser',
+            'applicant.reviews.errors',
+            'applicant.financials.errors',
+        ):
+            with self.subTest(module=name), self.assertRaises(ModuleNotFoundError):
+                importlib.import_module(name)
 
 
 class RaisedTest(unittest.TestCase):

@@ -4,10 +4,10 @@ import json
 import re
 from contextlib import suppress
 
+from ..errors import Blocked, SourceError, Unparseable
 from ..infra.browser import BrowserSession, looks_blocked
 from ..interaction import Interaction, Terminal
 from ..log import get
-from .errors import ChallengeError, ParseError, ReviewsError
 from .models import CompanyRating, Review
 
 logger = get(__name__)
@@ -28,7 +28,7 @@ def reviews_url(company, page=1):
     """Accepts a full reviews url or a 'Google-E9079' style slug+id pair."""
     match = REVIEWS_URL.match(company) or SLUG_AND_ID.match(company)
     if not match:
-        raise ReviewsError(
+        raise SourceError(
             'Glassdoor needs a reviews url or a slug with employer id (e.g. "Google-E9079"), '
             'got {!r}. Glassdoor company search is behind the same bot check, so names '
             'cannot be resolved automatically.'.format(company)
@@ -66,16 +66,16 @@ class GlassdoorClient:
         self.timeout = timeout
 
     def fetch(self, company, max_reviews=PAGE_SIZE):
-        """Every failure leaves as a ReviewsError, so a caller trying several
+        """Every failure leaves as a SourceError, so a caller trying several
         sources can report this one and carry on with the rest."""
         try:
             rating = self._fetch(company, max_reviews)
-        except ReviewsError:
+        except SourceError:
             raise
         # the browser: launch failures, timeouts, a window closed by hand
         except Exception as error:
             logger.debug('glassdoor: traceback', exc_info=True)
-            raise ReviewsError(
+            raise SourceError(
                 f'the Glassdoor browser session failed: {type(error).__name__}: '
                 f'{str(error).splitlines()[0][:160] if str(error) else ""}'
             ) from error
@@ -137,7 +137,7 @@ class GlassdoorClient:
             return
 
         if self._blocked(page):
-            raise ChallengeError(
+            raise Blocked(
                 'Glassdoor served a bot check instead of the reviews page. Re-run with '
                 '--login to clear it once in a visible browser; the saved profile is '
                 'reused headlessly afterwards.'
@@ -177,7 +177,7 @@ class GlassdoorClient:
             sources.extend(self._embedded(html))
 
         if not sources:
-            raise ParseError('no review data found in Glassdoor responses for {}'.format(url))
+            raise Unparseable('no review data found in Glassdoor responses for {}'.format(url))
 
         rating = CompanyRating(
             source='glassdoor',

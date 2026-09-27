@@ -113,8 +113,9 @@ main(['apply', '-i', {str(listing)!r}, '--log', {str(self.root / 'log.csv')!r},
             with self.subTest(action=action):
                 self.assertFalse(hasattr(LinkedInGuest, action))
 
-    def test_the_old_import_still_finds_the_full_client(self):
-        self.assertIs(guest_module.LinkedIn, LinkedIn)
+    def test_the_account_client_is_only_where_it_lives(self):
+        """The lazy `boards.linkedin.LinkedIn` of 0.1.x is gone."""
+        self.assertFalse(hasattr(guest_module, 'LinkedIn'))
         self.assertTrue(issubclass(LinkedIn, LinkedInGuest))
 
 

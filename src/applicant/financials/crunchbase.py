@@ -8,9 +8,9 @@ from contextlib import suppress
 import httpx
 
 from .. import log
+from ..errors import AuthFailed, Blocked, NotFound, SourceError, Unparseable
 from ..infra.http import USER_AGENT, HttpClient
 from ..interaction import Interaction, Terminal
-from .errors import AuthError, ChallengeError, CompanyNotFound, FinancialsError, ParseError
 from .models import CompanyFinancials, FundingRound
 from .parsing import (
     clean_name,
@@ -121,7 +121,7 @@ class CrunchbaseClient:
         return 'tracxn.com' not in company.lower()
 
     def fetch(self, company, max_rounds=20):
-        """Every failure leaves as a FinancialsError, so a caller trying several
+        """Every failure leaves as a SourceError, so a caller trying several
         sources can report this one and carry on with the rest."""
         mode = 'api' if self.api_key else 'web'
         logger.debug(f'crunchbase: {company!r} via the {mode}')
@@ -131,13 +131,11 @@ class CrunchbaseClient:
             else:
                 financials = self._fetch_web(company, max_rounds)
         except httpx.HTTPStatusError as error:
-            raise FinancialsError(
-                f'Crunchbase answered HTTP {error.response.status_code}'
-            ) from error
+            raise SourceError(f'Crunchbase answered HTTP {error.response.status_code}') from error
         except httpx.HTTPError as error:
-            raise FinancialsError(f'could not reach Crunchbase: {error}') from error
+            raise SourceError(f'could not reach Crunchbase: {error}') from error
         except ValueError as error:  # a response body that was not JSON
-            raise ParseError(f'Crunchbase sent unreadable data: {error}') from error
+            raise Unparseable(f'Crunchbase sent unreadable data: {error}') from error
         financials.fill_from_rounds()
         logger.info(
             f'crunchbase: {financials.company}: {len(financials.rounds)} round(s), '
@@ -174,14 +172,14 @@ class CrunchbaseClient:
         )
 
         if response.status_code == 401:
-            raise AuthError('Crunchbase rejected the API key')
+            raise AuthFailed('Crunchbase rejected the API key')
         if response.status_code == 403:
-            raise AuthError(
+            raise AuthFailed(
                 'this Crunchbase key cannot read funding data - the free Basic '
                 'plan does not include it: {}'.format(_error(response))
             )
         if response.status_code == 400:
-            raise AuthError(
+            raise AuthFailed(
                 'Crunchbase refused the request, usually a card the plan does '
                 'not include: {}'.format(_error(response))
             )
@@ -198,7 +196,7 @@ class CrunchbaseClient:
             logger.info(f'crunchbase: {company!r} resolved to the permalink {slug!r}')
             response = self._get('/entities/organizations/{}'.format(slug), params)
         if response.status_code == 404:
-            raise CompanyNotFound('no Crunchbase organization {!r}'.format(company))
+            raise NotFound('no Crunchbase organization {!r}'.format(company))
         response.raise_for_status()
 
         return self._build([response.json()], slug, company, max_rounds)
@@ -211,7 +209,7 @@ class CrunchbaseClient:
         response.raise_for_status()
         entities = response.json().get('entities') or []
         if not entities:
-            raise CompanyNotFound('Crunchbase has no organization matching {!r}'.format(name))
+            raise NotFound('Crunchbase has no organization matching {!r}'.format(name))
         wanted = clean_name(name).lower()
         for entity in entities:
             identifier = entity.get('identifier') or {}
@@ -242,17 +240,17 @@ class CrunchbaseClient:
                 for target in (url, url + '/company_financials'):
                     response = page.goto(target, wait_until='domcontentloaded')
                     if response is not None and response.status == 404:
-                        raise CompanyNotFound('no Crunchbase organization at {}'.format(target))
+                        raise NotFound('no Crunchbase organization at {}'.format(target))
                     self._settle(page, looks_blocked)
                     payloads.extend(embedded_json(page.content()))
                     with suppress(Exception):
                         texts.append(page.inner_text('body'))
-        except FinancialsError:
+        except SourceError:
             raise
         # navigation failures, timeouts and a closed browser all surface as plain
         # playwright errors, and each should read as this source failing
         except Exception as error:
-            raise FinancialsError(
+            raise SourceError(
                 'could not load {}: {}'.format(url, str(error).split('\n')[0][:160])
             ) from error
 
@@ -263,7 +261,7 @@ class CrunchbaseClient:
             and not financials.rounds
             and financials.revenue_range is None
         ):
-            raise ParseError(
+            raise Unparseable(
                 'no funding data found on {} - the page layout may have changed, '
                 'or it needs a signed in profile (--login)'.format(url)
             )
@@ -281,7 +279,7 @@ class CrunchbaseClient:
             self.login = False  # once is enough; the profile remembers
             return
         if looks_blocked(page):
-            raise ChallengeError(
+            raise Blocked(
                 'Crunchbase served a bot check instead of the company page. Re-run with '
                 '--login to clear it once in a visible browser; the saved profile is '
                 'reused headlessly afterwards.'

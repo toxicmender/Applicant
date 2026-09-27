@@ -230,7 +230,7 @@ class FinancialsServiceTest(TempDir):
         )
 
     def test_an_unexpected_error_no_longer_ends_the_run(self):
-        """Only FinancialsError was caught before; anything else crashed every company."""
+        """Only SourceError was caught before; anything else crashed every company."""
         broken, working = mock.Mock(), mock.Mock()
         broken.fetch.side_effect = RuntimeError('page crashed')
         working.fetch.side_effect = lambda company, max_rounds: self.financials('tracxn', company)
