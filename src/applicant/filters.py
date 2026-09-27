@@ -78,7 +78,7 @@ class JobFilter:
                 continue
             actual = getattr(job, field_name) or ''
             if not any(self._text_matches(one, actual) for one in wanted):
-                return False, flags
+                return self._drop(job, f'{field_name} did not match', flags)
 
         if self.location and 'location' not in skip:
             keep, flag = self._location_ok(job, self.location)
@@ -92,7 +92,7 @@ class JobFilter:
             if flag:
                 flags.append(flag)
             if not keep:
-                return self._drop(job, f'salary {job.salary!r} under {self.min_salary}', flags)
+                return self._drop(job, 'salary under minimum', flags)
 
         if self.experience is not None and 'experience' not in skip:
             keep, flag = self._experience_ok(job, self.experience)
@@ -106,16 +106,14 @@ class JobFilter:
             if flag:
                 flags.append(flag)
             if not keep:
-                return self._drop(
-                    job, f'posted {job.posted!r}, over {self.posted_within_days} days ago', flags
-                )
+                return self._drop(job, 'posted date outside allowed window', flags)
 
         return True, flags
 
     def _drop(self, job: Job, reason: str, flags: list[str]) -> tuple[bool, list[str]]:
         """Why a job was filtered out: the first thing to check when a search
         comes back empty. Debug only - there is one line per job."""
-        logger.debug(f'{job.source}: dropped {job.title!r}: {reason}')
+        logger.debug(f'{job.source}: dropped {job.id!r}: {reason}')
         return False, flags
 
     def _text_matches(self, wanted: str, actual: str) -> bool:
