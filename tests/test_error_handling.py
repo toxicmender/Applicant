@@ -18,7 +18,8 @@ from unittest import mock
 
 import httpx
 
-from applicant import logs
+from applicant import log
+from applicant.boards import Capability
 from applicant.boards.linkedin import LinkedIn
 from applicant.cli import main
 from applicant.files import read_document, write_document
@@ -44,7 +45,7 @@ class TempDir(unittest.TestCase):
         self.addCleanup(self._dir.cleanup)
         self.root = Path(self._dir.name)
         # keep the tests' own stderr quiet; main() reconfigures logging per run
-        self.addCleanup(logs.setup)
+        self.addCleanup(log.silence)
 
     def leftovers(self, name: str) -> list[str]:
         return sorted(path.name for path in self.root.iterdir() if path.name != name)
@@ -99,6 +100,9 @@ class LastResortHandlerTest(TempDir):
 
 
 class FakeBoard:
+    # what the Board protocol asks of every board: filters nothing, publishes nothing
+    capability = Capability()
+
     def __init__(self, result):
         self.result = result
         self.closed = False
@@ -214,19 +218,20 @@ class ReviewsErrorTest(unittest.TestCase):
             GlassdoorClient().fetch('Google-E9079')
 
     def test_one_failing_source_no_longer_ends_the_reviews_run(self):
-        out = io.StringIO()
+        err = io.StringIO()
         with (
             mock.patch.object(GlassdoorClient, '_fetch', side_effect=RuntimeError('no chrome')),
             mock.patch.object(
                 AmbitionBoxClient, '_fetch', side_effect=httpx.ConnectError('offline')
             ),
-            redirect_stdout(out),
-            redirect_stderr(io.StringIO()),
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(err),
         ):
             code = main(['reviews', 'Google-E9079', '-s', 'both', '-o', os.devnull])
         self.assertEqual(code, 1)  # nothing fetched, but reported rather than raised
-        self.assertIn('ambitionbox: could not reach AmbitionBox', out.getvalue())
-        self.assertIn('glassdoor: the Glassdoor browser session failed', out.getvalue())
+        # a failed source is commentary, so it is reported on stderr
+        self.assertIn('ambitionbox: could not reach AmbitionBox', err.getvalue())
+        self.assertIn('glassdoor: the Glassdoor browser session failed', err.getvalue())
 
 
 class FinancialsErrorTest(unittest.TestCase):
@@ -252,9 +257,9 @@ class FinancialsErrorTest(unittest.TestCase):
             client.fetch('5c1c697b8f088f5b6f55226c')
 
     def test_constructing_a_client_registers_its_key_for_masking(self):
-        self.addCleanup(logs._secrets.clear)
+        self.addCleanup(log._secrets.clear)
         CrunchbaseClient(api_key='crunchbase-key-xyz')
-        self.assertIn('crunchbase-key-xyz', logs._secrets)
+        self.assertIn('crunchbase-key-xyz', log._secrets)
 
 
 # -- CWE-390 / CWE-636: an unreadable store was read as empty, then overwritten

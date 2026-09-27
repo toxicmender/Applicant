@@ -273,37 +273,53 @@ Google Jobs is the most fragile of the four: it is Google Search, its CSS classe
 obfuscated and rotate, and it gives no posting URL - applications route back to the
 originating board, which is reported as `via`.
 
-## How much it says
+## Logging
 
-Every subcommand takes `-v`, `-q`, `--log-file` and `--no-log-file`:
+Printed output is each command's answer - `status`' tally, `rates`' table, where a
+file was written - and goes to **stdout**. Everything said about the work in
+progress - which board answered, how many survived, which one refused - goes
+through Python's `logging` to **stderr**, so the two never mix in a pipe. Every
+subcommand takes:
+
+| Flag | Console (stderr) shows |
+|---|---|
+| `-q` | warnings and failures only |
+| *(default)* | progress too: what each source fetched, kept, saved |
+| `-v` | debug detail, with a UTC timestamp and the module that spoke |
+| `-vv` | all of that plus each HTTP request httpx makes |
+| `--log-file PATH` | also write everything, at debug level, to `PATH` |
+| `--no-log-file` | do not write a log file for this run |
 
 ```
 uv run applicant search "python developer" -l India -q
 uv run applicant search "python developer" -l India -v
-uv run applicant search "python developer" -l India --log-file today.log
-uv run applicant search "python developer" -l India --no-log-file
+uv run applicant financials zomato --log-file financials.log
 ```
 
-A normal run reads exactly as it always did. `-q` keeps warnings and failures and
-drops the progress; `-v` adds timestamps and says which module spoke.
+`-q` silences commentary, never the answer: a quiet run still prints what it found.
 
 **Every run records itself.** Unless you pass `--no-log-file`, it writes
-`logs/run_20260812-143502.log` - named for when the run started, so they sort
-chronologically and two never collide. The directory is created on the way, and
-is gitignored. The file gets everything down to debug in full detail whatever
-the terminal is showing, which is the point: a scrape you left running is
-exactly the one whose output you no longer have.
+`logs/run_20260812-143502.log`, named for when the run started (UTC), so they sort
+chronologically and two never collide. The directory is created on the way and is
+gitignored, and a run that logs nothing leaves no file. The file gets everything
+down to debug whatever the console is showing, which is the point: a scrape you
+left running is exactly the one whose output you no longer have. Nothing prunes
+them - `rm -rf logs/` when you have had enough.
 
-They accumulate, one per run, which is why they are not loose in the working
-directory next to `job_listing.json`. Nothing prunes them - `rm -rf logs/` when
-you have had enough. `--log-file` puts one somewhere else, creating whatever
-directory you name.
+What is logged and how it is protected (the log inventory [OWASP ASVS 5.0](https://github.com/OWASP/ASVS/blob/v5.0.0/5.0/en/0x25-V16-Security-Logging-and-Error-Handling.md) 16.1.1 asks for):
 
-**The library logs, the commands print.** A message about work in progress -
-which board answered, how many survived, which one refused - goes through
-`applicant.log`, so `-q` silences it. The answer a subcommand was asked for -
-`status`' tally, `rates`' table, where a file was written - is printed, because
-silencing the answer is not what asking for quiet means.
+- **Where:** stderr, and the log file. Nothing is sent anywhere else.
+- **Format:** on the console at the default level, just the message. In the file
+  and at `-v`: `2026-09-27T08:42:42Z WARNING applicant.search: naukri: ...` - UTC
+  time, level, module, message.
+- **Never logged:** passwords, cookies and session files. API keys given by flag or
+  environment are masked as `***` anywhere they would appear, tracebacks included.
+- **Log injection:** job titles and company names come from websites, so control
+  characters are escaped on the console and in the file alike - a newline in a
+  scraped title cannot forge a second entry.
+- **The log file** is created readable by its owner only (`0600`).
+- **Unexpected errors** print one line naming the error; the traceback goes to the
+  log file (and to the console at `-v`). Ctrl-C exits with status 130.
 
 Importing `applicant` configures no logging at all, so embedding it in another
 program is silent until that program calls `applicant.log.configure()` or handles
@@ -321,45 +337,11 @@ Job scraping also has its own subcommand, `applicant jobs`, which takes the same
 Running `applicant` with bare flags still means the job run, so invocations documented
 before subcommands existed keep working.
 
-## Logging
-
-Printed output is each command's result. Diagnostics go to **stderr** through
-Python's `logging`, so they never mix into piped output. Every subcommand takes:
-
-| Flag | Console shows |
-|---|---|
-| `-q` | errors only |
-| *(default)* | warnings and errors |
-| `-v` | progress: what each source fetched, kept, saved |
-| `-vv` | debug detail, including each HTTP request and why a filter dropped a job |
-| `--log-file PATH` | also writes everything, at debug level, to `PATH` |
-
-```
-uv run applicant search "python developer" -l India -v
-uv run applicant financials zomato --log-file financials.log
-```
-
-What is logged and how it is protected (the log inventory [OWASP ASVS 5.0](https://github.com/OWASP/ASVS/blob/v5.0.0/5.0/en/0x25-V16-Security-Logging-and-Error-Handling.md) 16.1.1 asks for):
-
-- **Where:** stderr, and the `--log-file` if given. Nothing is sent anywhere else.
-- **Format:** `2026-09-27T08:42:42Z WARNING applicant.search: naukri: ...` - UTC time,
-  level, module, message.
-- **Never logged:** passwords, cookies and session files. API keys given by flag or
-  environment are masked as `***` anywhere they would appear, tracebacks included.
-- **Log injection:** job titles and company names come from websites, so control
-  characters are escaped - a newline in a scraped title cannot forge a second entry.
-- **The log file** is created readable by its owner only (`0600`).
-- **Unexpected errors** print one line naming the error; the traceback goes to the
-  debug log (`-vv` or `--log-file`). Ctrl-C exits with status 130.
-
-Used as a library, `applicant` logs nothing until you configure `logging` yourself.
-
 ## Where things are
 
 ```
 src/applicant/
   cli.py         argument parsing and the subcommand handlers
-  logs.py        logging setup: escaping, secret masking, UTC timestamps
   files.py       atomic JSON writes; unreadable stores are moved aside, never overwritten
   __main__.py    python -m applicant
   models.py      the Job dataclass and the shared error types
@@ -368,7 +350,7 @@ src/applicant/
   browser.py     launching Playwright in a way the boards accept
   filters.py     JobFilter, and the flags saying what could not be checked
   places.py      whether a posting's location is inside the one you asked for
-  log.py         where the running commentary goes, and how much of it
+  log.py         logging: stderr, levels, per-run file, escaping, secret masking
   storage.py     job_listing.json and applied_jobs.csv
   search.py      the facade over boards, filters and storage
   boards/        one module per job board, all returning Job

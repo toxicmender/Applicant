@@ -654,6 +654,24 @@ unless it says so. Phase 0 is urgent. The rest can be reordered.
 | **4. Settings and storage** | `Settings` and `data_dir` (D7). The SQLite store with a JSON importer and CSV/JSON exporters (D8). Fix D6, D7, D9 and D10 as they fall out. | a fresh run from an old working directory imports its files, and `applied_jobs.csv` is byte-compatible in its column layout |
 | **5. Account actions** | Split LinkedIn into read and apply (D9). Add the `Applier` port, required `dry_run`, and confirmation. Deprecate the bare-flag `jobs` form (D10). | `search` never imports the apply module (a test checks this) |
 
+**Phase 0 status: done.** What was built, and where it differs from the row above:
+
+- `logs.py` was folded into `log.py` now rather than in phase 3. One `configure()`
+  gives both halves' properties: stderr, escaping and masking on the console and in
+  the file, a `0600` file opened only when there is something to write, the per-run
+  default file, httpx only at `-vv`, and `silence()` removing only its own handlers.
+  Keeping two modules for a phase would have kept the trap that caused D4.
+- `-q`/default/`-v` keep `log.py`'s meaning (warnings / progress / debug), which is
+  what the CLI already did. `-vv` adds httpx. The README now has one logging section.
+- Commentary moved from stdout to stderr. Three CLI tests that read log lines off
+  stdout now read stderr, which is the intended behaviour.
+- The Ctrl-C test stays in-process, and there is no test-count floor. CI now fails
+  on any non-zero pytest exit, and an aborted session exits 2, so both would only
+  duplicate that.
+- CI: `types` and `unit` fail when their tool does, and `status` ends with a gate
+  step. **Mark `status` as a required check in the branch protection settings**,
+  because a workflow file can't do that itself.
+
 Phases 1–3 are refactors behind the existing tests, and the test suite is the
 contract. Phase 4 is the only one that changes on-disk formats, which is why it
 imports the old files and keeps exporting them.

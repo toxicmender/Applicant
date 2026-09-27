@@ -8,7 +8,7 @@ from contextlib import suppress
 
 import httpx
 
-from .. import logs
+from .. import log
 from .errors import AuthError, ChallengeError, CompanyNotFound, FinancialsError, ParseError
 from .models import CompanyFinancials, FundingRound
 from .parsing import (
@@ -108,7 +108,7 @@ class CrunchbaseClient:
     ):
         self.api_key = api_key if api_key is not None else os.environ.get('CRUNCHBASE_API_KEY')
         # masked in every log line from here on (ASVS 16.2.5)
-        logs.register_secret(self.api_key)
+        log.register_secret(self.api_key)
         self.profile_dir = profile_dir
         self.login = login
         self.headless = False if login else headless

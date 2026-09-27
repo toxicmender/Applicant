@@ -15,7 +15,7 @@ from __future__ import annotations
 import io
 import os
 import unittest
-from contextlib import contextmanager, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -656,7 +656,13 @@ class SearchCommandTest(unittest.TestCase):
         board = StubBoard(pool())
         buffer = io.StringIO()
         quiet = [] if log_file or '--log-file' in argv else ['--no-log-file']
-        with patch.object(Jobs, '_client', return_value=board), redirect_stdout(buffer):
+        # what the person at the terminal sees: the answer on stdout, the
+        # commentary on stderr
+        with (
+            patch.object(Jobs, '_client', return_value=board),
+            redirect_stdout(buffer),
+            redirect_stderr(buffer),
+        ):
             code = main([*argv, '-o', self.output, *quiet])
         return code, buffer.getvalue()
 

@@ -12,6 +12,7 @@ import json
 import sys
 from pathlib import Path
 
+from . import log
 from .log import QUIET, configure, default_file, get
 from .search import SOURCES
 
@@ -374,7 +375,8 @@ def _add_logging(command) -> None:
         '--verbose',
         action='count',
         default=0,
-        help='say more about what each board is doing, with timestamps',
+        help='say more about what each board is doing, with timestamps; '
+        '-vv also logs each HTTP request',
     )
     command.add_argument('-q', '--quiet', action='store_true', help='only warnings and failures')
     command.add_argument(
@@ -720,10 +722,44 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as error:
         # a log file we cannot open is a mistake in the invocation, not a
         # reason to run the scrape and lose the record of it
-        print('could not open {}: {}'.format(filepath, error))
+        print('could not open {}: {}'.format(filepath, error), file=sys.stderr)
         return 2
 
     if filepath:
         logger.info('logging this run to {}'.format(filepath))
+    logger.debug(f'{args.command}: {_loggable(args)}')
 
-    return handler(args) or 0
+    try:
+        return handler(args) or 0
+    except KeyboardInterrupt:
+        logger.warning(f'{args.command}: interrupted')
+        return 130
+    # The last resort handler (ASVS 16.5.4, CWE-248). Each source already turns
+    # its expected failures into a domain error; anything reaching here is a bug
+    # or an environment fault. One line on the console, the traceback in the
+    # debug log - never a raw traceback in front of the user (ASVS 16.5.1).
+    except Exception as error:
+        logger.critical(
+            f'{args.command} failed unexpectedly: {type(error).__name__}: {error} '
+            '- rerun with -v or --log-file for the traceback'
+        )
+        logger.debug(f'{args.command}: traceback', exc_info=True)
+        return 1
+
+
+# argparse attributes that are plumbing, or secret, rather than something to log
+NOT_LOGGED = {'handler', 'command', 'verbose', 'quiet', 'log_file', 'no_log_file'}
+SECRET_ARGS = {'crunchbase_key', 'tracxn_key'}
+
+
+def _loggable(args) -> dict:
+    """The options a run was given, with keys masked, for the debug log."""
+    shown = {}
+    for key, value in sorted(vars(args).items()):
+        if key in NOT_LOGGED:
+            continue
+        if key in SECRET_ARGS:
+            log.register_secret(value)
+            value = log.MASK if value else None
+        shown[key] = value
+    return shown

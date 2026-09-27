@@ -26,7 +26,6 @@ from urllib.parse import urlencode
 import httpx
 
 from ..browser import BROWSER_ARGS, USER_AGENT
-from ..log import get
 from ..models import BlockedError, Job, JobsError
 from . import CAPABILITIES
 
@@ -41,8 +40,6 @@ GUEST_POSTING = 'https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{}'
 GUEST_PAGE_SIZE = 10
 
 HEADERS = {'User-Agent': USER_AGENT, 'Accept-Language': 'en-US,en;q=0.9'}
-
-logger = get(__name__)
 
 CARD = re.compile(r'<li>(.*?)</li>', re.DOTALL)
 FIELDS = {
@@ -252,7 +249,6 @@ class LinkedIn:
             )
 
         context.storage_state(path=str(target))
-        logger.info('session saved to {}'.format(target))
         logger.info(f'linkedin: signed in{" with 2FA" if twoFA else ""}; session saved to {target}')
         print('session saved to {}'.format(target))
 
@@ -369,7 +365,6 @@ class LinkedIn:
             )
 
         total = save_jobs(jobs, filepath)
-        logger.info('scraped {} recommended jobs ({} in {})'.format(len(jobs), total, filepath))
         logger.info(f'linkedin: {len(jobs)} recommended job(s) scraped')
         print('scraped {} recommended jobs ({} in {})'.format(len(jobs), total, filepath))
         return jobs
