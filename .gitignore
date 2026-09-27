@@ -5,7 +5,10 @@
 **/applied_via_jobs_interface.json
 **/.money_cache.json
 **/storage_state.json
+**/company_financials.json
 .gd_profile/
+.cb_profile/
+.tx_profile/
 
 # gitignore template for Jupyter Notebooks
 # website: http://jupyter.org/
