@@ -5,6 +5,7 @@ import re
 from contextlib import suppress
 
 from ..infra.browser import BrowserSession, looks_blocked
+from ..interaction import Interaction, Terminal
 from ..log import get
 from .errors import ChallengeError, ParseError, ReviewsError
 from .models import CompanyRating, Review
@@ -49,7 +50,16 @@ class GlassdoorClient:
     falling back to the apolloState blob embedded in the HTML.
     """
 
-    def __init__(self, profile_dir='.gd_profile', login=False, headless=True, timeout=45000):
+    def __init__(
+        self,
+        profile_dir='.gd_profile',
+        login=False,
+        headless=True,
+        timeout=45000,
+        interaction: Interaction | None = None,
+    ):
+        # asked to wait while a person clears the bot check in a --login run
+        self.interaction = interaction or Terminal()
         self.profile_dir = profile_dir
         self.login = login
         self.headless = False if login else headless
@@ -117,11 +127,11 @@ class GlassdoorClient:
             page.wait_for_load_state('networkidle', timeout=self.timeout)
 
         if self.login:
-            print(
+            self.interaction.pause(
                 'A browser window is open. Clear the Cloudflare check and sign in to '
                 'Glassdoor, then come back here.'
+                ' Press Enter once the reviews page is visible.'
             )
-            input('Press Enter once the reviews page is visible: ')
             with suppress(Exception):
                 page.wait_for_load_state('networkidle', timeout=self.timeout)
             return

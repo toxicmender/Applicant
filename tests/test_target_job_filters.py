@@ -726,7 +726,8 @@ class SearchCommandTest(unittest.TestCase):
     def test_verbose_says_which_module_spoke(self):
         code, output = self.run_cli('search', 'ai', '-s', 'naukri', '-l', 'India', '-v')
         self.assertEqual(code, 0)
-        self.assertIn('applicant.search', output)
+        # the board loop lives in the search service since the services split
+        self.assertIn('applicant.services.search', output)
         self.assertIn('jobs match', output)
 
     def test_a_run_can_be_recorded_to_a_file(self):

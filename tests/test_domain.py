@@ -61,6 +61,8 @@ FORBIDDEN = {
     'applicant.financials',
     'applicant.search',
     'applicant.cli',
+    'applicant.services',
+    'applicant.interaction',
     'applicant.storage',
     'applicant.files',
     'applicant.money',

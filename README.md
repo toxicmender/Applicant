@@ -360,9 +360,14 @@ src/applicant/
   financials/    company funding from Crunchbase and Tracxn, tracked over time
   storage.py     job_listing.json and applied_jobs.csv
   files.py       atomic JSON writes; unreadable stores are moved aside, never overwritten
-  search.py      the facade over boards, filters and storage
+  services/      what each command does, callable without the command line:
+                 search, apply, reviews, financials, rates, status; fan_out
+                 isolates each source's failure, and events report progress
+  search.py      Jobs: the thin front door over the search and apply services
+  interaction.py how a --login run asks the person at the keyboard
   log.py         logging: stderr, levels, per-run file, escaping, secret masking
-  cli.py         argument parsing and the subcommand handlers
+  cli/           one module per subcommand, each calling a service; render.py
+                 is the one place results are printed
   __main__.py    python -m applicant
   models.py dates.py salary.py places.py   old import paths, re-exporting domain/
 tests/           unittest.TestCase suites, run under pytest
@@ -441,20 +446,44 @@ The whole thing is importable, with `Jobs` as the front door:
 from applicant.search import Jobs
 from applicant.filters import JobFilter
 
-board = Jobs()
-hits = board.search(
-    'python developer',
-    JobFilter(
-        location='India',
-        min_salary=1_200_000,
-        currency='INR',
-        salary_basis='ppp',
-        experience=5,
-        posted_within_days=7,
-    ),
-)
-board.apply(hits, log='applied_jobs.csv', dry_run=True)
+with Jobs() as board:
+    hits = board.search(
+        'python developer',
+        JobFilter(
+            location='India',
+            min_salary=1_200_000,
+            currency='INR',
+            salary_basis='ppp',
+            experience=5,
+            posted_within_days=7,
+        ),
+    )
+    board.apply(hits, log='applied_jobs.csv', dry_run=True)
 ```
+
+Nothing is printed. Progress is logged under the `applicant` logger, and anything
+you may want to show as it happens is emitted as an event - pass `emit=` to see
+them:
+
+```python
+from applicant.services.events import BoardSearched, SourceFailed
+
+
+def show(event):
+    if isinstance(event, BoardSearched):
+        print(f'{event.source}: {event.kept} of {event.seen}')
+    elif isinstance(event, SourceFailed):
+        print(f'{event.source} failed: {event.error}')
+
+
+hits = Jobs().search('python developer', emit=show)
+```
+
+Every command has a service behind it in `applicant.services` - `fetch_reviews`,
+`track_financials`, `summarise`, and so on - so a program can do anything the
+command line does. A source that needs a person (a `--login` run clearing a bot
+check, LinkedIn's one-time code) asks through `interaction=`; the default asks on
+the terminal, and `applicant.interaction.Scripted` answers from a list.
 
 `Job` is a Pydantic model, so postings are validated as they are built - blank
 strings become `None`, whitespace is stripped, and a year range is derived from

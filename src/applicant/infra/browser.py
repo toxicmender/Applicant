@@ -137,7 +137,8 @@ class BrowserSession:
             return context
 
         logger.error(f'browser: no browser could be launched ({len(failures)} tried)')
-        raise SourceError('could not launch a browser -\n  ' + '\n  '.join(failures))
+        # one line: the log escapes newlines, so a list would read as \x0a runs
+        raise SourceError('could not launch a browser - ' + '; '.join(failures))
 
     def save_state(self, path: str | os.PathLike[str] | None = None) -> Path:
         """Export the signed in state (cookies, local storage) to a file.

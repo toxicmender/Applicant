@@ -9,6 +9,7 @@ import httpx
 
 from .. import log
 from ..infra.http import USER_AGENT, HttpClient
+from ..interaction import Interaction, Terminal
 from .errors import AuthError, ChallengeError, CompanyNotFound, FinancialsError, ParseError
 from .models import CompanyFinancials, FundingRound
 from .parsing import (
@@ -99,7 +100,10 @@ class CrunchbaseClient:
         delay=1.0,
         retries=3,
         client=None,
+        interaction: Interaction | None = None,
     ):
+        # asked to wait while a person clears the bot check in a --login run
+        self.interaction = interaction or Terminal()
         self.api_key = api_key if api_key is not None else os.environ.get('CRUNCHBASE_API_KEY')
         # masked in every log line from here on (ASVS 16.2.5)
         log.register_secret(self.api_key)
@@ -111,6 +115,10 @@ class CrunchbaseClient:
         self.retries = retries
         self._client = client
         self._http: HttpClient | None = None
+
+    def accepts(self, company: str) -> bool:
+        """Whether Crunchbase can look this up: anything but a profile url on tracxn.com."""
+        return 'tracxn.com' not in company.lower()
 
     def fetch(self, company, max_rounds=20):
         """Every failure leaves as a FinancialsError, so a caller trying several
@@ -265,11 +273,11 @@ class CrunchbaseClient:
         with suppress(Exception):
             page.wait_for_load_state('networkidle', timeout=int(self.timeout * 1000))
         if self.login:
-            print(
+            self.interaction.pause(
                 'A browser window is open. Clear the Cloudflare check and sign in to '
                 'Crunchbase if you want to, then come back here.'
+                ' Press Enter once the company page is visible.'
             )
-            input('Press Enter once the company page is visible: ')
             self.login = False  # once is enough; the profile remembers
             return
         if looks_blocked(page):

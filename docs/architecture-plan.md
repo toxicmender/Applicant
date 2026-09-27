@@ -733,6 +733,36 @@ beyond it:
   and `places`. `storage.fingerprint` and `storage._key` now come from
   `domain.dedupe`.
 
+**Phase 3 status: done.** Where it differs from the row above, or goes beyond it:
+
+- **`cli.py` is now the `cli/` package**, with one module per subcommand. Each
+  declares its flags, calls a service, and prints the answer. The parser blocks
+  moved verbatim, so flags and help text are unchanged. Handlers are still bound
+  through `applicant.cli.run_*`, so tests that patch those still work.
+- **Services** (`services/`) hold search, apply, reviews, financials, rates and
+  status. `fan_out` isolates each source. Events (`BoardSearched`, `SourceFailed`,
+  `RatingFetched`, `FinancialsTracked`, `FactorFetched`) carry what the CLI
+  renders. `Jobs` is a thin front door over the search and apply services. The
+  CLI still goes through `Jobs` for those two, because it's the library's public
+  entry point and tests patch `Jobs._client`.
+- **No `print` outside `cli/`.** A test walks the package's syntax trees to check
+  this, and also that only `applicant/interaction.py` calls `input()`. The
+  `--login` pauses and LinkedIn's one-time code now go through an injected
+  `Interaction`; the default asks on stderr and stdin. LinkedIn's status lines
+  are log records and return values now.
+- **Isolation is now uniform, which makes it wider in two places.** Creating a
+  board client used to sit outside the per-board `try`, and financials caught
+  only `FinancialsError`. Both are inside `fan_out` now, so neither can end the
+  whole run. A failing board is logged once instead of twice.
+- **Exit codes 3–6 are in `main()`** for a `SourceError` that reaches it:
+  blocked 3, not found 4, unparseable 5, key refused or out of credits 6.
+- **One existing test changed.** It asserted that `-v` output names
+  `applicant.search`; the board loop now logs as `applicant.services.search`.
+- **`reviews` writes `company_reviews.json` atomically** through
+  `files.write_document`, so a new file is owner-only.
+- **The bare-flag deprecation (D10) stays in phase 5** as planned. The staging
+  file (D10 of §2.2) stays until phase 4.
+
 Phases 1–3 are refactors behind the existing tests, and the test suite is the
 contract. Phase 4 is the only one that changes on-disk formats, which is why it
 imports the old files and keeps exporting them.

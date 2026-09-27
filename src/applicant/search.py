@@ -3,67 +3,37 @@
     from applicant.search import Jobs
     from applicant.filters import JobFilter
 
-    board = Jobs()
-    hits = board.search('python developer', JobFilter(location='India', posted_within_days=7))
-    board.apply(hits, log='applied_jobs.csv')
+    with Jobs() as board:
+        hits = board.search('python developer', JobFilter(location='India', posted_within_days=7))
+        board.apply(hits, log='applied_jobs.csv')
 
-Filters are pushed down to each board where it supports them natively (location,
-keywords, date posted) and applied locally for the rest, so results are consistent
-no matter which board they came from.
+`Jobs` is the front door, and deliberately thin: it knows how to make each
+board, and keeps the LinkedIn session that Easy Apply needs alive between a
+search and an apply. The work itself is in `applicant.services.search` and
+`applicant.services.apply`.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
-from .boards import Capability
-from .domain import dedupe, flags
-from .filters import JobFilter, prepared
+from .errors import SourceError
+from .filters import JobFilter
 from .log import get
-from .models import Job, JobsError, experience_from
-from .storage import ApplicationLog, save_jobs
+from .models import Job
+from .services.apply import ApplyToJobs, Entry, easy_apply_with
+from .services.events import Emit, Event, SourceFailed, ignore
+from .services.search import SOURCES, Board, SearchJobs, close_quietly
 
 if TYPE_CHECKING:
     from .boards.linkedin import LinkedIn
 
-
-class Board(Protocol):
-    """What every board module offers, and all this facade needs of one."""
-
-    capability: Capability
-
-    def search(
-        self,
-        keywords: str,
-        location: str = '',
-        limit: int = 25,
-        posted_within_days: int | None = None,
-    ) -> list[Job]: ...
-
-    def close(self) -> None: ...
-
-
-SOURCES = ('linkedin', 'indeed', 'naukri', 'googlejobs')
-
-
-@dataclass
-class _Enrichment:
-    """Reading postings themselves, and the requests that costs.
-
-    `described` is keyed by posting so a board re-read under `want` does not pay
-    for the same page twice; `budget` counts only pages actually fetched.
-    """
-
-    budget: int
-    described: dict[tuple[str | None, str | None], str | None] = field(default_factory=dict)
-    stopped: bool = False
-
+__all__ = ['EASY_APPLY_LISTING', 'SOURCES', 'Board', 'Jobs']
 
 logger = get(__name__)
 
-# where jobs handed to _easy_apply are staged for the LinkedIn client to read back
+# where jobs handed to Easy Apply are staged for the LinkedIn client to read back
 EASY_APPLY_LISTING = 'applied_via_jobs_interface.json'
 
 
@@ -96,7 +66,7 @@ class Jobs:
         more than once, and a failure is logged rather than raised.
         """
         if self._linkedin is not None:
-            self._close('linkedin', self._linkedin)
+            close_quietly('linkedin', self._linkedin)
             self._linkedin = None
 
     def __enter__(self) -> Jobs:
@@ -120,7 +90,7 @@ class Jobs:
             from .boards.googlejobs import GoogleJobs
 
             return GoogleJobs(headless=self.headless)
-        raise JobsError('unknown source {!r}'.format(name))
+        raise SourceError('unknown source {!r}'.format(name))
 
     def search(
         self,
@@ -132,185 +102,27 @@ class Jobs:
         enrich: bool = False,
         enrich_limit: int = 25,
         on_error: Callable[[str, Exception], None] | None = None,
+        emit: Emit = ignore,
     ) -> list[Job]:
         """Search every configured board and return the filtered, merged results.
 
-        `limit` is per board *before* filtering, so a strict filter returns fewer.
-        `want` asks for a number of *survivors* instead: each board is re-read
-        with a larger limit until that many get through, the board runs out, or
-        `max_rounds` is reached. Left as None nothing changes and each board is
-        read exactly once.
-
-        `enrich` reads the postings themselves for an experience filter the
-        search cards could not answer, at most `enrich_limit` of them.
+        See `SearchJobs.run` for `limit`, `want`, `max_rounds` and `enrich`.
+        `on_error(board, error)` hears about each board that failed; `emit`
+        receives every event as it happens.
         """
-        filters = filters or JobFilter()
-        collected: list[Job] = []
-        plan = _Enrichment(budget=enrich_limit) if enrich else None
-
-        for name in self.sources:
-            client = self._client(name)
-            logger.info(f'{name}: searching {keywords!r} in {filters.location or "anywhere"!r}')
-            try:
-                kept, seen = self._from_board(
-                    client, name, keywords, filters, limit, want, max_rounds, plan
-                )
-            except JobsError as error:
-                logger.warning(f'{name}: {type(error).__name__}: {error}')
-                (on_error or self._report)(name, error)
-                continue
-            # One board failing in a way it did not anticipate - a timeout, a DNS
-            # failure, a reshaped response - must not throw away the others'
-            # results (ASVS 16.5.2). The traceback goes to the debug log.
-            except Exception as error:
-                logger.error(f'{name}: unexpected {type(error).__name__}: {error}')
-                logger.debug(f'{name}: traceback', exc_info=True)
-                (on_error or self._report)(name, error)
-                continue
-            finally:
-                # LinkedIn keeps its session open: apply() reuses it
-                if name != 'linkedin':
-                    self._close(name, client)
-
-            logger.info('{}: {} of {} jobs match'.format(name, len(kept), seen))
-            collected.extend(kept)
-
-        return collected
-
-    def _from_board(
-        self,
-        client: Board,
-        name: str,
-        keywords: str,
-        filters: JobFilter,
-        limit: int,
-        want: int | None,
-        max_rounds: int,
-        plan: _Enrichment | None = None,
-    ) -> tuple[list[Job], int]:
-        """One board's surviving jobs, and how many were read to get them.
-
-        Reading more means asking for a bigger page and re-reading what we
-        already saw: the boards page from the top, and Google Jobs only exists
-        as a scrolling list, so there is no offset to resume from. That is why
-        rounds are capped and why one round remains the default - each extra one
-        is a fresh set of requests against a site that is watching for exactly
-        that.
-        """
-        native = client.capability.filters
-        # whatever the board filtered for us, we must not filter again -
-        # see Capability.filters for why a second pass would be wrong
-        skip = sorted(native)
-        posted = filters.posted_within_days if 'posted' in native else None
-
-        # when the postings themselves can answer the experience filter, hold it
-        # back until they have been read - a card's silence is not an answer
-        deferred = (
-            plan is not None
-            and filters.experience is not None
-            and callable(getattr(client, 'describe', None))
+        if on_error is not None:
+            emit = _with_on_error(emit, on_error)
+        return SearchJobs(self._client, keep_open={'linkedin'}).run(
+            self.sources,
+            keywords,
+            filters or JobFilter(),
+            limit=limit,
+            want=want,
+            max_rounds=max_rounds,
+            enrich=enrich,
+            enrich_limit=enrich_limit,
+            emit=emit,
         )
-        if deferred:
-            skip = [*skip, 'experience']
-
-        pull = limit
-        kept: list[Job] = []
-        seen = 0
-
-        for round_number in range(max(1, max_rounds) if want else 1):
-            jobs = client.search(
-                keywords, filters.location or '', limit=pull, posted_within_days=posted
-            )
-            seen = len(jobs)
-
-            # every rate this batch needs, fetched once - then filtering is pure
-            ready = prepared(filters, jobs)
-            kept = []
-            for job in jobs:
-                keep, found = ready.matches(job, skip=skip)
-                if not keep:
-                    continue
-                job.flags = found
-                kept.append(job)
-
-            if deferred and plan is not None:
-                self._enrich(client, kept, plan)
-                kept = self._recheck_experience(kept, filters)
-
-            if want is None or len(kept) >= want:
-                break
-            if seen < pull:
-                # the board gave us everything it had; asking again is pointless
-                break
-            if round_number + 1 < max_rounds:
-                pull *= 2
-                logger.info('{}: {} of {} match, reading {}'.format(name, len(kept), seen, pull))
-
-        return (kept[:want] if want else kept), seen
-
-    def _enrich(self, client: Board, jobs: list[Job], plan: _Enrichment) -> None:
-        """Read the posting itself where its card never stated the experience.
-
-        Only what a filter actually needs, only for jobs that survived every
-        other check, and only up to a budget: this is the slowest path in the
-        project and the one most likely to be noticed by a site that would
-        rather we were not here. Experience only - a salary read out of free
-        prose is as likely to be a relocation allowance as a wage, and nothing
-        in this project is ever guessed.
-        """
-        describe = getattr(client, 'describe')  # noqa: B009 - presence is the check
-
-        for job in jobs:
-            if job.experience_min is not None or job.experience_max is not None:
-                continue
-
-            key = (job.source, job.id)
-            if key not in plan.described:
-                if plan.stopped or plan.budget <= 0:
-                    continue
-                try:
-                    plan.described[key] = describe(job)
-                except JobsError as error:
-                    # one refusal means the next request is worse than useless
-                    logger.warning('{}: {} (enrichment stopped)'.format(job.source, error))
-                    plan.stopped = True
-                    continue
-                plan.budget -= 1
-
-            found = experience_from(plan.described.get(key))
-            if found is None:
-                continue
-
-            phrase, low, high = found
-            job.experience_text = phrase
-            job.experience_min, job.experience_max = low, high
-            job.flags = [*job.flags, flags.EXPERIENCE_ENRICHED]
-
-    def _recheck_experience(self, jobs: list[Job], filters: JobFilter) -> list[Job]:
-        """The check held back for enrichment, now that the postings have been read."""
-        check = JobFilter(
-            experience=filters.experience,
-            keep_unknown=filters.keep_unknown,
-            keep_unpublished=filters.keep_unpublished,
-        )
-        kept = []
-        for job in jobs:
-            keep, found = check.matches(job)
-            if keep:
-                job.flags = [*job.flags, *found]
-                kept.append(job)
-        return kept
-
-    def _report(self, name: str, error: Exception) -> None:
-        logger.warning('{}: {}'.format(name, error))
-
-    def _close(self, name: str, client: Board) -> None:
-        """Release a board. A failure here is logged, never raised: it would mask
-        the search result, or the error, that is already on its way out."""
-        try:
-            client.close()
-        except Exception as error:  # noqa: BLE001 - teardown must not mask the result
-            logger.warning(f'{name}: could not close cleanly: {type(error).__name__}: {error}')
 
     def apply(
         self,
@@ -318,74 +130,23 @@ class Jobs:
         log: str = 'applied_jobs.csv',
         filters: JobFilter | None = None,
         dry_run: bool = False,
-    ) -> list[tuple[Job, str, str]]:
+    ) -> list[Entry]:
         """Apply where it is actually possible, and record everything.
 
-        Only LinkedIn Easy Apply can be automated. Postings on the other boards
-        hand off to each employer's own form, so they are recorded as
-        needs-manual-apply with their url rather than guessed at.
+        Only LinkedIn Easy Apply can be automated; see `ApplyToJobs`.
         """
-        if filters is not None:
-            jobs = list(jobs)
-            ready = prepared(filters, jobs)
-            kept = []
-            for job in jobs:
-                keep, found = ready.matches(job)
-                if keep:
-                    # record why this one could not be fully checked, so the log
-                    # says so rather than carrying stale flags from search time
-                    job.flags = found
-                    kept.append(job)
-            jobs = kept
+        return ApplyToJobs(self._easy_apply).run(jobs, log=log, filters=filters, dry_run=dry_run)
 
-        jobs = dedupe.one_per_job(jobs)
-        entries: list[tuple[Job, str, str]] = []
-        linkedin_targets = []
+    def _easy_apply(self, jobs: list[Job]) -> list[Entry]:
+        return easy_apply_with(self.linkedin(), jobs, EASY_APPLY_LISTING)
 
-        for job in jobs:
-            if job.source == 'linkedin' and job.url:
-                linkedin_targets.append(job)
-            else:
-                entries.append(
-                    (
-                        job,
-                        'needs_manual_apply',
-                        'apply on {} directly'.format(job.via or job.source),
-                    )
-                )
 
-        if linkedin_targets and not dry_run:
-            entries.extend(self._easy_apply(linkedin_targets))
-        elif linkedin_targets:
-            entries.extend((job, 'would_apply', 'dry run') for job in linkedin_targets)
+def _with_on_error(emit: Emit, on_error: Callable[[str, Exception], None]) -> Emit:
+    """The older `on_error` callback, fed from the event stream."""
 
-        written = ApplicationLog(log).record(entries)
-        logger.info(
-            '{} new rows in {} ({} already recorded)'.format(written, log, len(entries) - written)
-        )
-        return entries
+    def both(event: Event) -> None:
+        if isinstance(event, SourceFailed) and isinstance(event.error, Exception):
+            on_error(event.source, event.error)
+        emit(event)
 
-    def _easy_apply(self, jobs: list[Job]) -> list[tuple[Job, str, str]]:
-        client = self.linkedin()
-        results = []
-        save_jobs(jobs, EASY_APPLY_LISTING)
-
-        try:
-            applied = set(client.easy_apply(EASY_APPLY_LISTING))
-        except JobsError as error:
-            logger.warning('linkedin: {}'.format(error))
-            return [(job, 'failed', str(error)) for job in jobs]
-        # e.g. the browser would not start: every other board's rows still have to
-        # reach the log, so this is recorded as a failure rather than raised
-        except Exception as error:
-            logger.error(f'linkedin: easy apply failed: {type(error).__name__}: {error}')
-            logger.debug('linkedin: easy apply traceback', exc_info=True)
-            print('linkedin: {}'.format(error))
-            return [(job, 'failed', type(error).__name__) for job in jobs]
-
-        for job in jobs:
-            if job.url in applied:
-                results.append((job, 'applied', 'linkedin easy apply'))
-            else:
-                results.append((job, 'needs_manual_apply', 'not easy apply, or a multi step form'))
-        return results
+    return both

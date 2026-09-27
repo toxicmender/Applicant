@@ -24,6 +24,7 @@ from urllib.parse import urlencode
 
 from ..infra.browser import BrowserSession
 from ..infra.http import HEADERS, HttpClient
+from ..interaction import Interaction, Terminal
 from ..models import BlockedError, Job, JobsError
 from . import CAPABILITIES
 
@@ -65,10 +66,13 @@ class LinkedIn:
         timeout=45000,
         delay=1.0,
         client=None,
+        interaction: Interaction | None = None,
     ):
         # `path` was the chromedriver location under Selenium; Playwright ships its
         # own browser, so it is accepted only so old call sites keep working
         self.driver_path = path
+        # asked for the one-time code when a sign in needs two factors
+        self.interaction = interaction or Terminal()
         self.headless = headless
         self.state = state
         self.timeout = timeout
@@ -204,7 +208,7 @@ class LinkedIn:
                 '{} already exists. Pass overwrite to log in again, or use '
                 'restore_session() to reuse it.'.format(filepath)
             )
-            return
+            return None
 
         context = self._session()
         page = self._start()
@@ -215,7 +219,8 @@ class LinkedIn:
 
         if twoFA:
             page.wait_for_selector('input[name="pin"], #input__phone_verification_pin')
-            page.fill('input[name="pin"], #input__phone_verification_pin', input('Enter OTP: '))
+            code = self.interaction.ask('Enter OTP: ', secret=True)
+            page.fill('input[name="pin"], #input__phone_verification_pin', code)
             page.click('#two-step-submit-button, button[type="submit"]')
 
         page.wait_for_load_state('domcontentloaded')
@@ -231,23 +236,20 @@ class LinkedIn:
 
         context.storage_state(path=str(target))
         logger.info(f'linkedin: signed in{" with 2FA" if twoFA else ""}; session saved to {target}')
-        print('session saved to {}'.format(target))
+        return target
 
     def restore_session(self, filepath: str | Path = 'cookies.json'):
         state = self._load_state(filepath)
         if state is None:
-            logger.warning(f'linkedin: no usable session in {filepath}')
-            print('no usable session in {}; call login() first'.format(filepath))
+            logger.warning(f'linkedin: no usable session in {filepath}; call login() first')
             return False
 
         page = self._start(storage_state=state)
         page.goto('https://www.linkedin.com/feed/', wait_until='domcontentloaded')
         if '/login' in page.url or '/authwall' in page.url:
-            logger.warning(f'linkedin: the session in {filepath} has expired')
-            print('saved session is no longer valid; call login() again')
+            logger.warning(f'linkedin: the session in {filepath} has expired; call login() again')
             return False
         logger.info(f'linkedin: session restored from {filepath}')
-        print('session restored from {}'.format(filepath))
         return True
 
     def _load_state(self, filepath: str | Path):
@@ -289,8 +291,9 @@ class LinkedIn:
                 # one malformed cookie; its value is a credential, so only the
                 # error type is logged
                 logger.warning(f'linkedin: skipped a malformed cookie ({type(error).__name__})')
-        logger.info(f'linkedin: converted {len(converted)} Selenium cookie(s)')
-        print('converted {} Selenium cookies to a Playwright session'.format(len(converted)))
+        logger.info(
+            f'linkedin: converted {len(converted)} Selenium cookie(s) to a Playwright session'
+        )
         return {'cookies': converted, 'origins': []}
 
     # -- logged in flows --------------------------------------------------
@@ -346,8 +349,7 @@ class LinkedIn:
             )
 
         total = save_jobs(jobs, filepath)
-        logger.info(f'linkedin: {len(jobs)} recommended job(s) scraped')
-        print('scraped {} recommended jobs ({} in {})'.format(len(jobs), total, filepath))
+        logger.info(f'linkedin: {len(jobs)} recommended job(s) scraped, {total} in {filepath}')
         return jobs
 
     def easy_apply(self, filepath='job_listing.json'):
@@ -362,7 +364,6 @@ class LinkedIn:
                 stored = json.load(file).get('list', [])
         except (FileNotFoundError, ValueError) as error:
             logger.warning(f'linkedin: could not read {filepath}: {error}')
-            print('could not read {}: {}'.format(filepath, error))
             return []
 
         applied = []
@@ -384,7 +385,6 @@ class LinkedIn:
                     f'{type(error).__name__}: {error}'
                 )
                 logger.debug('linkedin: easy apply traceback', exc_info=True)
-                print('failed: {}'.format(item.get('title') or item['url']))
 
         logger.info(f'linkedin: easy applied to {len(applied)} job(s)')
         return applied
@@ -407,14 +407,12 @@ class LinkedIn:
         if submit.count():
             submit.click()
             page.wait_for_timeout(1500)
-            logger.info(f'linkedin: applied to {item["url"]}')
-            print('applied: {}'.format(item.get('title') or item['url']))
+            logger.info(f'linkedin: applied to {item.get("title") or item["url"]} ({item["url"]})')
             return True
 
         # multi step form - close it and leave this one alone
         page.keyboard.press('Escape')
         logger.info(f'linkedin: left a multi step form open for review: {item["url"]}')
-        print('skipped (multi step): {}'.format(item.get('title') or item['url']))
         return False
 
     # -- teardown ---------------------------------------------------------
