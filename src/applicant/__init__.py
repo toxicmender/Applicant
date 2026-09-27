@@ -19,9 +19,15 @@ The layout, roughly in dependency order:
 * `financials/` - company funding from Crunchbase and Tracxn, tracked over time
 * `search`    - the facade tying the boards, filters and storage together
 * `cli`       - argument parsing and the subcommand handlers
+* `logs`      - logging setup: escaping, secret masking, UTC timestamps
 """
 
 from __future__ import annotations
+
+import logging
+
+# silent unless the caller configures logging; the CLI does so in applicant.logs
+logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 __version__ = '0.1.0'
 
