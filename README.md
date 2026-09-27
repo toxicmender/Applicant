@@ -137,6 +137,18 @@ cleanly** via *File > Import > Upload* (currency symbols survive). Columns:
 
 `status` is one of `applied`, `needs_manual_apply`, `would_apply` (dry run) or `failed`.
 
+**Formulas in scraped text are neutralised.** Titles, companies and locations come
+from job boards, and a spreadsheet runs any cell starting with `=`, `+`, `-` or `@` as a
+formula - a posting could use that to send your sheet's contents elsewhere
+([CSV Injection](https://owasp.org/www-community/attacks/CSV_Injection)). Such cells
+are written with a leading apostrophe, so `=HYPERLINK(...)` arrives as the text
+`'=HYPERLINK(...)`, and every cell is quoted. Reading the log back through
+`ApplicationLog.rows()` strips the apostrophe again.
+
+> Excel can drop that protection if you save the file from Excel and open it again, as
+> OWASP notes. Import it fresh from `applied_jobs.csv` rather than reopening an
+> Excel-saved copy.
+
 ## Comparing pay across currencies
 
 `--min-salary` needs a `--currency`, and most postings are priced in another one.

