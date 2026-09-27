@@ -29,6 +29,7 @@ import logging
 # silent unless the caller configures logging; the CLI does so in applicant.log
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
-__version__ = '0.1.0'
+# the one place the version is written; pyproject.toml reads it from here
+__version__ = '0.2.0'
 
 __all__ = ['__version__']

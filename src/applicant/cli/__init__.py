@@ -19,7 +19,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .. import log, money
+from .. import __version__, log, money
 from ..errors import AuthFailed, Blocked, ConfigError, NotFound, SourceError, Unparseable
 from ..log import QUIET, configure, default_file, get
 from ..settings import Settings
@@ -72,6 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
         description='Scrape and apply to jobs, and look up company ratings and financials',
         parents=[shared_flags(suppress=False)],
     )
+    parser.add_argument('--version', action='version', version=f'applicant {__version__}')
     commands = parser.add_subparsers(dest='command', metavar='command')
     every_command = shared_flags(suppress=True)
 

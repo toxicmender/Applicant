@@ -37,6 +37,25 @@ class NoCommandTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, 2)
 
 
+class VersionTest(unittest.TestCase):
+    def test_version_prints_and_exits_zero(self):
+        from applicant import __version__
+
+        out = io.StringIO()
+        with self.assertRaises(SystemExit) as raised, redirect_stdout(out):
+            main(['--version'])
+        self.assertEqual(raised.exception.code, 0)
+        self.assertEqual(out.getvalue().strip(), f'applicant {__version__}')
+
+    def test_the_version_has_one_source(self):
+        """pyproject.toml reads it from __version__, so the installed metadata agrees."""
+        import importlib.metadata
+
+        from applicant import __version__
+
+        self.assertEqual(importlib.metadata.version('applicant'), __version__)
+
+
 class SharedFlagsTest(unittest.TestCase):
     """Logging and settings flags go before or after the command."""
 
