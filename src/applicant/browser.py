@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
@@ -25,6 +26,8 @@ CHANNELS = ('chrome', 'msedge', None)
 
 BLOCKED_TITLES = ('just a moment', 'attention required', 'unusual traffic', 'access denied')
 BLOCKED_SELECTORS = '#challenge-platform, #cf-challenge-running, form#captcha-form'
+
+logger = logging.getLogger(__name__)
 
 
 @contextmanager
@@ -64,13 +67,19 @@ def browser(profile_dir=None, headless=True, timeout=45000, channels=CHANNELS) -
                     instance = driver.chromium.launch(**dict(options, **extra))
                     context = instance.new_context(**context_options)
                     closer = instance
+                logger.debug(
+                    f'browser: launched {channel or "bundled chromium"}'
+                    + (f' with profile {profile_dir}' if profile_dir else '')
+                )
                 break
             except Exception as error:  # noqa: BLE001 - the channel is simply not installed
+                logger.debug(f'browser: {channel or "bundled"} unavailable: {error}')
                 failures.append(
                     '{}: {}'.format(channel or 'bundled', str(error).split('\n')[0][:80])
                 )
 
         if context is None or closer is None:
+            logger.error(f'browser: no browser could be launched ({len(failures)} tried)')
             raise JobsError('could not launch a browser -\n  ' + '\n  '.join(failures))
 
         page = context.pages[0] if profile_dir and context.pages else context.new_page()
@@ -88,5 +97,9 @@ def looks_blocked(page) -> bool:
     except Exception:  # noqa: BLE001 - a page mid-navigation has no title yet
         return False
     if any(flag in title for flag in BLOCKED_TITLES):
+        logger.info(f'browser: bot check detected by page title {title!r}')
         return True
-    return page.locator(BLOCKED_SELECTORS).count() > 0
+    if page.locator(BLOCKED_SELECTORS).count() > 0:
+        logger.info('browser: bot check detected by challenge element')
+        return True
+    return False

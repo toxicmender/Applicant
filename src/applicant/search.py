@@ -14,6 +14,7 @@ no matter which board they came from.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Protocol
 
@@ -23,6 +24,8 @@ from .storage import ApplicationLog, save_jobs
 
 if TYPE_CHECKING:
     from .boards.linkedin import LinkedIn
+
+logger = logging.getLogger(__name__)
 
 
 class Board(Protocol):
@@ -103,6 +106,7 @@ class Jobs:
 
         for name in self.sources:
             client = self._client(name)
+            logger.info(f'{name}: searching {keywords!r} in {filters.location or "anywhere"!r}')
             try:
                 jobs = client.search(
                     keywords,
@@ -113,12 +117,21 @@ class Jobs:
                     ),
                 )
             except JobsError as error:
+                logger.warning(f'{name}: {type(error).__name__}: {error}')
+                (on_error or self._report)(name, error)
+                continue
+            # One board failing in a way it did not anticipate - a timeout, a DNS
+            # failure, a reshaped response - must not throw away the others'
+            # results (ASVS 16.5.2). The traceback goes to the debug log.
+            except Exception as error:
+                logger.error(f'{name}: unexpected {type(error).__name__}: {error}')
+                logger.debug(f'{name}: traceback', exc_info=True)
                 (on_error or self._report)(name, error)
                 continue
             finally:
                 # LinkedIn keeps its session open: apply() reuses it
                 if name != 'linkedin':
-                    client.close()
+                    self._close(name, client)
 
             # location always went to the board itself; the date did too on some
             skip = ['location'] + (['posted'] if name in NATIVE_DATE else [])
@@ -131,6 +144,7 @@ class Jobs:
                 job.flags = flags
                 kept.append(job)
 
+            logger.info(f'{name}: {len(kept)} of {len(jobs)} jobs kept by the filters')
             print('{}: {} of {} jobs match'.format(name, len(kept), len(jobs)))
             collected.extend(kept)
 
@@ -138,6 +152,14 @@ class Jobs:
 
     def _report(self, name: str, error: Exception) -> None:
         print('{}: {}'.format(name, error))
+
+    def _close(self, name: str, client: Board) -> None:
+        """Release a board. A failure here is logged, never raised: it would mask
+        the search result, or the error, that is already on its way out."""
+        try:
+            client.close()
+        except Exception as error:  # noqa: BLE001 - teardown must not mask the result
+            logger.warning(f'{name}: could not close cleanly: {type(error).__name__}: {error}')
 
     def apply(
         self,
@@ -184,6 +206,11 @@ class Jobs:
             entries.extend((job, 'would_apply', 'dry run') for job in linkedin_targets)
 
         written = ApplicationLog(log).record(entries)
+        tally = ', '.join(
+            f'{status}={sum(1 for _, found, _ in entries if found == status)}'
+            for status in sorted({status for _, status, _ in entries})
+        )
+        logger.info(f'apply: {written} new row(s) in {log} ({tally or "nothing to record"})')
         print(
             '{} new rows in {} ({} already recorded)'.format(written, log, len(entries) - written)
         )
@@ -197,8 +224,16 @@ class Jobs:
         try:
             applied = set(client.easy_apply(EASY_APPLY_LISTING))
         except JobsError as error:
+            logger.warning(f'linkedin: easy apply unavailable: {error}')
             print('linkedin: {}'.format(error))
             return [(job, 'failed', str(error)) for job in jobs]
+        # e.g. the browser would not start: every other board's rows still have to
+        # reach the log, so this is recorded as a failure rather than raised
+        except Exception as error:
+            logger.error(f'linkedin: easy apply failed: {type(error).__name__}: {error}')
+            logger.debug('linkedin: easy apply traceback', exc_info=True)
+            print('linkedin: {}'.format(error))
+            return [(job, 'failed', type(error).__name__) for job in jobs]
 
         for job in jobs:
             if job.url in applied:
