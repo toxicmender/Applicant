@@ -9,13 +9,18 @@ Two files, both append-oriented:
 from __future__ import annotations
 
 import csv
-import json
+import logging
 import os
 from collections.abc import Iterable
 from datetime import datetime, timezone
 
+from pydantic import ValidationError
+
+from .files import read_document, write_document
 from .models import Job
 from .salary import parse_salary
+
+logger = logging.getLogger(__name__)
 
 APPLIED_COLUMNS = [
     'applied_at',
@@ -53,32 +58,48 @@ def _key(item: dict) -> tuple:
     return item.get('source'), item.get('title'), item.get('company'), item.get('location')
 
 
+def _stored(document: dict) -> list[dict]:
+    items = document.get('list', [])
+    return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+
+
 def load_jobs(filepath: str) -> list[Job]:
-    """Read a job listing file. Missing or malformed reads as empty."""
-    try:
-        with open(filepath, encoding='utf-8') as file:
-            stored = json.load(file).get('list', [])
-    except (FileNotFoundError, ValueError):
-        return []
-    return [Job.from_dict(item) for item in stored]
+    """Read a job listing file. Missing or unreadable reads as empty, and says so.
+
+    A single record that no longer validates is skipped with a warning rather
+    than failing the whole file.
+    """
+    jobs = []
+    skipped = 0
+    for item in _stored(read_document(filepath)):
+        try:
+            jobs.append(Job.from_dict(item))
+        except ValidationError as error:
+            skipped += 1
+            logger.debug(f'{filepath}: invalid record skipped: {error.error_count()} error(s)')
+    if skipped:
+        logger.warning(f'{filepath}: skipped {skipped} record(s) that no longer validate')
+    logger.debug(f'{filepath}: loaded {len(jobs)} job(s)')
+    return jobs
 
 
 def save_jobs(jobs: Iterable[Job], filepath: str) -> int:
-    """Merge into an existing file, newest write winning. Returns the total stored."""
-    merged = {}
-    try:
-        with open(filepath, encoding='utf-8') as file:
-            for item in json.load(file).get('list', []):
-                merged[_key(item)] = item
-    except (FileNotFoundError, ValueError):
-        pass
+    """Merge into an existing file, newest write winning. Returns the total stored.
 
+    An unreadable listing is moved aside rather than overwritten, and the write
+    is atomic, so a crash part way never costs the jobs already stored.
+    """
+    merged = {}
+    for item in _stored(read_document(filepath, quarantine=True)):
+        merged[_key(item)] = item
+
+    before = len(merged)
     for job in jobs:
         item = job.to_dict()
         merged[_key(item)] = item
 
-    with open(filepath, 'w', encoding='utf-8') as file:
-        json.dump({'list': list(merged.values())}, file, indent=2, ensure_ascii=False)
+    write_document(filepath, {'list': list(merged.values())})
+    logger.info(f'{filepath}: {len(merged) - before} new job(s), {len(merged)} stored')
     return len(merged)
 
 
@@ -134,6 +155,7 @@ class ApplicationLog:
             )
 
         if not fresh:
+            logger.debug(f'{self.path}: nothing new to record')
             return 0
 
         is_new = not os.path.exists(self.path) or os.path.getsize(self.path) == 0
@@ -143,6 +165,7 @@ class ApplicationLog:
             if is_new:
                 writer.writeheader()
             writer.writerows(fresh)
+        logger.info(f'{self.path}: recorded {len(fresh)} application(s)')
         return len(fresh)
 
     def rows(self) -> list[dict[str, str]]:

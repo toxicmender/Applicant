@@ -105,6 +105,9 @@ class GitignoreTest(unittest.TestCase):
             'applied_jobs.csv',
             'company_reviews.json',
             '.money_cache.json',
+            'company_financials.json',
+            'job_listing.json.corrupt-20260927T084242Z',
+            'company_financials.json.corrupt-20260927T084242Z',
         ):
             with self.subTest(path=path):
                 self.assertTrue(self.ignored(path), '{} should be ignored'.format(path))
