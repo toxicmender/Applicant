@@ -63,7 +63,7 @@ def clients(args) -> dict:
             made[source] = AmbitionBoxClient()
         else:
             made[source] = GlassdoorClient(
-                profile_dir=args.profile,
+                profile_dir=args.settings.path(args.profile),
                 login=args.login,
                 headless=args.Display,
                 interaction=terminal(),
@@ -74,8 +74,14 @@ def clients(args) -> dict:
 def run(args) -> int:
     from ..services.reviews import fetch_reviews
 
+    settings = args.settings
     found = fetch_reviews(
-        args.company, clients(args), args.output, max_reviews=args.max_reviews, emit=Renderer()
+        args.company,
+        clients(args),
+        settings.path(args.output),
+        max_reviews=args.max_reviews,
+        emit=Renderer(),
+        backend=settings.store,
     )
     if found.written_to is None:
         return 1

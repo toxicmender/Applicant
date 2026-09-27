@@ -17,25 +17,35 @@ class Refreshed:
     updated: list[str]
     failed: list[str]
     skipped: list[str]
+    path: str  # where any new factors were written
 
 
 def refresh(
-    currencies: Iterable[str] | None = None, force: bool = False, emit: Emit = ignore
+    currencies: Iterable[str] | None = None,
+    force: bool = False,
+    emit: Emit = ignore,
+    into: str | None = None,
 ) -> Refreshed:
-    """Fetch missing factors (all of them, or these currencies') into the table."""
+    """Fetch missing factors (all of them, or these currencies') into the local
+    table, or `into` another one - the shipped table, for a maintainer."""
 
     def report(country, found, was_skipped):
         emit(FactorFetched(country, found, was_skipped))
 
     updated, failed, skipped = refresh_factors(
-        currencies=list(currencies) if currencies else None, force=force, on_result=report
+        path=into,
+        currencies=list(currencies) if currencies else None,
+        force=force,
+        on_result=report,
     )
     logger.info(
         f'rates: {len(updated)} updated, {len(failed)} failed, {len(skipped)} already known'
     )
     if failed:
         logger.warning(f'rates: no PPP factor returned for {", ".join(sorted(failed))}')
-    return Refreshed(updated, failed, skipped)
+    from .. import money
+
+    return Refreshed(updated, failed, skipped, str(into or money.LOCAL_FACTORS))
 
 
 @dataclass(frozen=True)

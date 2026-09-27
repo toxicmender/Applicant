@@ -225,21 +225,24 @@ are written with a leading apostrophe, so `=HYPERLINK(...)` arrives as the text
 | `market` | ~$21,000 | "what is this worth in my currency" |
 | `strict` | not compared, flagged | when you would rather judge it yourself |
 
-PPP factors come from the World Bank indicator `PA.NUS.PPP` and are cached in
-`src/applicant/ppp_factors.json`, which is checked in so a fresh clone starts
-with whatever is already known.
+PPP factors come from the World Bank indicator `PA.NUS.PPP`. The package ships a
+read-only table, `src/applicant/ppp_factors.json`, so a fresh clone starts with
+whatever is already known; factors you refresh go to `ppp_factors.json` in your
+data directory and are layered over it. (They used to be written into the package
+itself, which fails - or worse, succeeds - once applicant is installed.)
 
 ```
 uv run applicant rates                          # what is cached right now
 uv run applicant rates --refresh                # fetch everything missing
 uv run applicant rates --refresh -c GBP SEK NZD # just these
 uv run applicant rates --refresh --force        # re-fetch what is already there
+uv run applicant rates --refresh --into src/applicant/ppp_factors.json   # maintainers
 ```
 
-**The file ships with only USD, INR and JPY.** The World Bank API throttles
+**The shipped table has only USD, INR and JPY.** The World Bank API throttles
 hard - roughly one country per attempt - so the rest are fetched on demand and
-cached as you use them, or all at once with `--refresh`. Run it once and commit
-the result so nobody else has to.
+cached as you use them, or all at once with `--refresh`. To give every fresh clone
+more, refresh `--into` the shipped table and commit it.
 
 Nothing is ever written from memory. A factor that cannot be retrieved is
 reported and left out, and a comparison needing it falls back to a market rate
@@ -337,6 +340,50 @@ Job scraping also has its own subcommand, `applicant jobs`, which takes the same
 Running `applicant` with bare flags still means the job run, so invocations documented
 before subcommands existed keep working.
 
+## Where your data lives
+
+Everything goes in one **data directory** - the current directory unless you say
+otherwise - and every file flag (`-o`, `-i`, `--log`, ...) is relative to it:
+
+```
+uv run applicant search "python developer" --data-dir ~/applicant
+export APPLICANT_HOME=~/applicant        # the same, for every run
+```
+
+Settings come from, in order - later wins: the defaults, an `applicant.toml` in
+the current directory (or `--config PATH`), the environment, and flags.
+
+```toml
+# applicant.toml
+data_dir = "~/applicant"
+store = "sqlite"                 # or "files"
+
+[files]
+listing = "job_listing.json"     # any file name can be changed here
+```
+
+API keys are read from the environment (`CRUNCHBASE_API_KEY`, `TRACXN_API_KEY`) or
+their flags only. A config file that sets one is refused, because config files get
+committed.
+
+**`applicant.db` is the record; the JSON and CSV are its exports.** With the
+default `--store sqlite`, the jobs, applications and ratings live in an SQLite file
+beside them. `job_listing.json` and `applied_jobs.csv` are rewritten after every
+change, byte for byte as before, so a Google Sheets import works exactly as it did.
+
+- **An existing directory is picked up on first use.** Point a new version at the
+  files from an old one and they are imported. Nothing is converted or deleted.
+- **The file you see is the data the next run uses.** Edit `job_listing.json` by
+  hand, replace it, or delete it, and the next run imports what is there. The
+  database notices that the file no longer matches what it last wrote.
+- **Ratings are kept over time.** `company_reviews.json` holds this run's ratings,
+  as always. Every rating ever read stays in the database.
+- A command that only looks, in a directory with nothing in it, creates nothing.
+
+`--store files` (or `store = "files"`) keeps the JSON and CSV alone, with no
+database. Used as a library, applicant defaults to that, so importing it never
+creates a database behind anyone's back.
+
 ## Where things are
 
 ```
@@ -350,11 +397,13 @@ src/applicant/
     dedupe.py      when postings on different boards are one job
     dates.py salary.py places.py   posting dates, pay, and where a place is
   errors.py      one error hierarchy for every source: Blocked, NotFound, Unreachable, ...
-  infra/         the shared HTTP client (retries, backoff, 429s, per-host pacing)
-                 and the one browser launcher (Chrome, then Edge, then bundled)
+  infra/         the shared HTTP client (retries, backoff, 429s, per-host pacing),
+                 the one browser launcher (Chrome, then Edge, then bundled), and
+                 store/: applicant.db and the file exports kept in step with it
   filters.py     JobFilter wired to live rates and the board table; prepared()
   money.py       the FX and PPP cache, and Rates.snapshot() for a run
-  ppp_factors.json  the checked in PPP table, filled by `applicant rates --refresh`
+  ppp_factors.json  the shipped, read-only PPP table; refreshes go to the data dir
+  settings.py    Settings: data dir, file names, store, keys - flags > env > applicant.toml
   boards/        one module per job board, all returning Job, and their capabilities
   reviews/       company ratings from AmbitionBox and Glassdoor
   financials/    company funding from Crunchbase and Tracxn, tracked over time

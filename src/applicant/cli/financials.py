@@ -77,16 +77,17 @@ def clients(args) -> dict:
     made = {}
     if 'crunchbase' in wanted:
         made['crunchbase'] = CrunchbaseClient(
-            api_key=args.crunchbase_key,
-            profile_dir=args.cb_profile,
+            # flag, then $CRUNCHBASE_API_KEY, resolved by Settings
+            api_key=args.settings.secret('crunchbase_key'),
+            profile_dir=args.settings.path(args.cb_profile),
             login=args.login,
             headless=not args.show,
             interaction=terminal(),
         )
     if 'tracxn' in wanted:
         made['tracxn'] = TracxnClient(
-            api_key=args.tracxn_key,
-            profile_dir=args.tx_profile,
+            api_key=args.settings.secret('tracxn_key'),
+            profile_dir=args.settings.path(args.tx_profile),
             login=args.login,
             headless=not args.show,
             interaction=terminal(),
@@ -97,7 +98,12 @@ def clients(args) -> dict:
 def run(args) -> int:
     from ..services.financials import companies_to_track, track_financials
 
-    companies = companies_to_track(args.companies, args.from_jobs)
+    settings = args.settings
+    companies = companies_to_track(
+        args.companies,
+        settings.path(args.from_jobs) if args.from_jobs else None,
+        settings.store,
+    )
     if not companies:
         print('name at least one company, or pass --from-jobs job_listing.json')
         return 1
@@ -105,7 +111,7 @@ def run(args) -> int:
     tracked = track_financials(
         companies,
         clients(args),
-        args.output,
+        settings.path(args.output),
         max_rounds=args.max_rounds,
         emit=Renderer(rounds=args.rounds, failures=True),
     )

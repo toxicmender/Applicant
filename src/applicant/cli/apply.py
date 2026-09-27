@@ -32,9 +32,11 @@ def run(args) -> int:
     from ..search import Jobs
     from ..services.apply import worklist
 
-    work = worklist(args.input, filters_from(args))
+    settings = args.settings
+    source, log = settings.path(args.input), settings.path(args.log)
+    work = worklist(source, filters_from(args), settings.store)
     if not work.read:
-        print('no jobs to apply to in {}'.format(args.input))
+        print('no jobs to apply to in {}'.format(source))
         return 1
 
     print('{} of {} stored jobs match'.format(len(work.matching), work.read))
@@ -42,8 +44,8 @@ def run(args) -> int:
         return 1
 
     logger.info(
-        f'apply: {len(work.matching)} job(s) to {args.log}' + (' (dry run)' if args.dry_run else '')
+        f'apply: {len(work.matching)} job(s) to {log}' + (' (dry run)' if args.dry_run else '')
     )
-    with Jobs(headless=not args.show) as board:
-        board.apply(work.matching, log=args.log, dry_run=args.dry_run)
+    with Jobs(headless=not args.show, backend=settings.store) as board:
+        board.apply(work.matching, log=log, dry_run=args.dry_run)
     return 0

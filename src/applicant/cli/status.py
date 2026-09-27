@@ -28,19 +28,21 @@ def run(args) -> int:
     """What is stored right now: jobs found, and what came of them."""
     from ..services.status import summarise
 
-    status = summarise(args.input, args.log)
+    settings = args.settings
+    status = summarise(settings.path(args.input), settings.path(args.log), settings.store)
 
-    print('{} jobs stored in {}'.format(status.jobs, args.input))
+    print('{} jobs stored in {}'.format(status.jobs, status.input))
     for source in sorted(status.by_source):
         print('  {}: {}'.format(source, status.by_source[source]))
 
-    print('{} applications recorded in {}'.format(status.applications, args.log))
+    print('{} applications recorded in {}'.format(status.applications, status.log))
     for name in sorted(status.by_status):
         print('  {}: {}'.format(name, status.by_status[name]))
 
     if args.json:
-        with open(args.json, 'w', encoding='utf-8') as file:
+        target = settings.path(args.json)
+        with open(target, 'w', encoding='utf-8') as file:
             json.dump(status.to_dict(), file, indent=2)
-        logger.info(f'status: summary written to {args.json}')
-        print('written to {}'.format(args.json))
+        logger.info(f'status: summary written to {target}')
+        print('written to {}'.format(target))
     return 0

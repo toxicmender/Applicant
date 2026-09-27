@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from ..files import write_document
+from ..infra.store.repositories import Backend
 from .events import Emit, RatingFetched, ignore
 from .fanout import fan_out
 
@@ -34,11 +35,14 @@ def fetch_reviews(
     output: str,
     max_reviews: int = 20,
     emit: Emit = ignore,
+    backend: Backend = 'files',
 ) -> Reviews:
     """Ask each client for `company`'s rating and write whatever came back.
 
     One rating is written as an object, several as a list - the shape the file
-    has always had.
+    has always had: this run's ratings. With the sqlite backend every rating is
+    also kept in applicant.db, so the file is today's view and the database
+    the history (it used to be overwritten, and the history lost).
     """
 
     def one(source: str) -> Any:
@@ -54,6 +58,11 @@ def fetch_reviews(
         return Reviews([], None)
 
     stored = [rating.to_dict() for rating in ratings]
+    if backend == 'sqlite':
+        from ..infra.store.sqlite import Store
+
+        with Store.beside(output) as store:
+            store.add_ratings(company, [(rating.source, rating.to_dict()) for rating in ratings])
     write_document(output, stored if len(stored) > 1 else stored[0])
     logger.info(f'reviews: {len(stored)} rating(s) written to {output}')
     return Reviews(ratings, output)

@@ -70,9 +70,10 @@ def run(args) -> int:
     from ..search import Jobs
     from ..services.search import store
 
+    settings = args.settings
     wanted = SOURCES if 'all' in args.source else args.source
     logger.info(f'search: {args.keywords!r} on {", ".join(wanted)}, up to {args.limit} per board')
-    with Jobs(sources=wanted, headless=not args.show) as board:
+    with Jobs(sources=wanted, headless=not args.show, backend=settings.store) as board:
         found = board.search(
             args.keywords,
             filters_from(args),
@@ -88,7 +89,7 @@ def run(args) -> int:
         print('nothing matched')
         return 1
 
-    stored = store(found, args.output)
+    stored = store(found, settings.path(args.output), settings.store)
     print(
         '{} jobs written to {} ({} stored in total)'.format(stored.saved, stored.path, stored.total)
     )

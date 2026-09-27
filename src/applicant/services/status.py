@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from ..storage import ApplicationLog, load_jobs
+from ..infra.store.repositories import Backend, applications, listing
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +35,10 @@ class Status:
         }
 
 
-def summarise(input: str, log: str) -> Status:
+def summarise(input: str, log: str, backend: Backend = 'files') -> Status:
     by_source: dict[str, int] = {}
-    for job in load_jobs(input):
+    for job in listing(input, backend).load():
         by_source[job.source] = by_source.get(job.source, 0) + 1
-    status = Status(input, log, by_source, ApplicationLog(log).counts())
+    status = Status(input, log, by_source, applications(log, backend).counts())
     logger.info(f'status: {status.jobs} job(s) in {input}, log {log}')
     return status

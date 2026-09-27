@@ -10,14 +10,14 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from ..domain import dedupe
 from ..domain.filtering import JobFilter
 from ..domain.job import Job
 from ..errors import SourceError
 from ..filters import prepared
-from ..storage import ApplicationLog, load_jobs, save_jobs
+from ..infra.store.repositories import Backend, applications, listing
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ Entry = tuple[Job, str, str]
 
 
 class EasyApplier(Protocol):
-    def easy_apply(self, filepath: str = ...) -> list[str]: ...
+    def easy_apply(self, source: Any = ...) -> list[str]: ...
 
 
 def select(jobs: Iterable[Job], filters: JobFilter) -> list[Job]:
@@ -54,23 +54,23 @@ class Worklist:
     matching: list[Job]
 
 
-def worklist(path: str, filters: JobFilter) -> Worklist:
+def worklist(path: str, filters: JobFilter, backend: Backend = 'files') -> Worklist:
     """The stored jobs at `path` that pass `filters`."""
-    jobs = load_jobs(path)
+    jobs = listing(path, backend).load()
     if not jobs:
         logger.warning(f'apply: no jobs could be read from {path}')
     return Worklist(len(jobs), select(jobs, filters))
 
 
-def easy_apply_with(client: EasyApplier, jobs: list[Job], staging: str) -> list[Entry]:
+def easy_apply_with(client: EasyApplier, jobs: list[Job]) -> list[Entry]:
     """Easy Apply to `jobs` through a LinkedIn client, one entry per job.
 
-    Every failure becomes a `failed` row rather than an exception: the other
-    boards' rows still have to reach the log.
+    The jobs are handed over directly. (They used to be written to a staging
+    file for the client to read back.) Every failure becomes a `failed` row
+    rather than an exception: the other boards' rows still have to reach the log.
     """
-    save_jobs(jobs, staging)
     try:
-        applied = set(client.easy_apply(staging))
+        applied = set(client.easy_apply(jobs))
     except SourceError as error:
         logger.warning('linkedin: {}'.format(error))
         return [(job, 'failed', str(error)) for job in jobs]
@@ -91,8 +91,9 @@ def easy_apply_with(client: EasyApplier, jobs: list[Job], staging: str) -> list[
 class ApplyToJobs:
     """`easy_apply` is how LinkedIn postings are applied to; the rest are listed."""
 
-    def __init__(self, easy_apply: Callable[[list[Job]], list[Entry]]):
+    def __init__(self, easy_apply: Callable[[list[Job]], list[Entry]], backend: Backend = 'files'):
         self.easy_apply = easy_apply
+        self.backend: Backend = backend
 
     def run(
         self,
@@ -125,7 +126,7 @@ class ApplyToJobs:
         elif linkedin_targets:
             entries.extend((job, 'would_apply', 'dry run') for job in linkedin_targets)
 
-        written = ApplicationLog(log).record(entries)
+        written = applications(log, self.backend).record(entries)
         logger.info(
             '{} new rows in {} ({} already recorded)'.format(written, log, len(entries) - written)
         )

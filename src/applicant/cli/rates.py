@@ -26,6 +26,12 @@ def add_parser(add) -> argparse.ArgumentParser:
         help='limit the refresh to these currencies, e.g. GBP SEK NZD',
     )
     add_logging(rates)
+    rates.add_argument(
+        '--into',
+        metavar='PATH',
+        help='write refreshed factors here instead of the local table - e.g. '
+        'src/applicant/ppp_factors.json, to update what a fresh clone starts with',
+    )
     return rates
 
 
@@ -42,7 +48,8 @@ def run(args) -> int:
         )
         print('one country at a time - the API throttles hard, so this is not quick.\n')
 
-        done = refresh(wanted, force=args.force, emit=Renderer())
+        into = args.settings.path(args.into) if args.into else None
+        done = refresh(wanted, force=args.force, emit=Renderer(), into=into)
         print(
             '\n{} updated, {} failed, {} already known'.format(
                 len(done.updated), len(done.failed), len(done.skipped)
@@ -53,7 +60,7 @@ def run(args) -> int:
                 'not recorded (nothing is written from memory): ' + ', '.join(sorted(done.failed))
             )
         if done.updated:
-            print('written to ppp_factors.json - commit it so others start with them')
+            print('written to {}'.format(done.path))
 
     table = cached()
     print(

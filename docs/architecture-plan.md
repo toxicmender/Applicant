@@ -763,6 +763,39 @@ beyond it:
 - **The bare-flag deprecation (D10) stays in phase 5** as planned. The staging
   file (D10 of §2.2) stays until phase 4.
 
+**Phase 4 status: done.** Both "done when" checks are tests in `tests/test_store.py`.
+An old working directory is imported on first use, and the exported
+`applied_jobs.csv` and `job_listing.json` are byte-identical to what the plain
+backend writes. I checked that both tests fail when the export or the dedupe is
+broken. Where it differs from the row above, or goes beyond it:
+
+- **The database lives beside the files it holds** (`applicant.db` in the data
+  dir by default), not at one fixed path. Each listing or log is a collection
+  named by its path relative to the database, so two listings stay two listings,
+  and moving the directory keeps everything.
+- **The sync rule does double duty.** The store records a digest of each export
+  it writes. A file that no longer matches (hand-edited, replaced, deleted, or
+  never seen) is imported and wins. That rule is the migration, and it also
+  guarantees that the file you see is the data the next run uses. An unreadable
+  file is left alone by a read and moved aside by a write, as before.
+- **One dedupe planner (`storage.plan_rows`) serves both backends.** The CSV
+  answers its questions by reading itself; the store answers from indexes. Their
+  results are identical, which a test checks.
+- **The CLI defaults to `sqlite` and the library to `files`.** Importing applicant
+  never creates a database. A read-only command in an empty directory creates
+  nothing either; a test run had shown otherwise before that was fixed.
+- **`financials` history stays in `company_financials.json`.** `FinancialsTracker`
+  already keeps a change log there, and moving it had no payoff this phase.
+  Ratings, which used to be overwritten (D9), are the history the database adds.
+- **Settings:** flags > env > `applicant.toml` > defaults. API keys in the config
+  file are refused rather than read. `tomli` is the only new dependency (for
+  Python 3.10 only), and it was already in the lock as a pytest dependency.
+- **The fixes that fell out:** D6 (refreshed PPP factors go to the data dir;
+  `rates --into` updates the shipped table for maintainers) and D10 (Easy Apply
+  takes the jobs directly; the staging file is gone, and its name is kept only for
+  old patch targets). D7 was fixed in phase 1.
+- **Saved standing searches** (D7 mentions them) are not in `applicant.toml` yet.
+
 Phases 1–3 are refactors behind the existing tests, and the test suite is the
 contract. Phase 4 is the only one that changes on-disk formats, which is why it
 imports the old files and keeps exporting them.

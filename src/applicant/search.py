@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 from .errors import SourceError
 from .filters import JobFilter
+from .infra.store.repositories import Backend
 from .log import get
 from .models import Job
 from .services.apply import ApplyToJobs, Entry, easy_apply_with
@@ -33,7 +34,9 @@ __all__ = ['EASY_APPLY_LISTING', 'SOURCES', 'Board', 'Jobs']
 
 logger = get(__name__)
 
-# where jobs handed to Easy Apply are staged for the LinkedIn client to read back
+# Deprecated and unused: Easy Apply used to stage jobs in this file for the
+# LinkedIn client to read back. They are handed over directly now; the name is
+# kept only so code that patched it does not break.
 EASY_APPLY_LISTING = 'applied_via_jobs_interface.json'
 
 
@@ -45,10 +48,14 @@ class Jobs:
         sources: Sequence[str] = SOURCES,
         headless: bool = True,
         linkedin: LinkedIn | None = None,
+        backend: Backend = 'files',
     ):
         self.sources = tuple(sources)
         self.headless = headless
         self._linkedin = linkedin
+        # where apply() logs: 'files' is the CSV alone, 'sqlite' the database
+        # beside it with the CSV exported (see applicant.infra.store)
+        self.backend: Backend = backend
 
     def linkedin(self) -> LinkedIn:
         """The LinkedIn client, which outlives a single search because its
@@ -135,10 +142,12 @@ class Jobs:
 
         Only LinkedIn Easy Apply can be automated; see `ApplyToJobs`.
         """
-        return ApplyToJobs(self._easy_apply).run(jobs, log=log, filters=filters, dry_run=dry_run)
+        return ApplyToJobs(self._easy_apply, self.backend).run(
+            jobs, log=log, filters=filters, dry_run=dry_run
+        )
 
     def _easy_apply(self, jobs: list[Job]) -> list[Entry]:
-        return easy_apply_with(self.linkedin(), jobs, EASY_APPLY_LISTING)
+        return easy_apply_with(self.linkedin(), jobs)
 
 
 def _with_on_error(emit: Emit, on_error: Callable[[str, Exception], None]) -> Emit:

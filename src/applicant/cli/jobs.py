@@ -63,7 +63,8 @@ def run(args) -> int:
             'which manages its own browser'
         )
 
-    fp = Path(args.cookies)
+    settings = args.settings
+    fp = Path(settings.path(args.cookies))
     with LinkedIn(path=args.driver, headless=args.Display, interaction=terminal()) as operator:
         if fp.exists() and not fp.is_dir() and not args.overwrite:
             logger.info(f'jobs: restoring the LinkedIn session from {fp}')
@@ -84,6 +85,7 @@ def run(args) -> int:
             if saved is not None:
                 print('session saved to {}'.format(saved))
 
-        jobs = operator.scrape_jobs(args.jobs)
-    print('scraped {} recommended jobs into {}'.format(len(jobs), args.jobs))
+        listing = settings.path(args.jobs)
+        jobs = operator.scrape_jobs(listing)
+    print('scraped {} recommended jobs into {}'.format(len(jobs), listing))
     return 0

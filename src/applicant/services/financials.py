@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from ..financials import FinancialsTracker
-from ..storage import load_jobs
+from ..infra.store.repositories import Backend, listing
 from .events import Emit, FinancialsTracked, ignore
 from .fanout import fan_out
 
@@ -22,21 +22,25 @@ class FinancialsSource(Protocol):
     def fetch(self, company: str, max_rounds: int = ...) -> Any: ...
 
 
-def companies_from_jobs(path: str) -> list[str]:
-    """Every distinct company in a job listing file, first spelling wins."""
+def companies_from_jobs(path: str, backend: Backend = 'files') -> list[str]:
+    """Every distinct company in a job listing, first spelling wins."""
     seen: dict[str, str] = {}
-    for job in load_jobs(path):
+    for job in listing(path, backend).load():
         name = (job.company or '').strip()
         if name and name.lower() not in seen:
             seen[name.lower()] = name
     return list(seen.values())
 
 
-def companies_to_track(named: Iterable[str], from_jobs: str | None = None) -> list[str]:
+def companies_to_track(
+    named: Iterable[str], from_jobs: str | None = None, backend: Backend = 'files'
+) -> list[str]:
     """The companies named, then any others in a job listing, each once."""
     companies = list(named)
     if from_jobs:
-        companies += [name for name in companies_from_jobs(from_jobs) if name not in companies]
+        companies += [
+            name for name in companies_from_jobs(from_jobs, backend) if name not in companies
+        ]
     return companies
 
 

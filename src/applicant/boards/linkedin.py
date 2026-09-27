@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Iterable
 from html import unescape
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -352,19 +353,25 @@ class LinkedIn:
         logger.info(f'linkedin: {len(jobs)} recommended job(s) scraped, {total} in {filepath}')
         return jobs
 
-    def easy_apply(self, filepath='job_listing.json'):
-        """Applies to the stored jobs that advertise Easy Apply.
+    def easy_apply(self, source: str | Path | Iterable[Job | dict] = 'job_listing.json'):
+        """Applies to the jobs that advertise Easy Apply. -> the urls applied to.
 
-        Only single step applications go through; anything asking extra questions
-        is left open for you rather than guessed at.
+        `source` is the jobs themselves, or a job listing file to read them
+        from. Only single step applications go through; anything asking extra
+        questions is left open for you rather than guessed at.
         """
-        page = self._start()
-        try:
-            with open(filepath, encoding='utf-8') as file:
-                stored = json.load(file).get('list', [])
-        except (FileNotFoundError, ValueError) as error:
-            logger.warning(f'linkedin: could not read {filepath}: {error}')
+        if isinstance(source, (str, Path)):
+            try:
+                with open(source, encoding='utf-8') as file:
+                    stored = json.load(file).get('list', [])
+            except (FileNotFoundError, ValueError) as error:
+                logger.warning(f'linkedin: could not read {source}: {error}')
+                return []
+        else:
+            stored = [item.to_dict() if isinstance(item, Job) else item for item in source]
+        if not stored:
             return []
+        page = self._start()
 
         applied = []
         for item in stored:

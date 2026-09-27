@@ -98,3 +98,24 @@ def filters_from(args) -> JobFilter:
         # --strict is the stricter of the two, so it wins when both are given
         keep_unpublished=args.strict_published and not args.strict,
     )
+
+
+def add_settings(command) -> None:
+    """Where the data lives and how it is kept - on every subcommand."""
+    command.add_argument(
+        '--data-dir',
+        metavar='DIR',
+        help='where applicant keeps its files and database; relative file names '
+        'go here (default: the current directory, or $APPLICANT_HOME)',
+    )
+    command.add_argument(
+        '--store',
+        choices=['sqlite', 'files'],
+        help='sqlite (default): applicant.db beside the files is the record and the '
+        'JSON/CSV are exports; files: the JSON/CSV alone',
+    )
+    command.add_argument(
+        '--config',
+        metavar='PATH',
+        help='settings file to read (default: applicant.toml here, if there is one)',
+    )

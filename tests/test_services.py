@@ -264,7 +264,7 @@ class FinancialsServiceTest(TempDir):
 
 class RatesServiceTest(unittest.TestCase):
     def test_each_factor_is_emitted_as_it_arrives(self):
-        def fake_refresh(currencies=None, force=False, on_result=None):
+        def fake_refresh(path=None, currencies=None, force=False, on_result=None):
             assert on_result is not None
             on_result('GBR', {'value': 0.7, 'year': '2025'}, False)
             on_result('USA', {'value': 1.0, 'year': 'definition'}, True)

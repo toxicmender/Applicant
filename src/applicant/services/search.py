@@ -18,7 +18,7 @@ from ..domain.capability import Capability, Field
 from ..domain.job import Job, experience_from
 from ..errors import SourceError
 from ..filters import JobFilter, prepared
-from ..storage import save_jobs
+from ..infra.store.repositories import Backend, listing
 from .events import BoardSearched, Emit, ignore
 from .fanout import fan_out
 
@@ -74,10 +74,10 @@ class Stored:
     total: int
 
 
-def store(found: Iterable[Job], path: str) -> Stored:
-    """Merge a search's results into the listing file, newest winning."""
+def store(found: Iterable[Job], path: str, backend: Backend = 'files') -> Stored:
+    """Merge a search's results into the listing, newest winning."""
     found = list(found)
-    total = save_jobs(found, path)
+    total = listing(path, backend).save(found)
     logger.info(f'search: {len(found)} job(s) saved, {total} now in {path}')
     return Stored(path, len(found), total)
 

@@ -19,11 +19,12 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .. import log
-from ..errors import AuthFailed, Blocked, NotFound, SourceError, Unparseable
+from .. import log, money
+from ..errors import AuthFailed, Blocked, ConfigError, NotFound, SourceError, Unparseable
 from ..log import QUIET, configure, default_file, get
+from ..settings import Settings
 from . import apply, financials, jobs, rates, reviews, search, status
-from .common import add_filters, add_logging, filters_from
+from .common import add_filters, add_logging, add_settings, filters_from
 
 __all__ = [
     'add_filters',
@@ -75,7 +76,9 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest='command')
 
     def add(name: str, **options) -> argparse.ArgumentParser:
-        return commands.add_parser(name, **options)
+        command = commands.add_parser(name, **options)
+        add_settings(command)
+        return command
 
     # the names are read here, at call time, so a patched run_* is the one bound
     jobs.add_parser(add).set_defaults(handler=run_jobs)
@@ -110,9 +113,31 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 1
 
+    try:
+        settings = Settings.load(
+            data_dir=args.data_dir,
+            store=args.store,
+            config=args.config,
+            crunchbase_key=getattr(args, 'crunchbase_key', None),
+            tracxn_key=getattr(args, 'tracxn_key', None),
+        )
+    except ConfigError as error:
+        print('applicant: {}'.format(error), file=sys.stderr)
+        return 2
+    # every command reads its paths, keys and backend from here
+    args.settings = settings
+    money.configure(
+        cache=settings.path(settings.files.money_cache),
+        factors=settings.path(settings.files.ppp_factors),
+    )
+
     # a run records itself unless told not to; the file is only created once
     # there is something to put in it
-    filepath = None if args.no_log_file else (args.log_file or default_file())
+    filepath = (
+        None
+        if args.no_log_file
+        else (args.log_file or default_file(folder=settings.path(settings.files.logs)))
+    )
     try:
         configure(verbosity=QUIET if args.quiet else args.verbose, filepath=filepath)
     except OSError as error:
@@ -151,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 # argparse attributes that are plumbing, or secret, rather than something to log
-NOT_LOGGED = {'handler', 'command', 'verbose', 'quiet', 'log_file', 'no_log_file'}
+NOT_LOGGED = {'handler', 'command', 'verbose', 'quiet', 'log_file', 'no_log_file', 'settings'}
 SECRET_ARGS = {'crunchbase_key', 'tracxn_key'}
 
 

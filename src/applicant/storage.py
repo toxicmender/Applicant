@@ -11,8 +11,9 @@ from __future__ import annotations
 import csv
 import logging
 import os
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
+from typing import IO
 
 from pydantic import ValidationError
 
@@ -85,18 +86,7 @@ def load_jobs(filepath: str) -> list[Job]:
     A single record that no longer validates is skipped with a warning rather
     than failing the whole file.
     """
-    jobs = []
-    skipped = 0
-    for item in _stored(read_document(filepath)):
-        try:
-            jobs.append(Job.from_dict(item))
-        except ValidationError as error:
-            skipped += 1
-            logger.debug(f'{filepath}: invalid record skipped: {error.error_count()} error(s)')
-    if skipped:
-        logger.warning(f'{filepath}: skipped {skipped} record(s) that no longer validate')
-    logger.debug(f'{filepath}: loaded {len(jobs)} job(s)')
-    return jobs
+    return jobs_from(_stored(read_document(filepath)), filepath)
 
 
 def save_jobs(jobs: Iterable[Job], filepath: str) -> int:
@@ -117,6 +107,90 @@ def save_jobs(jobs: Iterable[Job], filepath: str) -> int:
     write_document(filepath, {'list': list(merged.values())})
     logger.info(f'{filepath}: {len(merged) - before} new job(s), {len(merged)} stored')
     return len(merged)
+
+
+def application_row(job: Job, status: str, note: str) -> dict:
+    """One row of the application log, in APPLIED_COLUMNS order."""
+    salary = parse_salary(job.salary)
+    return {
+        'applied_at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        'status': status,
+        'source': job.source,
+        'id': job.id,
+        'title': job.title,
+        'company': job.company,
+        'location': job.location,
+        'salary': job.salary,
+        'salary_annual_low': salary.annual_low if salary else None,
+        'salary_annual_high': salary.annual_high if salary else None,
+        'currency': salary.currency if salary else None,
+        'experience_min': job.experience_min,
+        'experience_max': job.experience_max,
+        'posted': job.posted,
+        'url': job.url,
+        'flags': ' '.join(job.flags),
+        'note': note,
+    }
+
+
+def plan_rows(
+    entries: Iterable[tuple[Job, str, str]],
+    seen: Callable[[str | None, str | None], bool],
+    boards_for: Callable[[str], set[str | None]],
+) -> list[dict]:
+    """The rows `entries` add to a log, given what the log already holds.
+
+    One set of rules for every backend: the CSV answers `seen` and `boards_for`
+    by reading itself, the SQLite store from its indexes. A posting already
+    logged under its board's id is skipped; so is the same job logged from
+    another board. Two ids on the *same* board are two postings: there the id is
+    authoritative, and collapsing them would throw away a posting the board
+    thinks is real.
+    """
+    batch_seen: set[tuple[str | None, str | None]] = set()
+    batch_boards: dict[str, set[str | None]] = {}
+    fresh = []
+    for job, status, note in entries:
+        if (job.source, job.id) in batch_seen or seen(job.source, job.id):
+            continue
+        mark = fingerprint(job.to_dict())
+        if mark and (boards_for(mark) | batch_boards.get(mark, set())) - {job.source}:
+            continue
+        batch_seen.add((job.source, job.id))
+        if mark:
+            batch_boards.setdefault(mark, set()).add(job.source)
+        fresh.append(application_row(job, status, note))
+    return fresh
+
+
+def write_rows(handle: IO[str], rows: Iterable[dict], header: bool) -> None:
+    """Rows as the application log writes them: every cell quoted, formula
+    starts neutralised, columns in their fixed order."""
+    # QUOTE_ALL: a separator or quote inside scraped text cannot open a new
+    # cell and put a formula at its start
+    writer = csv.DictWriter(
+        handle, fieldnames=APPLIED_COLUMNS, quoting=csv.QUOTE_ALL, extrasaction='ignore'
+    )
+    if header:
+        writer.writeheader()
+    writer.writerows({column: neutralise(value) for column, value in row.items()} for row in rows)
+
+
+def jobs_from(items: Iterable[dict], origin: str) -> list[Job]:
+    """Jobs from stored records; one that no longer validates is skipped with a
+    warning rather than failing the whole listing."""
+    jobs = []
+    skipped = 0
+    for item in items:
+        try:
+            jobs.append(Job.from_dict(item))
+        except ValidationError as error:
+            skipped += 1
+            logger.debug(f'{origin}: invalid record skipped: {error.error_count()} error(s)')
+    if skipped:
+        logger.warning(f'{origin}: skipped {skipped} record(s) that no longer validate')
+    logger.debug(f'{origin}: loaded {len(jobs)} job(s)')
+    return jobs
 
 
 class ApplicationLog:
@@ -150,43 +224,12 @@ class ApplicationLog:
             mark = fingerprint(row)
             if mark:
                 boards_of.setdefault(mark, set()).add(row.get('source'))
-        fresh = []
 
-        for job, status, note in entries:
-            if (job.source, job.id) in seen:
-                continue
-            # The same posting under another board's id is still one job. Two ids
-            # on the *same* board are not: there the id is authoritative, and
-            # collapsing them would throw away a posting the board thinks is real.
-            mark = fingerprint(job.to_dict())
-            if mark and boards_of.get(mark, set()) - {job.source}:
-                continue
-            seen.add((job.source, job.id))
-            if mark:
-                boards_of.setdefault(mark, set()).add(job.source)
-            salary = parse_salary(job.salary)
-            fresh.append(
-                {
-                    'applied_at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-                    'status': status,
-                    'source': job.source,
-                    'id': job.id,
-                    'title': job.title,
-                    'company': job.company,
-                    'location': job.location,
-                    'salary': job.salary,
-                    'salary_annual_low': salary.annual_low if salary else None,
-                    'salary_annual_high': salary.annual_high if salary else None,
-                    'currency': salary.currency if salary else None,
-                    'experience_min': job.experience_min,
-                    'experience_max': job.experience_max,
-                    'posted': job.posted,
-                    'url': job.url,
-                    'flags': ' '.join(job.flags),
-                    'note': note,
-                }
-            )
-
+        fresh = plan_rows(
+            entries,
+            seen=lambda source, job_id: (source, job_id) in seen,
+            boards_for=lambda mark: boards_of.get(mark, set()),
+        )
         if not fresh:
             logger.debug(f'{self.path}: nothing new to record')
             return 0
@@ -194,14 +237,7 @@ class ApplicationLog:
         is_new = not os.path.exists(self.path) or os.path.getsize(self.path) == 0
         # utf-8-sig so Sheets and Excel both read the currency symbols correctly
         with open(self.path, 'a', encoding='utf-8-sig', newline='') as handle:
-            # QUOTE_ALL: a separator or quote inside scraped text cannot open a
-            # new cell and put a formula at its start
-            writer = csv.DictWriter(handle, fieldnames=APPLIED_COLUMNS, quoting=csv.QUOTE_ALL)
-            if is_new:
-                writer.writeheader()
-            writer.writerows(
-                {column: neutralise(value) for column, value in row.items()} for row in fresh
-            )
+            write_rows(handle, fresh, header=is_new)
         logger.info(f'{self.path}: recorded {len(fresh)} application(s)')
         return len(fresh)
 

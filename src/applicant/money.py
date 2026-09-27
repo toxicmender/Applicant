@@ -48,18 +48,44 @@ WB_URL = 'https://api.worldbank.org/v2/country/{}/indicator/PA.NUS.PPP?format=js
 WB_PARAMS = {'format': 'json', 'mrnev': '1'}
 
 CACHE_PATH = os.environ.get('APPLICANT_MONEY_CACHE', '.money_cache.json')
+# PPP factors refreshed by `applicant rates --refresh`. Beside the user's data,
+# never in the package: an installed package is not somewhere a run can - or
+# should - write. The shipped table (FACTORS_PATH) is read-only and this one is
+# layered over it.
+LOCAL_FACTORS: str | Path = 'ppp_factors.json'
 # the checked in reference table, so a fresh clone starts with what is known
 FACTORS_PATH = Path(__file__).with_name('ppp_factors.json')
 FX_TTL = 24 * 3600  # exchange rates move daily
 PPP_TTL = 180 * 24 * 3600  # PPP factors are published yearly
 
 
-def load_factors(path: str | Path = FACTORS_PATH):
-    """The checked in PPP table: country -> {value, year}.
+def configure(cache: str | Path | None = None, factors: str | Path | None = None) -> None:
+    """Where the rate cache and the refreshed PPP table live - set from Settings.
 
-    Missing or unreadable reads as empty rather than raising, so a broken data
-    file degrades to fetching on demand instead of stopping a search.
+    Resets the shared `rates()` table, so the next lookup uses the new paths.
     """
+    global CACHE_PATH, LOCAL_FACTORS, _DEFAULT
+    if cache is not None:
+        CACHE_PATH = str(cache)
+    if factors is not None:
+        LOCAL_FACTORS = factors
+    _DEFAULT = None
+
+
+def load_factors(path: str | Path | None = None):
+    """PPP factors: country -> {value, year}.
+
+    With no path, the shipped table with the locally refreshed one layered over
+    it. With a path, that file alone. Missing or unreadable reads as empty
+    rather than raising, so a broken data file degrades to fetching on demand
+    instead of stopping a search.
+    """
+    if path is None:
+        return {**_read_factors(FACTORS_PATH), **_read_factors(LOCAL_FACTORS)}
+    return _read_factors(path)
+
+
+def _read_factors(path: str | Path):
     try:
         with open(path, encoding='utf-8') as handle:
             payload = json.load(handle)
@@ -75,14 +101,14 @@ def load_factors(path: str | Path = FACTORS_PATH):
 # Only values actually retrieved from the World Bank live here - see the note in
 # ppp_factors.json. USA is 1.0 by definition: the international dollar is the US
 # dollar.
-PPP_SEED = load_factors()
+PPP_SEED = load_factors(FACTORS_PATH)
 
 
 class Rates:
     """Disk cached FX rates and PPP factors."""
 
-    def __init__(self, path=CACHE_PATH, timeout=20.0, offline=False):
-        self.path = path
+    def __init__(self, path=None, timeout=20.0, offline=False):
+        self.path = path if path is not None else CACHE_PATH
         self.timeout = timeout
         self.offline = offline
         self._cache = self._load()
@@ -92,7 +118,7 @@ class Rates:
         cache = read_document(self.path)
         cache.setdefault('fx', {})
         cache.setdefault('ppp', {})
-        for country, entry in PPP_SEED.items():
+        for country, entry in load_factors().items():
             cache['ppp'].setdefault(country, dict(entry, fetched=0, seeded=True))
         return cache
 
@@ -234,7 +260,7 @@ def fetch_factor(country, timeout=20.0, attempts=3, pause=2.0, client=None):
 
 
 def refresh_factors(
-    path: str | Path = FACTORS_PATH,
+    path: str | Path | None = None,
     currencies=None,
     force=False,
     pause=1.0,
@@ -242,9 +268,13 @@ def refresh_factors(
     on_result=None,
     client=None,
 ):
-    """Fetch PPP factors into the checked in reference file.
+    """Fetch PPP factors into the local table (or into `path`).
 
     -> (updated, failed, skipped), each a list of country codes.
+
+    By default the factors go to LOCAL_FACTORS, and a country the shipped table
+    already has counts as known. Pass the shipped table's own path to update it
+    - which is how a maintainer tops up what a fresh clone starts with.
 
     Only what actually comes back is written. USA stays at 1.0 by definition and
     is never fetched. Countries already recorded are skipped unless `force`.
@@ -261,19 +291,22 @@ def refresh_factors(
 
     # quarantined, not overwritten: this is the checked in table, and writing only
     # this run's factors over an unreadable copy would silently drop the rest
-    document = read_document(path, quarantine=True)
+    target = LOCAL_FACTORS if path is None else path
+    document = read_document(target, quarantine=True)
     factors = document.setdefault('factors', {})
     if not isinstance(factors, dict):
         factors = document['factors'] = {}
+    # what counts as already known: this file, and the shipped table under it
+    known = {**PPP_SEED, **factors} if path is None else factors
 
     updated, failed, skipped = [], [], []
     today = time.strftime('%Y-%m-%d')
 
     for country in dict.fromkeys(wanted):
-        if country == 'USA' or (country in factors and not force):
+        if country == 'USA' or (country in known and not force):
             skipped.append(country)
             if on_result:
-                on_result(country, factors.get(country), True)
+                on_result(country, known.get(country), True)
             continue
 
         found = fetch_factor(country, timeout=timeout, pause=pause, client=client)
@@ -287,8 +320,8 @@ def refresh_factors(
 
     if updated:
         document['factors'] = dict(sorted(factors.items()))
-        write_document(path, document, trailing_newline=True)
-        logger.info(f'PPP table {path}: {len(updated)} factor(s) written')
+        write_document(target, document, trailing_newline=True)
+        logger.info(f'PPP table {target}: {len(updated)} factor(s) written')
 
     return updated, failed, skipped
 
