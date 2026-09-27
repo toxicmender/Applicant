@@ -796,6 +796,56 @@ broken. Where it differs from the row above, or goes beyond it:
   old patch targets). D7 was fixed in phase 1.
 - **Saved standing searches** (D7 mentions them) are not in `applicant.toml` yet.
 
+**Phase 5 status: done.** The acceptance test is in `tests/test_accounts.py`. It runs a
+LinkedIn search through the real CLI in a fresh interpreter, with the network
+stubbed, and checks that `applicant.boards.linkedin_apply` was never loaded. A
+`--dry-run` apply is checked the same way. I checked that both fail when the
+search service imports the account module. Where it differs from the row above,
+or goes beyond it:
+
+- **The split keeps every old import working.** `LinkedInGuest` is the read-only
+  half. `LinkedIn` is a subclass of it in `linkedin_apply.py`, and
+  `from applicant.boards.linkedin import LinkedIn` still works through a lazy
+  module attribute, which loads the account module only when asked for. `Jobs`
+  searches with a guest client and makes the signed-in one only to submit.
+- **The `Applier` port** (`domain/ports.py`) is `apply(jobs, *, dry_run)`, with
+  no default for `dry_run`. So is `ApplyToJobs.run`. A dry run never makes a
+  client, so it never opens a browser. One applier failing becomes `failed` rows,
+  as the Easy Apply path already did.
+- **Confirmation lives in the service; how to ask is the caller's.**
+  `ApplyToJobs(confirm=...)` is shown exactly the postings about to be sent, and a
+  "no" submits nothing and logs nothing for them. The CLI lists them and wants a
+  typed `yes`. `--yes` skips the question. With no terminal to ask on, and no
+  `--yes`, nothing is submitted.
+- **`Jobs.apply()` keeps its old default** (submit) but raises a
+  `DeprecationWarning` when `dry_run` is left out. Making it required outright
+  would break every existing caller at once. One existing test triggers the
+  warning, which is what it is for.
+- **The bare-flag form** (`applicant -c cookies.json`) still runs, logs a
+  deprecation warning with the `applicant jobs ...` command to use instead, and is
+  documented as going away.
+
+## 4a. Where the plan stands
+
+All six phases are done. Measured against §2:
+
+| | Before | After |
+|---|---|---|
+| Tests run to completion | 124 of 480, then abort | 631, plus 483 subtests, all passing, on 3.10 and 3.11 |
+| CI | reports only | fails on a test or type error; lint stays report-only |
+| Logging modules | two, the weaker one wired in | one: stderr, escaping, masking, `0600` files |
+| Retry loops / browser launch paths | four / three | one / one |
+| Error hierarchies | three | one, with the old names as aliases |
+| Domain I/O | the filter could reach the network | none, checked by a test that reads the source |
+| `print` outside the CLI | 22 | 0, checked by a test |
+| Where data lives | nine defaults chosen per module | one data directory; `applicant.db` as the record |
+| Code that can act on your account | mixed into the search client | one module, never loaded by a search, confirmed before it sends |
+
+Still open, from the phase notes above: financials history in SQLite, saved
+standing searches in `applicant.toml`, removing the bare-flag form and
+`Jobs.apply()`'s default after a release of warnings, and marking `status` as a
+required check in branch protection, which only a repository admin can do.
+
 Phases 1–3 are refactors behind the existing tests, and the test suite is the
 contract. Phase 4 is the only one that changes on-disk formats, which is why it
 imports the old files and keeps exporting them.

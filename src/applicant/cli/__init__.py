@@ -95,7 +95,9 @@ def normalise(argv: list[str]) -> list[str]:
     """`applicant` and `applicant -c cookies.json` still mean the LinkedIn job run.
 
     The README documented those before subcommands existed, so a bare invocation
-    or one that opens with a flag is rewritten to `jobs`.
+    or one that opens with a flag is rewritten to `jobs` - with a deprecation
+    warning from `main`, since it goes away in a future release. Once it has,
+    flags that apply to every command can go before the subcommand again.
     """
     if not argv:
         return ['jobs']
@@ -106,7 +108,10 @@ def normalise(argv: list[str]) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(normalise(list(sys.argv[1:] if argv is None else argv)))
+    given = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(normalise(given))
+    # the pre-subcommand spelling: still works, not for much longer
+    legacy = normalise(given) != given
 
     handler = getattr(args, 'handler', None)
     if handler is None:
@@ -148,6 +153,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if filepath:
         logger.info('logging this run to {}'.format(filepath))
+    if legacy:
+        instead = ' '.join(['applicant', 'jobs', *given])
+        logger.warning(
+            'running applicant without a subcommand is deprecated and will stop working '
+            f'in a future release: use `{instead}`'
+        )
     logger.debug(f'{args.command}: {_loggable(args)}')
 
     try:

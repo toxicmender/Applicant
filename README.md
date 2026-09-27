@@ -169,12 +169,19 @@ the rest are fetched on first use.
 
 ```
 uv run applicant apply --min-salary 1200000 --currency INR --dry-run
-uv run applicant apply --title "python"
+uv run applicant apply --title "python"          # lists what it will send, asks first
+uv run applicant apply --title "python" --yes    # no question: for a script
 ```
 
 Reads `job_listing.json`, keeps what matches the same filters as above, and appends
 every one to `applied_jobs.csv`. `--dry-run` records what *would* happen without
-submitting anything.
+submitting anything - and without opening a browser or signing in.
+
+**Nothing is sent in your name without a yes.** Without `--dry-run`, `apply` lists
+every application it is about to submit and waits for you to type `yes`. Any other
+answer submits nothing, and so does running with no terminal to ask on (a cron job,
+a pipe) unless you pass `--yes`. Declined postings are left out of the log, so a
+later run can still apply to them.
 
 **Only LinkedIn Easy Apply is actually automated.** Indeed, Naukri and Google Jobs
 hand off to each employer's own form, which differs every time, so those are logged
@@ -337,8 +344,9 @@ what to use without `uv`.
    `cookies.json` for the session and `job_listing.json` for the scraped jobs
 
 Job scraping also has its own subcommand, `applicant jobs`, which takes the same flags.
-Running `applicant` with bare flags still means the job run, so invocations documented
-before subcommands existed keep working.
+Running `applicant` with bare flags (`applicant -c cookies.json`) still means the job
+run, but it is **deprecated**: it prints the `applicant jobs ...` command to use
+instead, and will stop working in a future release.
 
 ## Where your data lives
 
@@ -404,7 +412,8 @@ src/applicant/
   money.py       the FX and PPP cache, and Rates.snapshot() for a run
   ppp_factors.json  the shipped, read-only PPP table; refreshes go to the data dir
   settings.py    Settings: data dir, file names, store, keys - flags > env > applicant.toml
-  boards/        one module per job board, all returning Job, and their capabilities
+  boards/        one module per job board, all returning Job, and their capabilities;
+                 linkedin_apply.py is the only code that acts on an account
   reviews/       company ratings from AmbitionBox and Glassdoor
   financials/    company funding from Crunchbase and Tracxn, tracked over time
   storage.py     job_listing.json and applied_jobs.csv
@@ -547,10 +556,18 @@ for job in Indeed().search('python developer', 'remote', limit=10):
     print(job.title, job.company, job.location, job.salary)
 ```
 
-`LinkedIn` additionally keeps the signed-in flows - `login()`, `restore_session()`,
-`scrape_jobs()` for recommended jobs and `easy_apply()`. Sessions are stored as Playwright
-storage state, and a `cookies.json` written by the older Selenium version is converted
-automatically on read.
+LinkedIn comes in two parts, because reading job cards and acting on your account
+are different risks. `LinkedInGuest` (`applicant.boards.linkedin`) is the logged-out
+search, and all a search ever loads. `LinkedIn` (`applicant.boards.linkedin_apply`) adds
+the signed-in flows: `login()`, `restore_session()`, `scrape_jobs()` for recommended
+jobs, `easy_apply()`, and `apply(jobs, dry_run=...)`. That last one is the `Applier`
+interface the apply service calls, and `dry_run` has no default. Sessions are stored
+as Playwright storage state, and a `cookies.json` written by the older Selenium version
+is converted automatically on read.
+
+`Jobs.apply()` still submits when `dry_run` is left out, as it always has, but it now
+warns: pass `dry_run=False` explicitly to keep submitting. It also takes
+`confirm=`, a function shown the postings before anything is sent.
 
 Company ratings are also importable:
 

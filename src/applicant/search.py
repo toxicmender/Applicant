@@ -15,6 +15,7 @@ search and an apply. The work itself is in `applicant.services.search` and
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING
 
@@ -23,12 +24,12 @@ from .filters import JobFilter
 from .infra.store.repositories import Backend
 from .log import get
 from .models import Job
-from .services.apply import ApplyToJobs, Entry, easy_apply_with
+from .services.apply import ApplyToJobs, Confirm, EasyApply, Entry
 from .services.events import Emit, Event, SourceFailed, ignore
 from .services.search import SOURCES, Board, SearchJobs, close_quietly
 
 if TYPE_CHECKING:
-    from .boards.linkedin import LinkedIn
+    from .boards.linkedin_apply import LinkedIn
 
 __all__ = ['EASY_APPLY_LISTING', 'SOURCES', 'Board', 'Jobs']
 
@@ -58,10 +59,13 @@ class Jobs:
         self.backend: Backend = backend
 
     def linkedin(self) -> LinkedIn:
-        """The LinkedIn client, which outlives a single search because its
-        browser session is what `easy_apply` needs."""
+        """The signed in LinkedIn client, made only when something is submitted.
+
+        Loading it loads the account module; a search never does - it reads
+        LinkedIn as a guest (`_client`).
+        """
         if self._linkedin is None:
-            from .boards.linkedin import LinkedIn
+            from .boards.linkedin_apply import LinkedIn
 
             self._linkedin = LinkedIn(headless=self.headless)
         return self._linkedin
@@ -84,7 +88,11 @@ class Jobs:
 
     def _client(self, name: str) -> Board:
         if name == 'linkedin':
-            return self.linkedin()
+            if self._linkedin is not None:
+                return self._linkedin  # a client handed in: searched with, kept open
+            from .boards.linkedin import LinkedInGuest
+
+            return LinkedInGuest(headless=self.headless)
         if name == 'indeed':
             from .boards.indeed import Indeed
 
@@ -119,7 +127,10 @@ class Jobs:
         """
         if on_error is not None:
             emit = _with_on_error(emit, on_error)
-        return SearchJobs(self._client, keep_open={'linkedin'}).run(
+        # a LinkedIn client handed in belongs to the caller, so it stays open;
+        # the guest client made for the search is closed with the rest
+        keep_open = {'linkedin'} if self._linkedin is not None else set()
+        return SearchJobs(self._client, keep_open=keep_open).run(
             self.sources,
             keywords,
             filters or JobFilter(),
@@ -136,18 +147,30 @@ class Jobs:
         jobs: Iterable[Job],
         log: str = 'applied_jobs.csv',
         filters: JobFilter | None = None,
-        dry_run: bool = False,
+        dry_run: bool | None = None,
+        confirm: Confirm | None = None,
     ) -> list[Entry]:
         """Apply where it is actually possible, and record everything.
 
-        Only LinkedIn Easy Apply can be automated; see `ApplyToJobs`.
+        Only LinkedIn Easy Apply can be automated; see `ApplyToJobs`. Pass
+        `dry_run` explicitly: leaving it out still submits, as it always did,
+        but warns - the default is going away, because a call that sends
+        applications in your name should say so. `confirm` is asked before
+        anything is submitted.
         """
-        return ApplyToJobs(self._easy_apply, self.backend).run(
-            jobs, log=log, filters=filters, dry_run=dry_run
+        if dry_run is None:
+            warnings.warn(
+                'Jobs.apply() without dry_run submits applications; pass dry_run=False '
+                'to keep doing so, or dry_run=True to only record them. The default '
+                'will be removed.',
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            dry_run = False
+        service = ApplyToJobs(
+            {'linkedin': EasyApply(self.linkedin)}, backend=self.backend, confirm=confirm
         )
-
-    def _easy_apply(self, jobs: list[Job]) -> list[Entry]:
-        return easy_apply_with(self.linkedin(), jobs)
+        return service.run(jobs, log=log, filters=filters, dry_run=dry_run)
 
 
 def _with_on_error(emit: Emit, on_error: Callable[[str, Exception], None]) -> Emit:
