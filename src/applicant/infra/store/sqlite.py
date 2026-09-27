@@ -81,6 +81,32 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         )""",
         'CREATE INDEX ratings_history ON ratings (company, source, fetched_at)',
     ),
+    # 2 (0.2.0): company financials, which FinancialsTracker kept in its JSON alone
+    (
+        """CREATE TABLE financial_documents (
+            document TEXT PRIMARY KEY,
+            extra TEXT NOT NULL      -- any top-level keys beside 'companies', kept as found
+        )""",
+        """CREATE TABLE financials (
+            document TEXT NOT NULL,
+            key TEXT NOT NULL,       -- '<source>:<company id>', see financials.tracker
+            seq INTEGER NOT NULL,    -- export order
+            source TEXT,
+            company TEXT,
+            last_checked TEXT,
+            entry TEXT NOT NULL,     -- the entry as the file holds it, snapshots aside
+            PRIMARY KEY (document, key)
+        )""",
+        """CREATE TABLE financial_snapshots (
+            document TEXT NOT NULL,
+            key TEXT NOT NULL,
+            seq INTEGER NOT NULL,
+            recorded_at TEXT,
+            snapshot TEXT NOT NULL,
+            PRIMARY KEY (document, key, seq)
+        )""",
+        'CREATE INDEX financial_history ON financial_snapshots (key, recorded_at)',
+    ),
 )
 
 
@@ -361,6 +387,121 @@ class Store:
             self._remember(db, name, target)
         logger.info(f'{target}: recorded {len(fresh)} application(s)')
         return len(fresh)
+
+    # -- company financials -----------------------------------------------
+
+    def _sync_financials(self, file: Path) -> str:
+        """Import the history file if it moved on. The tracker only ever opens
+        it to write, so an unreadable one is moved aside, as the file backend does."""
+        name = self.name(file)
+        if not self._stale(name, file, 'financials', 'document'):
+            return name
+        document = read_document(file, quarantine=True)
+        with self._transaction() as db:
+            self._replace_financials(db, name, document)
+            self._remember(db, name, file)
+        companies = document.get('companies')
+        if isinstance(companies, dict) and companies:
+            logger.info(f'{file}: imported {len(companies)} company record(s) into {self.path}')
+        return name
+
+    def financials_document(self, file: str | os.PathLike[str]) -> dict:
+        """The history document, rebuilt exactly as the file holds it."""
+        name = self._sync_financials(Path(file))
+        extra = self.db.execute(
+            'SELECT extra FROM financial_documents WHERE document = ?', (name,)
+        ).fetchone()
+        document: dict = json.loads(extra[0]) if extra else {}
+        snapshots: dict[str, list] = {}
+        for company, snapshot in self.db.execute(
+            'SELECT key, snapshot FROM financial_snapshots WHERE document = ? ORDER BY key, seq',
+            (name,),
+        ):
+            snapshots.setdefault(company, []).append(json.loads(snapshot))
+        companies = {}
+        for company, entry in self.db.execute(
+            'SELECT key, entry FROM financials WHERE document = ? ORDER BY seq', (name,)
+        ):
+            record = json.loads(entry)
+            if 'snapshots' in record:  # a placeholder, keeping the key where it was
+                record['snapshots'] = snapshots.get(company, [])
+            companies[company] = record
+        if 'companies' in document or companies:
+            document['companies'] = companies
+        return document
+
+    def save_financials(self, document: dict, file: str | os.PathLike[str]) -> None:
+        """Replace the stored history with `document` and export it.
+
+        The export is `document` itself, written the way the file backend
+        writes it, so the two backends' files are the same bytes.
+        """
+        target = Path(file)
+        name = self._sync_financials(target)
+        with self._transaction() as db:
+            self._replace_financials(db, name, document)
+            write_document(target, document)
+            self._remember(db, name, target)
+
+    def financial_history(self, file: str | os.PathLike[str], company: str) -> list[dict]:
+        """Every snapshot of one company (`<source>:<id>`), oldest first."""
+        name = self._sync_financials(Path(file))
+        return [
+            json.loads(snapshot)
+            for (snapshot,) in self.db.execute(
+                'SELECT snapshot FROM financial_snapshots WHERE document = ? AND key = ? '
+                'ORDER BY seq',
+                (name, company),
+            )
+        ]
+
+    def _replace_financials(self, db: sqlite3.Connection, name: str, document: dict) -> None:
+        db.execute('DELETE FROM financial_documents WHERE document = ?', (name,))
+        db.execute('DELETE FROM financials WHERE document = ?', (name,))
+        db.execute('DELETE FROM financial_snapshots WHERE document = ?', (name,))
+        # everything but the companies, with a None marker where 'companies' sat,
+        # so the rebuilt document has its keys in the order the file had them
+        extra = {key: (None if key == 'companies' else value) for key, value in document.items()}
+        db.execute(
+            'INSERT INTO financial_documents (document, extra) VALUES (?, ?)',
+            (name, json.dumps(extra, ensure_ascii=False)),
+        )
+        companies = document.get('companies')
+        if not isinstance(companies, dict):
+            return
+        for seq, (company, record) in enumerate(companies.items()):
+            if not isinstance(record, dict):
+                continue
+            snapshots = record.get('snapshots')
+            entry = {k: (None if k == 'snapshots' else v) for k, v in record.items()}
+            db.execute(
+                'INSERT INTO financials (document, key, seq, source, company, last_checked, entry) '
+                'VALUES (?, ?, ?, ?, ?, ?, ?)',
+                (
+                    name,
+                    company,
+                    seq,
+                    record.get('source'),
+                    record.get('company'),
+                    record.get('last_checked'),
+                    json.dumps(entry, ensure_ascii=False),
+                ),
+            )
+            if isinstance(snapshots, list):
+                db.executemany(
+                    'INSERT INTO financial_snapshots (document, key, seq, recorded_at, snapshot) '
+                    'VALUES (?, ?, ?, ?, ?)',
+                    [
+                        (
+                            name,
+                            company,
+                            index,
+                            snapshot.get('recorded_at') if isinstance(snapshot, dict) else None,
+                            json.dumps(snapshot, ensure_ascii=False),
+                        )
+                        for index, snapshot in enumerate(snapshots)
+                    ],
+                )
 
     # -- ratings, kept over time ------------------------------------------
 

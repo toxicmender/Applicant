@@ -65,6 +65,7 @@ def track_financials(
     max_rounds: int = 20,
     pause: float = 1.0,
     emit: Emit = ignore,
+    backend: Backend = 'files',
 ) -> Tracked:
     """Fetch each company from each source that accepts it, and record what moved.
 
@@ -73,7 +74,7 @@ def track_financials(
     this covers the browser mode, which is not.)
     """
     logger.info(f'financials: tracking {len(companies)} company(ies) in {output}')
-    tracker = FinancialsTracker(output)
+    tracker = FinancialsTracker(output, backend=backend)
     found = 0
 
     for index, company in enumerate(companies):

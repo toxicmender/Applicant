@@ -112,6 +112,7 @@ def run(args) -> int:
         settings.path(args.output),
         max_rounds=args.max_rounds,
         emit=Renderer(rounds=args.rounds, failures=True),
+        backend=settings.store,
     )
     if not tracked.found:
         return 1

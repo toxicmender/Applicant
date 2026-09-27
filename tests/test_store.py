@@ -274,6 +274,69 @@ class RatingHistoryTest(TempDir):
         self.assertTrue(all('fetched_at' in item for item in history))
 
 
+class FinancialsHistoryTest(TempDir):
+    """0.2.0: the financials change log lives in applicant.db too, exported as before."""
+
+    def financials(self, total: float, stage: str = 'Series J'):
+        from applicant.financials import CompanyFinancials, Money
+
+        return CompanyFinancials(
+            source='crunchbase',
+            company='Zomato',
+            company_id='zomato',
+            total_funding=Money(amount=total, currency='USD', amount_usd=total),
+            stage=stage,
+        )
+
+    def track(self, folder: Path, backend: str) -> Path:
+        from applicant.financials import FinancialsTracker
+
+        folder.mkdir(exist_ok=True)
+        path = folder / 'company_financials.json'
+        with mock.patch('applicant.financials.tracker.datetime') as clock:
+            clock.now.return_value = FIXED
+            FinancialsTracker(str(path), backend=backend).record(self.financials(2.1e9))
+            FinancialsTracker(str(path), backend=backend).record(self.financials(2.4e9, 'Series K'))
+            FinancialsTracker(str(path), backend=backend).record(self.financials(2.4e9, 'Series K'))
+        return path
+
+    def test_the_history_json_is_byte_identical(self):
+        plain = self.track(self.root / 'plain', 'files')
+        stored = self.track(self.root / 'stored', 'sqlite')
+        self.assertEqual(plain.read_bytes(), stored.read_bytes())
+        self.assertTrue((self.root / 'stored' / DB_NAME).exists())
+
+    def test_the_database_holds_the_change_log(self):
+        path = self.track(self.root / 'stored', 'sqlite')
+        with Store.beside(path) as store:
+            history = store.financial_history(path, 'crunchbase:zomato')
+            rebuilt = store.financials_document(path)
+        self.assertEqual(len(history), 2, 'first sight, then the change; not the repeat')
+        self.assertIn('total funding', history[1]['changes'][0])
+        self.assertEqual(
+            json.dumps(rebuilt, ensure_ascii=False),
+            json.dumps(json.loads(path.read_text(encoding='utf-8')), ensure_ascii=False),
+            'rebuilt with every key in the order the file has it',
+        )
+
+    def test_an_old_history_file_is_imported_on_first_use(self):
+        from applicant.financials import FinancialsTracker
+
+        path = self.track(self.root / 'old', 'files')
+        tracker = FinancialsTracker(str(path), backend='sqlite')
+        self.assertEqual(len(tracker.history('crunchbase:zomato')), 2)
+        self.assertEqual(tracker.record(self.financials(2.4e9, 'Series K')), [])
+
+    def test_a_hand_edit_wins(self):
+        from applicant.financials import FinancialsTracker
+
+        path = self.track(self.root / 'stored', 'sqlite')
+        document = json.loads(path.read_text(encoding='utf-8'))
+        del document['companies']['crunchbase:zomato']
+        path.write_text(json.dumps(document), encoding='utf-8')
+        self.assertEqual(FinancialsTracker(str(path), backend='sqlite').data['companies'], {})
+
+
 # -- the defects that fell out: D6 and D10 -----------------------------------
 
 
