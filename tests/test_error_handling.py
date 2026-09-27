@@ -69,7 +69,8 @@ class LastResortHandlerTest(TempDir):
             redirect_stdout(out),
             redirect_stderr(err),
         ):
-            code = main(['status'])
+            # the log is not what these check; keep it out of the working directory
+            code = main(['status', '--no-log-file'])
         return code, out.getvalue(), err.getvalue()
 
     def test_an_unexpected_error_is_one_line_not_a_traceback(self):
@@ -225,7 +226,9 @@ class ReviewsErrorTest(unittest.TestCase):
             redirect_stdout(io.StringIO()),
             redirect_stderr(err),
         ):
-            code = main(['reviews', 'Google-E9079', '-s', 'both', '-o', os.devnull])
+            code = main(
+                ['reviews', 'Google-E9079', '-s', 'both', '-o', os.devnull, '--no-log-file']
+            )
         self.assertEqual(code, 1)  # nothing fetched, but reported rather than raised
         # a failed source is commentary, so it is reported on stderr
         self.assertIn('ambitionbox: could not reach AmbitionBox', err.getvalue())

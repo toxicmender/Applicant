@@ -31,10 +31,11 @@ CI mirrors this in two workflows. `format` is the only one that writes - it runs
 `ruff format` and pushes the result back to the branch. `ci` runs ruff, type checks
 with pyright against both Python 3.10 (the floor) and 3.12, runs the tests across
 Python 3.10-3.13, reports everything to the run summary, and stores a `status.json`
-artifact; none of it gates a merge.
+artifact. A failing test or type error fails the run (its `status` job is the one to
+mark as required); lint findings and format drift are reported, never blocking.
 
 No chromedriver step any more - everything runs on Playwright, which manages its own
-browser. The `--driver` flag is still accepted but ignored.
+browser.
 
 > If you have Chrome or Edge installed, keep it. Naukri and Google both reject Playwright's
 > bundled Chromium outright ("Access Denied"), so the scrapers try an installed Chrome, then
@@ -143,27 +144,9 @@ no upper bound, not as exactly five.
 
 ### Salaries across currencies
 
-Pay is normalised to an annual figure first, so `2-2.5 Lacs PA`, `₹25K–₹40K a month`
-and `$30 an hour` all compare properly. Pay in *another* currency is then converted,
-and the basis matters a great deal:
-
-| `--salary-basis` | ₹20,00,000 compared against a USD floor |
-|---|---|
-| `ppp` (default) | **$99,559** - what it is worth where it is earned |
-| `market` | $20,978 - today's exchange rate |
-| `strict` | not compared at all, flagged `salary-currency-mismatch` |
-
-Purchasing power parity is the default because a market conversion makes every
-Indian salary look small next to an American one, which is not a useful way to
-choose a job. Exchange rates come from the ECB via frankfurter.dev; PPP conversion
-factors from the World Bank indicator `PA.NUS.PPP`. Both are cached in
-`.money_cache.json`.
-
-**Nothing is ever guessed.** The World Bank API throttles hard, so factors are
-fetched one country at a time and only when needed. When one cannot be had, the
-comparison falls back to a market rate and says so with a `ppp-unavailable` flag
-rather than inventing a number. Factors for India, Japan and the US ship built in;
-the rest are fetched on first use.
+Pay is normalised to an annual figure, and pay in another currency is compared by
+purchasing power by default. The details, and the other bases, are in
+[Comparing pay across currencies](#comparing-pay-across-currencies).
 
 ## Applying
 
@@ -223,14 +206,21 @@ are written with a leading apostrophe, so `=HYPERLINK(...)` arrives as the text
 
 ## Comparing pay across currencies
 
-`--min-salary` needs a `--currency`, and most postings are priced in another one.
-`--salary-basis` decides how they are compared:
+Pay is normalised to an annual figure first, so `2-2.5 Lacs PA`, `₹25K–₹40K a month`
+and `$30 an hour` all compare properly. `--min-salary` needs a `--currency`, and most
+postings are priced in another one; `--salary-basis` decides how they are compared:
 
 | basis | ₹20,00,000 against a USD floor | when to use it |
 |---|---|---|
-| `ppp` (default) | ~$99,600 | "which of these is the better job" |
-| `market` | ~$21,000 | "what is this worth in my currency" |
-| `strict` | not compared, flagged | when you would rather judge it yourself |
+| `ppp` (default) | ~$99,600 - what it is worth where it is earned | "which of these is the better job" |
+| `market` | ~$21,000 - today's exchange rate | "what is this worth in my currency" |
+| `strict` | not compared, flagged `salary-currency-mismatch` | when you would rather judge it yourself |
+
+Purchasing power parity is the default because a market conversion makes every
+Indian salary look small next to an American one, which is not a useful way to
+choose a job. Exchange rates come from the ECB via frankfurter.dev and are cached in
+`.money_cache.json`; every rate a run needs is fetched once, before any job is
+compared.
 
 PPP factors come from the World Bank indicator `PA.NUS.PPP`. The package ships a
 read-only table, `src/applicant/ppp_factors.json`, so a fresh clone starts with
@@ -259,7 +249,7 @@ Two things worth knowing before reading a converted figure: `EUR` maps to the
 euro area aggregate, which is coarser than a single country, and `TWD` has no
 factor at all because Taiwan is not a World Bank member.
 
-### Checking where things stand
+## Checking where things stand
 
 ```
 uv run applicant status
@@ -339,14 +329,15 @@ the `applicant` logger itself.
 `uv run applicant -h` lists everything. `python -m applicant` works identically, and is
 what to use without `uv`.
 
-1. `uv run applicant --help` for the full list of arguments
-2. `uv run applicant` without arguments creates two files in the current directory:
-   `cookies.json` for the session and `job_listing.json` for the scraped jobs
+1. `uv run applicant --help` for the commands; `uv run applicant <command> --help` for each
+2. `uv run applicant jobs` signs in to LinkedIn and scrapes your recommended jobs:
+   `cookies.json` holds the session and `job_listing.json` the jobs
+3. `uv run applicant --version`
 
-Job scraping also has its own subcommand, `applicant jobs`, which takes the same flags.
-Running `applicant` with bare flags (`applicant -c cookies.json`) still means the job
-run, but it is **deprecated**: it prints the `applicant jobs ...` command to use
-instead, and will stop working in a future release.
+A command is required. (Before 0.2.0, `applicant` alone or with bare flags meant
+`applicant jobs`; it is now a usage error.) The logging and data flags - `-v`, `-q`,
+`--log-file`, `--no-log-file`, `--data-dir`, `--store`, `--config` - go before or after
+the command: `applicant -v search x` and `applicant search x -v` are the same.
 
 ## Where your data lives
 
@@ -451,7 +442,6 @@ src/applicant/
   cli/           one module per subcommand, each calling a service; render.py
                  is the one place results are printed
   __main__.py    python -m applicant
-  models.py dates.py salary.py places.py   old import paths, re-exporting domain/
 tests/           unittest.TestCase suites, run under pytest
 ```
 
@@ -586,12 +576,11 @@ search, and all a search ever loads. `LinkedIn` (`applicant.boards.linkedin_appl
 the signed-in flows: `login()`, `restore_session()`, `scrape_jobs()` for recommended
 jobs, `easy_apply()`, and `apply(jobs, dry_run=...)`. That last one is the `Applier`
 interface the apply service calls, and `dry_run` has no default. Sessions are stored
-as Playwright storage state, and a `cookies.json` written by the older Selenium version
-is converted automatically on read.
+as Playwright storage state. A `cookies.json` from the old Selenium version is no longer
+converted; `applicant jobs --overwrite` signs in again and replaces it.
 
-`Jobs.apply()` still submits when `dry_run` is left out, as it always has, but it now
-warns: pass `dry_run=False` explicitly to keep submitting. It also takes
-`confirm=`, a function shown the postings before anything is sent.
+`Jobs.apply()` requires `dry_run` too, keyword-only, and takes `confirm=`: a function
+shown the postings before anything is sent.
 
 Company ratings are also importable:
 

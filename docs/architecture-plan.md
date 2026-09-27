@@ -841,10 +841,15 @@ All six phases are done. Measured against §2:
 | Where data lives | nine defaults chosen per module | one data directory; `applicant.db` as the record |
 | Code that can act on your account | mixed into the search client | one module, never loaded by a search, confirmed before it sends |
 
-Still open, from the phase notes above: financials history in SQLite, saved
-standing searches in `applicant.toml`, removing the bare-flag form and
-`Jobs.apply()`'s default after a release of warnings, and marking `status` as a
-required check in branch protection, which only a repository admin can do.
+These open items were closed by **0.2.0** (see `CHANGELOG.md`):
+
+- financials history in SQLite
+- saved standing searches in `applicant.toml`
+- removal of the bare-flag form, `Jobs.apply()`'s default and the rest of the 0.1.x
+  compatibility shims
+
+One remains, and only a repository admin can close it: marking `status` as a
+required check in branch protection.
 
 Phases 1–3 are refactors behind the existing tests, and the test suite is the
 contract. Phase 4 is the only one that changes on-disk formats, which is why it

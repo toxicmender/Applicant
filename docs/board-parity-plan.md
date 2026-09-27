@@ -1,5 +1,10 @@
 # Filtering across the job boards
 
+> **Historical document.** This plan was written against an earlier layout
+> (`src/run.py`, `src/utils/`, a single `cli.py`) and has been carried out. It is kept
+> for its reasoning. For how the code is organised now, see
+> [`architecture-plan.md`](architecture-plan.md) and the README's "Where things are".
+
 Written against `claude/job-filter-testing-08074p` (`28cc6d2`), driven by what
 `tests/test_target_job_filters.py` found: a shortlist of eight AI/ML postings in
 Indian metros is reachable, but only by running the tool four times and knowing

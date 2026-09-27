@@ -286,6 +286,9 @@ class FinancialsHistoryTest(TempDir):
             company_id='zomato',
             total_funding=Money(amount=total, currency='USD', amount_usd=total),
             stage=stage,
+            # pinned: it defaults to the current second, and two backends' runs
+            # straddling a second boundary would differ for that reason alone
+            fetched_at=FIXED.isoformat(),
         )
 
     def track(self, folder: Path, backend: str) -> Path:

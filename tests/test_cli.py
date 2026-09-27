@@ -344,7 +344,7 @@ class FinancialsCommandTest(unittest.TestCase):
             mock.patch('time.sleep'),
             redirect_stdout(buffer),
         ):
-            code = main(['financials', '-o', self.history, *argv])
+            code = main(['financials', '-o', self.history, '--no-log-file', *argv])
         return code, buffer.getvalue()
 
     def test_defaults(self):
