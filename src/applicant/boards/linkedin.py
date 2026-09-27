@@ -15,9 +15,9 @@ Selenium version are converted on read, so an existing cookies.json keeps workin
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
-from contextlib import suppress
 from html import unescape
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -33,6 +33,8 @@ from . import CAPABILITIES
 if TYPE_CHECKING:
     from playwright.sync_api import Browser as PlaywrightBrowser
     from playwright.sync_api import BrowserContext, Page, Playwright
+
+logger = logging.getLogger(__name__)
 
 GUEST_SEARCH = 'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search'
 GUEST_POSTING = 'https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{}'
@@ -97,12 +99,17 @@ class LinkedIn:
             if posted_within_days:
                 # LinkedIn wants the window in seconds, as r<seconds>
                 query['f_TPR'] = 'r{}'.format(int(posted_within_days) * 86400)
-            response = self.client.get('{}?{}'.format(GUEST_SEARCH, urlencode(query)))
+            logger.debug(f'linkedin: guest search page at offset {start}')
+            try:
+                response = self.client.get('{}?{}'.format(GUEST_SEARCH, urlencode(query)))
+            except httpx.TransportError as error:
+                raise JobsError(f'could not reach LinkedIn: {error}') from error
             if response.status_code == 429:
                 raise BlockedError(
                     'LinkedIn rate limited the guest search; slow down or retry later'
                 )
-            response.raise_for_status()
+            if response.is_error:
+                raise JobsError(f'LinkedIn guest search answered HTTP {response.status_code}')
 
             cards = CARD.findall(response.text)
             if not cards:
@@ -127,6 +134,7 @@ class LinkedIn:
             if len(jobs) < limit:
                 time.sleep(self.delay)
 
+        logger.info(f'linkedin: {min(len(jobs), limit)} job(s) from the guest search')
         return jobs[:limit]
 
     def _card_to_job(self, card):
@@ -233,7 +241,10 @@ class LinkedIn:
             page.click('#two-step-submit-button, button[type="submit"]')
 
         page.wait_for_load_state('domcontentloaded')
+        # authentication outcomes are logged (ASVS 16.3.1); who and with what
+        # password never are - this is the user's own account on their machine
         if '/login' in page.url or '/checkpoint/' in page.url:
+            logger.warning(f'linkedin: sign in did not complete (stopped at {page.url})')
             raise BlockedError(
                 'LinkedIn did not complete the login (still on {}). '
                 'A manual challenge is probably waiting - rerun with '
@@ -242,19 +253,24 @@ class LinkedIn:
 
         context.storage_state(path=str(target))
         logger.info('session saved to {}'.format(target))
+        logger.info(f'linkedin: signed in{" with 2FA" if twoFA else ""}; session saved to {target}')
+        print('session saved to {}'.format(target))
 
     def restore_session(self, filepath: str | Path = 'cookies.json'):
         state = self._load_state(filepath)
         if state is None:
-            logger.warning('no usable session in {}; call login() first'.format(filepath))
+            logger.warning(f'linkedin: no usable session in {filepath}')
+            print('no usable session in {}; call login() first'.format(filepath))
             return False
 
         page = self._start(storage_state=state)
         page.goto('https://www.linkedin.com/feed/', wait_until='domcontentloaded')
         if '/login' in page.url or '/authwall' in page.url:
-            logger.warning('saved session is no longer valid; call login() again')
+            logger.warning(f'linkedin: the session in {filepath} has expired')
+            print('saved session is no longer valid; call login() again')
             return False
-        logger.info('session restored from {}'.format(filepath))
+        logger.info(f'linkedin: session restored from {filepath}')
+        print('session restored from {}'.format(filepath))
         return True
 
     def _load_state(self, filepath: str | Path):
@@ -262,7 +278,10 @@ class LinkedIn:
         try:
             with open(filepath, encoding='utf-8') as file:
                 payload = json.load(file)
-        except (FileNotFoundError, ValueError):
+        except FileNotFoundError:
+            return None
+        except ValueError as error:
+            logger.warning(f'linkedin: {filepath} is not valid JSON ({error})')
             return None
 
         if isinstance(payload, dict) and 'cookies' in payload:
@@ -274,21 +293,27 @@ class LinkedIn:
 
         converted = []
         for cookie in cookies:
-            if not cookie.get('name'):
-                continue
-            converted.append(
-                {
-                    'name': cookie['name'],
-                    'value': cookie.get('value', ''),
-                    'domain': cookie.get('domain', '.linkedin.com'),
-                    'path': cookie.get('path', '/'),
-                    'expires': float(cookie.get('expiry', -1)),
-                    'httpOnly': bool(cookie.get('httpOnly')),
-                    'secure': bool(cookie.get('secure', True)),
-                    'sameSite': 'Lax',
-                }
-            )
-        logger.info('converted {} Selenium cookies to a Playwright session'.format(len(converted)))
+            try:
+                if not cookie.get('name'):
+                    continue
+                converted.append(
+                    {
+                        'name': cookie['name'],
+                        'value': cookie.get('value', ''),
+                        'domain': cookie.get('domain', '.linkedin.com'),
+                        'path': cookie.get('path', '/'),
+                        'expires': float(cookie.get('expiry', -1)),
+                        'httpOnly': bool(cookie.get('httpOnly')),
+                        'secure': bool(cookie.get('secure', True)),
+                        'sameSite': 'Lax',
+                    }
+                )
+            except (AttributeError, TypeError, ValueError) as error:
+                # one malformed cookie; its value is a credential, so only the
+                # error type is logged
+                logger.warning(f'linkedin: skipped a malformed cookie ({type(error).__name__})')
+        logger.info(f'linkedin: converted {len(converted)} Selenium cookie(s)')
+        print('converted {} Selenium cookies to a Playwright session'.format(len(converted)))
         return {'cookies': converted, 'origins': []}
 
     # -- logged in flows --------------------------------------------------
@@ -345,6 +370,8 @@ class LinkedIn:
 
         total = save_jobs(jobs, filepath)
         logger.info('scraped {} recommended jobs ({} in {})'.format(len(jobs), total, filepath))
+        logger.info(f'linkedin: {len(jobs)} recommended job(s) scraped')
+        print('scraped {} recommended jobs ({} in {})'.format(len(jobs), total, filepath))
         return jobs
 
     def easy_apply(self, filepath='job_listing.json'):
@@ -358,7 +385,8 @@ class LinkedIn:
             with open(filepath, encoding='utf-8') as file:
                 stored = json.load(file).get('list', [])
         except (FileNotFoundError, ValueError) as error:
-            logger.warning('could not read {}: {}'.format(filepath, error))
+            logger.warning(f'linkedin: could not read {filepath}: {error}')
+            print('could not read {}: {}'.format(filepath, error))
             return []
 
         applied = []
@@ -367,30 +395,51 @@ class LinkedIn:
                 continue
             if item.get('easy_apply') is False:
                 continue
+            # Each application is its own transaction. One that fails part way
+            # must not take the ones already submitted with it: those are
+            # returned, and so recorded, whatever happens to the rest
+            # (OWASP Top 10:2025 A10 - roll back or complete, never lose track).
+            try:
+                if self._apply_one(page, item):
+                    applied.append(item['url'])
+            except Exception as error:  # one posting, logged in full, never fatal
+                logger.error(
+                    f'linkedin: easy apply failed for {item["url"]}: '
+                    f'{type(error).__name__}: {error}'
+                )
+                logger.debug('linkedin: easy apply traceback', exc_info=True)
+                print('failed: {}'.format(item.get('title') or item['url']))
 
-            page.goto(item['url'], wait_until='domcontentloaded')
-            button = page.locator('button.jobs-apply-button').first
-            if not button.count():
-                continue
-            button.click()
-            page.wait_for_timeout(1500)
-
-            follow = page.locator('#follow-company-checkbox')
-            if follow.count() and follow.is_checked():
-                follow.uncheck(force=True)
-
-            submit = page.locator('button[aria-label*="Submit application"]').first
-            if submit.count():
-                submit.click()
-                page.wait_for_timeout(1500)
-                applied.append(item['url'])
-                logger.info('applied: {}'.format(item.get('title') or item['url']))
-            else:
-                # multi step form - close it and leave this one alone
-                page.keyboard.press('Escape')
-                logger.info('skipped (multi step): {}'.format(item.get('title') or item['url']))
-
+        logger.info(f'linkedin: easy applied to {len(applied)} job(s)')
         return applied
+
+    def _apply_one(self, page, item) -> bool:
+        """Submit one single-step Easy Apply form. True only once it is sent."""
+        page.goto(item['url'], wait_until='domcontentloaded')
+        button = page.locator('button.jobs-apply-button').first
+        if not button.count():
+            logger.debug(f'linkedin: no easy apply button on {item["url"]}')
+            return False
+        button.click()
+        page.wait_for_timeout(1500)
+
+        follow = page.locator('#follow-company-checkbox')
+        if follow.count() and follow.is_checked():
+            follow.uncheck(force=True)
+
+        submit = page.locator('button[aria-label*="Submit application"]').first
+        if submit.count():
+            submit.click()
+            page.wait_for_timeout(1500)
+            logger.info(f'linkedin: applied to {item["url"]}')
+            print('applied: {}'.format(item.get('title') or item['url']))
+            return True
+
+        # multi step form - close it and leave this one alone
+        page.keyboard.press('Escape')
+        logger.info(f'linkedin: left a multi step form open for review: {item["url"]}')
+        print('skipped (multi step): {}'.format(item.get('title') or item['url']))
+        return False
 
     # -- teardown ---------------------------------------------------------
 
@@ -398,12 +447,16 @@ class LinkedIn:
         for handle in ('_context', '_browser'):
             target = getattr(self, handle, None)
             if target is not None:
-                with suppress(Exception):  # teardown is best effort
+                try:
                     target.close()
+                except Exception as error:  # noqa: BLE001 - teardown is best effort
+                    logger.debug(f'linkedin: closing {handle[1:]} failed: {error}')
                 setattr(self, handle, None)
         if self._playwright is not None:
-            with suppress(Exception):
+            try:
                 self._playwright.stop()
+            except Exception as error:  # noqa: BLE001 - teardown is best effort
+                logger.debug(f'linkedin: stopping playwright failed: {error}')
             self._playwright = None
 
     def __del__(self):

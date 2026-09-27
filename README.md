@@ -18,7 +18,7 @@ uv run playwright install chromium
 uv sync                       # includes the dev group: ruff, pyright, pytest
 uv run pytest tests           # or: uv run python -m unittest discover -s tests -t .
 uv run ruff check . && uv run ruff format .
-uv run pyright
+uv run pyright                # CI also runs: uv run pyright --pythonversion 3.12
 ```
 
 Tests are `unittest.TestCase` subclasses run under pytest, so both runners work and
@@ -28,9 +28,10 @@ injected `httpx` client, the parsers run against fixtures, and currency tests us
 Pass `rates=` yourself to keep a real search off the network too.
 
 CI mirrors this in two workflows. `format` is the only one that writes - it runs
-`ruff format` and pushes the result back to the branch. `ci` runs ruff, pyright and
-the tests across Python 3.10-3.13, reports everything to the run summary, and stores
-a `status.json` artifact; none of it gates a merge.
+`ruff format` and pushes the result back to the branch. `ci` runs ruff, type checks
+with pyright against both Python 3.10 (the floor) and 3.12, runs the tests across
+Python 3.10-3.13, reports everything to the run summary, and stores a `status.json`
+artifact; none of it gates a merge.
 
 No chromedriver step any more - everything runs on Playwright, which manages its own
 browser. The `--driver` flag is still accepted but ignored.
@@ -201,6 +202,18 @@ cleanly** via *File > Import > Upload* (currency symbols survive). Columns:
 
 `status` is one of `applied`, `needs_manual_apply`, `would_apply` (dry run) or `failed`.
 
+**Formulas in scraped text are neutralised.** Titles, companies and locations come
+from job boards, and a spreadsheet runs any cell starting with `=`, `+`, `-` or `@` as a
+formula - a posting could use that to send your sheet's contents elsewhere
+([CSV Injection](https://owasp.org/www-community/attacks/CSV_Injection)). Such cells
+are written with a leading apostrophe, so `=HYPERLINK(...)` arrives as the text
+`'=HYPERLINK(...)`, and every cell is quoted. Reading the log back through
+`ApplicationLog.rows()` strips the apostrophe again.
+
+> Excel can drop that protection if you save the file from Excel and open it again, as
+> OWASP notes. Import it fresh from `applied_jobs.csv` rather than reopening an
+> Excel-saved copy.
+
 ## Comparing pay across currencies
 
 `--min-salary` needs a `--currency`, and most postings are priced in another one.
@@ -308,11 +321,46 @@ Job scraping also has its own subcommand, `applicant jobs`, which takes the same
 Running `applicant` with bare flags still means the job run, so invocations documented
 before subcommands existed keep working.
 
+## Logging
+
+Printed output is each command's result. Diagnostics go to **stderr** through
+Python's `logging`, so they never mix into piped output. Every subcommand takes:
+
+| Flag | Console shows |
+|---|---|
+| `-q` | errors only |
+| *(default)* | warnings and errors |
+| `-v` | progress: what each source fetched, kept, saved |
+| `-vv` | debug detail, including each HTTP request and why a filter dropped a job |
+| `--log-file PATH` | also writes everything, at debug level, to `PATH` |
+
+```
+uv run applicant search "python developer" -l India -v
+uv run applicant financials zomato --log-file financials.log
+```
+
+What is logged and how it is protected (the log inventory [OWASP ASVS 5.0](https://github.com/OWASP/ASVS/blob/v5.0.0/5.0/en/0x25-V16-Security-Logging-and-Error-Handling.md) 16.1.1 asks for):
+
+- **Where:** stderr, and the `--log-file` if given. Nothing is sent anywhere else.
+- **Format:** `2026-09-27T08:42:42Z WARNING applicant.search: naukri: ...` - UTC time,
+  level, module, message.
+- **Never logged:** passwords, cookies and session files. API keys given by flag or
+  environment are masked as `***` anywhere they would appear, tracebacks included.
+- **Log injection:** job titles and company names come from websites, so control
+  characters are escaped - a newline in a scraped title cannot forge a second entry.
+- **The log file** is created readable by its owner only (`0600`).
+- **Unexpected errors** print one line naming the error; the traceback goes to the
+  debug log (`-vv` or `--log-file`). Ctrl-C exits with status 130.
+
+Used as a library, `applicant` logs nothing until you configure `logging` yourself.
+
 ## Where things are
 
 ```
 src/applicant/
   cli.py         argument parsing and the subcommand handlers
+  logs.py        logging setup: escaping, secret masking, UTC timestamps
+  files.py       atomic JSON writes; unreadable stores are moved aside, never overwritten
   __main__.py    python -m applicant
   models.py      the Job dataclass and the shared error types
   dates.py       relative and epoch posting dates -> ISO
@@ -327,6 +375,7 @@ src/applicant/
   money.py       FX and PPP factors, for comparing pay across currencies
   ppp_factors.json  the checked in PPP table, filled by `applicant rates --refresh`
   reviews/       company ratings from AmbitionBox and Glassdoor
+  financials/    company funding from Crunchbase and Tracxn, tracked over time
 tests/           unittest.TestCase suites, run under pytest
 ```
 
@@ -348,6 +397,54 @@ uv run applicant reviews "https://www.glassdoor.com/Reviews/Google-Reviews-E9079
   you clear the check and sign in once, and the profile in `.gd_profile/` is reused
   headlessly afterwards. Without a warmed profile the run reports a bot check and stops
   instead of returning empty results.
+
+## Company financials
+`applicant financials` looks up a company's funding from Crunchbase and Tracxn - total
+raised, each round with its amount, lead investors and post-money valuation, latest
+valuation, revenue, headcount and stage - and **tracks it over time** in
+`company_financials.json`. Each run is compared with the last one and what moved is printed:
+
+```
+uv run applicant financials zomato swiggy --rounds
+uv run applicant financials --from-jobs job_listing.json -s crunchbase
+```
+
+```
+crunchbase: Zomato - raised $2.4B over 21 rounds, last Series K on 2026-09-01, revenue $1B to $10B
+  changed: total funding: $2.1B -> $2.4B
+  changed: new round: Series K on 2026-09-01 ($300M; led by Temasek)
+```
+
+- `--from-jobs` tracks every company in your scraped jobs, so you can see who is freshly
+  funded (or has not raised in years) before applying. `Pvt. Ltd.`, `Inc.` and similar are
+  ignored when matching names.
+- `-s/--source` picks `crunchbase`, `tracxn` or `both` (default). A source that fails is
+  reported and skipped rather than losing the other one's results.
+- The history only gains a snapshot when something changed, so it reads as a change log. A
+  figure a later run could not read (a blurred page, a field outside your plan) keeps its
+  last known value instead of being reported as gone.
+- Nothing is guessed: `Undisclosed` rounds have no amount rather than zero, and anything a
+  source would not give is listed under `notes`.
+
+Each source works two ways:
+
+| | With an API key | Without one |
+|---|---|---|
+| **Crunchbase** | `CRUNCHBASE_API_KEY` or `--crunchbase-key`: the v4 entity lookup; names are resolved with its autocomplete | reads the organization page in a browser profile (`.cb_profile/`); takes a name, permalink or `crunchbase.com/organization/...` url |
+| **Tracxn** | `TRACXN_API_KEY` or `--tracxn-key`: resolves a name, domain or entity id, then pulls the company, its funding rounds and the yearly valuation and revenue series | reads a public profile in a browser profile (`.tx_profile/`); **needs the profile url** (`tracxn.com/d/companies/<name>/__<id>`), since Tracxn search is behind a login |
+
+- Neither source publishes an official client library, so both are called directly over
+  `httpx`, following Crunchbase's v4 spec and Tracxn's Postman collection.
+- **Crunchbase's free Basic API key does not include funding data.** The run says so
+  rather than returning an empty record; without a paid key, leave it unset and the website
+  is read instead.
+- **Tracxn bills a credit per entity returned**, so rounds are fetched only up to
+  `-n/--max-rounds` (default 20). An out-of-credits response stops immediately - retrying
+  cannot help. Tracxn does not publish its response fields, so records are matched on field
+  names rather than fixed paths.
+- Both sites are behind bot checks. As with Glassdoor, the first browser run needs
+  `--login`: a visible browser opens, you clear the check (and sign in, for more detail)
+  once, and the profile is reused headlessly afterwards.
 
 The whole thing is importable, with `Jobs` as the front door:
 
@@ -400,3 +497,20 @@ print(rating.reviews[0].pros, rating.reviews[0].cons)
 
 Both clients share the same `fetch(company, max_reviews)` signature and return a
 `CompanyRating`, so callers never branch on the source.
+
+Financials follow the same pattern:
+
+```python
+from applicant.financials import CrunchbaseClient, FinancialsTracker
+
+financials = CrunchbaseClient().fetch('zomato')
+print(financials.total_funding, financials.valuation, financials.revenue_range)
+for funding_round in financials.rounds:
+    print(funding_round.date, funding_round.round, funding_round.amount)
+
+changes = FinancialsTracker('company_financials.json').record(financials)
+```
+
+`CrunchbaseClient` and `TracxnClient` both return a `CompanyFinancials` (a Pydantic model);
+amounts are `Money` values carrying the currency, the USD figure where the source gave one,
+and the text as it was written.

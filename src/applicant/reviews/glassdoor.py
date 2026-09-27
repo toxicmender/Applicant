@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from contextlib import suppress
 
@@ -60,6 +61,26 @@ class GlassdoorClient:
         self.timeout = timeout
 
     def fetch(self, company, max_reviews=PAGE_SIZE):
+        """Every failure leaves as a ReviewsError, so a caller trying several
+        sources can report this one and carry on with the rest."""
+        try:
+            rating = self._fetch(company, max_reviews)
+        except ReviewsError:
+            raise
+        # the browser: launch failures, timeouts, a window closed by hand
+        except Exception as error:
+            logger.debug('glassdoor: traceback', exc_info=True)
+            raise ReviewsError(
+                f'the Glassdoor browser session failed: {type(error).__name__}: '
+                f'{str(error).splitlines()[0][:160] if str(error) else ""}'
+            ) from error
+        logger.info(
+            f'glassdoor: {rating.company}: {rating.overall_rating} from '
+            f'{rating.review_count} ratings, {len(rating.reviews)} review(s)'
+        )
+        return rating
+
+    def _fetch(self, company, max_reviews):
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
@@ -158,7 +179,7 @@ class GlassdoorClient:
         try:
             context.storage_state(path='storage_state.json')
         except Exception as error:  # noqa: BLE001 - reported, never fatal to the scrape
-            logger.warning('could not write storage_state.json: {}'.format(error))
+            logger.warning(f'glassdoor: could not write storage_state.json: {error}')
 
     # -- parsing ----------------------------------------------------------
 

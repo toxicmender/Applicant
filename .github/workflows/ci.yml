@@ -73,7 +73,7 @@ jobs:
           retention-days: 30
 
   types:
-    name: types (pyright)
+    name: types (pyright, python 3.10 + 3.12)
     runs-on: ubuntu-latest
     outputs:
       outcome: ${{ steps.pyright.outputs.outcome }}
@@ -89,26 +89,42 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
+      # Checked against the floor requires-python claims and against 3.12, where
+      # the stdlib typeshed differs (deprecations, removed aliases). One job and
+      # one step, not a matrix: `status` reads a single outcome per job, and a
+      # matrix would let the last version to finish overwrite the others.
       - name: pyright
         id: pyright
+        env:
+          PYRIGHT_PYTHONS: '3.10 3.12'
         run: |
-          uvx "pyright@${PYRIGHT_VERSION}" --outputjson > pyright.json || true
-          python .github/scripts/ci_report.py pyright pyright.json
+          failed=0
+          details=''
+          for version in $PYRIGHT_PYTHONS; do
+            report="pyright-${version}.json"
+            uvx "pyright@${PYRIGHT_VERSION}" --pythonversion "$version" --outputjson \
+              > "$report" || true
+            echo "#### Python ${version}" >> "$GITHUB_STEP_SUMMARY"
+            python .github/scripts/ci_report.py pyright "$report"
 
-          errors=$(python -c "import json; print(json.load(open('pyright.json'))['summary']['errorCount'])")
-          if [ "$errors" -eq 0 ]; then
+            errors=$(python -c "import json; print(json.load(open('$report'))['summary']['errorCount'])")
+            [ "$errors" -eq 0 ] || failed=1
+            details="${details:+$details, }${version}: ${errors}"
+          done
+
+          if [ "$failed" -eq 0 ]; then
             echo 'outcome=pass' >> "$GITHUB_OUTPUT"
-            echo 'detail=no type errors' >> "$GITHUB_OUTPUT"
+            echo "detail=no type errors (${PYRIGHT_PYTHONS// /, })" >> "$GITHUB_OUTPUT"
           else
             echo 'outcome=fail' >> "$GITHUB_OUTPUT"
-            echo "detail=${errors} type error(s)" >> "$GITHUB_OUTPUT"
+            echo "detail=type errors by python - ${details}" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: pyright-report
-          path: pyright.json
+          path: pyright-*.json
           retention-days: 30
 
   unit:

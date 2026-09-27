@@ -1,7 +1,7 @@
 [project]
 name = "applicant"
 version = "0.1.0"
-description = "Scrapes applicable job postings, applies to them, and looks up company ratings"
+description = "Scrapes applicable job postings, applies to them, and looks up company ratings and financials"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 
@@ -8,6 +9,8 @@ import httpx
 
 from .errors import CompanyNotFound, ParseError, ReviewsError
 from .models import CompanyRating, Review
+
+logger = logging.getLogger(__name__)
 
 BASE = 'https://www.ambitionbox.com'
 PAGE_SIZE = 20
@@ -69,9 +72,11 @@ class AmbitionBoxClient:
             try:
                 response = self.client.get(url, **kwargs)
             except httpx.TransportError as error:
+                logger.debug(f'ambitionbox: attempt {attempt + 1} for {url} failed: {error}')
                 last_error = error
                 continue
             if response.status_code in (429, 502, 503):
+                logger.debug(f'ambitionbox: HTTP {response.status_code} for {url}; backing off')
                 last_error = None
                 continue
             return response
@@ -83,6 +88,25 @@ class AmbitionBoxClient:
         raise ReviewsError('no response from {}'.format(url))
 
     def fetch(self, company, max_reviews=PAGE_SIZE):
+        """Every failure leaves as a ReviewsError, so a caller trying several
+        sources can report this one and carry on with the rest."""
+        try:
+            rating = self._fetch(company, max_reviews)
+        except httpx.HTTPStatusError as error:
+            raise ReviewsError(
+                f'AmbitionBox answered HTTP {error.response.status_code} for {company!r}'
+            ) from error
+        except httpx.HTTPError as error:
+            raise ReviewsError(f'could not reach AmbitionBox: {error}') from error
+        except ValueError as error:  # a JSON body that did not parse
+            raise ParseError(f'AmbitionBox sent unreadable data: {error}') from error
+        logger.info(
+            f'ambitionbox: {rating.company}: {rating.overall_rating} from '
+            f'{rating.review_count} ratings, {len(rating.reviews)} review(s)'
+        )
+        return rating
+
+    def _fetch(self, company, max_reviews):
         slug = slugify(company)
         url = '{}/reviews/{}-reviews'.format(BASE, slug)
 
@@ -93,8 +117,9 @@ class AmbitionBoxClient:
 
         try:
             props = self._page_props(response.text)
-        except ParseError:
+        except ParseError as error:
             # shape changed on us - the JSON-LD aggregate still carries rating + count
+            logger.warning(f'ambitionbox: {error}; falling back to the JSON-LD summary')
             return self._from_json_ld(response.text, company, url)
 
         rating = self._to_rating(props, company, url)

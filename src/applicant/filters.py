@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
@@ -11,6 +12,8 @@ from .models import Job
 from .money import Rates, convert
 from .places import within
 from .salary import parse_salary
+
+logger = logging.getLogger(__name__)
 
 
 def _values(wanted: str | Sequence[str] | None) -> list[str]:
@@ -89,23 +92,31 @@ class JobFilter:
             if flag:
                 flags.append(flag)
             if not keep:
-                return False, flags
+                return self._drop(job, f'salary {job.salary!r} under {self.min_salary}', flags)
 
         if self.experience is not None and 'experience' not in skip:
             keep, flag = self._experience_ok(job, self.experience)
             if flag:
                 flags.append(flag)
             if not keep:
-                return False, flags
+                return self._drop(job, f'experience does not fit {self.experience} years', flags)
 
         if self.posted_within_days is not None and 'posted' not in skip:
             keep, flag = self._date_ok(job, self.posted_within_days, today)
             if flag:
                 flags.append(flag)
             if not keep:
-                return False, flags
+                return self._drop(
+                    job, f'posted {job.posted!r}, over {self.posted_within_days} days ago', flags
+                )
 
         return True, flags
+
+    def _drop(self, job: Job, reason: str, flags: list[str]) -> tuple[bool, list[str]]:
+        """Why a job was filtered out: the first thing to check when a search
+        comes back empty. Debug only - there is one line per job."""
+        logger.debug(f'{job.source}: dropped {job.title!r}: {reason}')
+        return False, flags
 
     def _text_matches(self, wanted: str, actual: str) -> bool:
         """Every word of one filter must appear, in any order.

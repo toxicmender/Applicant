@@ -12,8 +12,10 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 from applicant.cli import build_parser, main, normalise
+from applicant.financials import CompanyFinancials, FinancialsError, Money
 from applicant.models import Job
 from applicant.storage import ApplicationLog, save_jobs
 
@@ -44,7 +46,14 @@ class ParserTest(unittest.TestCase):
         self.parser = build_parser()
 
     def test_every_subcommand_binds_a_handler(self):
-        for argv in (['jobs'], ['search', 'python'], ['apply'], ['reviews', 'tcs'], ['status']):
+        for argv in (
+            ['jobs'],
+            ['search', 'python'],
+            ['apply'],
+            ['reviews', 'tcs'],
+            ['status'],
+            ['financials', 'zomato'],
+        ):
             with self.subTest(argv=argv):
                 self.assertTrue(callable(self.parser.parse_args(argv).handler))
 
@@ -266,3 +275,83 @@ class ApplyCommandTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class FinancialsCommandTest(unittest.TestCase):
+    """The financials run with both clients stubbed, so nothing leaves the process."""
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.root = Path(self._dir.name)
+        self.history = str(self.root / 'company_financials.json')
+        self.asked: list[tuple[str, str]] = []
+        self.total = 2.1e9
+
+    def fetch_from(self, source):
+        def fetch(client, company, max_rounds=20):
+            self.asked.append((source, company))
+            if source == 'tracxn':
+                raise FinancialsError('Tracxn needs an API token or a profile url')
+            return CompanyFinancials(
+                source=source,
+                company=company,
+                company_id=company.split()[0].lower(),
+                total_funding=Money(amount=self.total, currency='USD', amount_usd=self.total),
+            )
+
+        return fetch
+
+    def run_financials(self, *argv: str) -> tuple[int, str]:
+        buffer = io.StringIO()
+        with (
+            mock.patch(
+                'applicant.financials.CrunchbaseClient.fetch', self.fetch_from('crunchbase')
+            ),
+            mock.patch('applicant.financials.TracxnClient.fetch', self.fetch_from('tracxn')),
+            mock.patch('time.sleep'),
+            redirect_stdout(buffer),
+        ):
+            code = main(['financials', '-o', self.history, *argv])
+        return code, buffer.getvalue()
+
+    def test_defaults(self):
+        args = build_parser().parse_args(['financials', 'zomato'])
+        self.assertEqual(args.source, 'both')
+        self.assertEqual(args.max_rounds, 20)
+        self.assertEqual(args.output, 'company_financials.json')
+
+    def test_nothing_to_track_fails_cleanly(self):
+        code, output = self.run_financials()
+        self.assertEqual(code, 1)
+        self.assertIn('name at least one company', output)
+
+    def test_one_failing_source_keeps_the_other(self):
+        code, output = self.run_financials('zomato')
+        self.assertEqual(code, 0)
+        self.assertIn('crunchbase: zomato - raised $2.1B', output)
+        self.assertIn('tracxn: zomato: Tracxn needs', output)
+        self.assertTrue(Path(self.history).exists())
+
+    def test_a_second_run_reports_what_changed(self):
+        self.run_financials('zomato', '-s', 'crunchbase')
+        self.total = 2.4e9
+        _, output = self.run_financials('zomato', '-s', 'crunchbase')
+        self.assertIn('changed: total funding: $2.1B -> $2.4B', output)
+
+    def test_companies_come_from_the_job_listing_once_each(self):
+        listing = str(self.root / 'jobs.json')
+        save_jobs(
+            [
+                Job(source='naukri', id='1', title='SDE', company='Zomato Ltd.'),
+                Job(source='indeed', id='2', title='Dev', company='zomato ltd.'),
+                Job(source='indeed', id='3', title='Dev', company='Swiggy'),
+            ],
+            listing,
+        )
+        self.run_financials('--from-jobs', listing, '-s', 'crunchbase')
+        self.assertEqual(self.asked, [('crunchbase', 'Zomato Ltd.'), ('crunchbase', 'Swiggy')])
+
+    def test_a_profile_url_only_goes_to_its_own_site(self):
+        self.run_financials('https://tracxn.com/d/companies/zomato/__abc')
+        self.assertEqual(self.asked, [('tracxn', 'https://tracxn.com/d/companies/zomato/__abc')])

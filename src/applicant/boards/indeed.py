@@ -9,6 +9,7 @@ challenge the request we retry the same parse through a real browser.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from urllib.parse import urlencode
@@ -20,6 +21,8 @@ from ..dates import epoch_to_iso
 from ..models import BlockedError, Job
 from ..places import country_for
 from . import CAPABILITIES
+
+logger = logging.getLogger(__name__)
 
 BASE = 'https://www.indeed.com'
 PAGE_SIZE = 10  # what Indeed advances `start` by, even though a page holds more
@@ -127,6 +130,7 @@ class Indeed:
             if len(jobs) < limit:
                 time.sleep(self.delay)
 
+        logger.info(f'indeed: {min(len(jobs), limit)} job(s)')
         return jobs[:limit]
 
     def close(self):
@@ -146,8 +150,12 @@ class Indeed:
             response = self.client.get(url)
             if response.status_code == 200 and MOSAIC.search(response.text):
                 return response.text
-        except httpx.TransportError:
-            pass
+            logger.info(
+                f'indeed: plain request got HTTP {response.status_code} without job cards; '
+                'retrying in a browser'
+            )
+        except httpx.TransportError as error:
+            logger.info(f'indeed: plain request failed ({error}); retrying in a browser')
         # Indeed challenged or reshaped the plain request - try it in a browser
         return self._html_via_browser(url)
 

@@ -12,6 +12,7 @@ source here by some distance.
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from urllib.parse import urlencode
 
@@ -19,6 +20,8 @@ from ..browser import browser, looks_blocked
 from ..dates import relative_to_iso
 from ..models import BlockedError, Job
 from . import CAPABILITIES
+
+logger = logging.getLogger(__name__)
 
 BASE = 'https://www.google.com/search'
 CARD = 'div[jsname="y1Aese"][role="button"]'
@@ -90,6 +93,7 @@ class GoogleJobs:
                 if len(jobs) >= limit:
                     break
 
+        logger.info(f'googlejobs: {min(len(jobs), limit)} job(s)')
         return jobs[:limit]
 
     def close(self):

@@ -5,8 +5,13 @@
 **/applied_via_jobs_interface.json
 **/.money_cache.json
 **/storage_state.json
+**/company_financials.json
+# unreadable stores moved aside by applicant.files - personal data, like the originals
+**/*.corrupt-*
 .gd_profile/
 logs/
+.cb_profile/
+.tx_profile/
 
 # gitignore template for Jupyter Notebooks
 # website: http://jupyter.org/

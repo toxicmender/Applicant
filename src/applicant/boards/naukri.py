@@ -11,12 +11,15 @@ either path yields the same Job objects.
 
 from __future__ import annotations
 
+import logging
 import re
 
 from ..browser import browser, looks_blocked
 from ..dates import relative_to_iso
 from ..models import BlockedError, Job
 from . import CAPABILITIES
+
+logger = logging.getLogger(__name__)
 
 BASE = 'https://www.naukri.com'
 API = re.compile(r'/jobapi/v\d+/search')
@@ -69,10 +72,16 @@ class Naukri:
                 try:
                     page.wait_for_selector('.srp-jobtuple-wrapper', timeout=15000)
                 except Exception:  # noqa: BLE001 - no tuples on this page, so we are done
+                    logger.debug(f'naukri: no job tuples on page {page_number}; stopping')
                     break
                 page.wait_for_timeout(int(self.delay * 1000))
 
-                found = self._from_api(captured[before:]) or self._from_dom(page)
+                from_api = self._from_api(captured[before:])
+                found = from_api or self._from_dom(page)
+                logger.debug(
+                    f'naukri: page {page_number}: {len(found)} job(s) from '
+                    + ('its search API' if from_api else 'the rendered page')
+                )
                 if not found:
                     break
 
@@ -86,6 +95,7 @@ class Naukri:
 
                 page_number += 1
 
+        logger.info(f'naukri: {min(len(jobs), limit)} job(s)')
         return jobs[:limit]
 
     def close(self):

@@ -27,7 +27,6 @@ from .storage import ApplicationLog, fingerprint, save_jobs
 if TYPE_CHECKING:
     from .boards.linkedin import LinkedIn
 
-
 class Board(Protocol):
     """What every board module offers, and all this facade needs of one."""
 
@@ -133,17 +132,27 @@ class Jobs:
 
         for name in self.sources:
             client = self._client(name)
+            logger.info(f'{name}: searching {keywords!r} in {filters.location or "anywhere"!r}')
             try:
                 kept, seen = self._from_board(
                     client, name, keywords, filters, limit, want, max_rounds, plan
                 )
             except JobsError as error:
+                logger.warning(f'{name}: {type(error).__name__}: {error}')
+                (on_error or self._report)(name, error)
+                continue
+            # One board failing in a way it did not anticipate - a timeout, a DNS
+            # failure, a reshaped response - must not throw away the others'
+            # results (ASVS 16.5.2). The traceback goes to the debug log.
+            except Exception as error:
+                logger.error(f'{name}: unexpected {type(error).__name__}: {error}')
+                logger.debug(f'{name}: traceback', exc_info=True)
                 (on_error or self._report)(name, error)
                 continue
             finally:
                 # LinkedIn keeps its session open: apply() reuses it
                 if name != 'linkedin':
-                    client.close()
+                    self._close(name, client)
 
             logger.info('{}: {} of {} jobs match'.format(name, len(kept), seen))
             collected.extend(kept)
@@ -275,6 +284,14 @@ class Jobs:
     def _report(self, name: str, error: Exception) -> None:
         logger.warning('{}: {}'.format(name, error))
 
+    def _close(self, name: str, client: Board) -> None:
+        """Release a board. A failure here is logged, never raised: it would mask
+        the search result, or the error, that is already on its way out."""
+        try:
+            client.close()
+        except Exception as error:  # noqa: BLE001 - teardown must not mask the result
+            logger.warning(f'{name}: could not close cleanly: {type(error).__name__}: {error}')
+
     def apply(
         self,
         jobs: Iterable[Job],
@@ -390,6 +407,13 @@ class Jobs:
         except JobsError as error:
             logger.warning('linkedin: {}'.format(error))
             return [(job, 'failed', str(error)) for job in jobs]
+        # e.g. the browser would not start: every other board's rows still have to
+        # reach the log, so this is recorded as a failure rather than raised
+        except Exception as error:
+            logger.error(f'linkedin: easy apply failed: {type(error).__name__}: {error}')
+            logger.debug('linkedin: easy apply traceback', exc_info=True)
+            print('linkedin: {}'.format(error))
+            return [(job, 'failed', type(error).__name__) for job in jobs]
 
         for job in jobs:
             if job.url in applied:
