@@ -11,15 +11,15 @@ from __future__ import annotations
 import csv
 import logging
 import os
-import re
 from collections.abc import Iterable
 from datetime import datetime, timezone
 
 from pydantic import ValidationError
 
+from .domain.dedupe import fingerprint, key
+from .domain.job import Job
+from .domain.salary import parse_salary
 from .files import read_document, write_document
-from .models import Job
-from .salary import parse_salary
 
 logger = logging.getLogger(__name__)
 
@@ -70,43 +70,8 @@ def restore(value):
     return value
 
 
-def _key(item: dict) -> tuple:
-    """Identity for deduping.
-
-    Boards that hand out an id are keyed on it; aggregators that do not (Google
-    Jobs) fall back to the posting itself, otherwise every one of their rows
-    would collapse into a single (source, None) entry.
-    """
-    if item.get('id'):
-        return item.get('source'), item['id']
-    return item.get('source'), item.get('title'), item.get('company'), item.get('location')
-
-
-_PUNCTUATION = re.compile(r'[^a-z0-9]+')
-
-
-def _flatten(value: str | None) -> str:
-    return _PUNCTUATION.sub(' ', (value or '').lower()).strip()
-
-
-def fingerprint(item: dict) -> str | None:
-    """Identity *across* boards: one job, however many boards carried it.
-
-    `_key` is per source by design - each board's copy of a posting is worth
-    storing, since they carry different fields and only some carry a url. But
-    they are still one job, and applying to it three times is three emails to
-    the same employer.
-
-    The city alone, not the whole location string: boards write "Bengaluru",
-    "Bengaluru, Karnataka" and "Bengaluru, India" for the same office. Returns
-    None when company or title is missing, because a fingerprint that is not
-    sure is worse than none.
-    """
-    company, title = _flatten(item.get('company')), _flatten(item.get('title'))
-    if not company or not title:
-        return None
-    city = _flatten((item.get('location') or '').split(',')[0])
-    return '|'.join((company, title, city))
+# identity within a board, and across boards - see applicant.domain.dedupe
+_key = key
 
 
 def _stored(document: dict) -> list[dict]:

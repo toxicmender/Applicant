@@ -8,12 +8,11 @@ and financials.
 
 The layout, roughly in dependency order:
 
+* `domain/`   - the pure core: `Job`, filtering, capabilities, flags, rates, dedupe
 * `errors`    - one error hierarchy for every source
-* `models`    - the `Job` model every board returns
-* `dates`     - relative and epoch posting dates into ISO ones
-* `salary`    - reading pay off a posting, normalised to an annual figure
 * `infra`     - the shared HTTP client and the one browser launcher
-* `filters`   - `JobFilter`, and the flags explaining what could not be checked
+* `filters`   - `JobFilter` wired to live rates and the board table
+* `money`     - the FX and PPP cache behind cross-currency comparisons
 * `storage`   - the job listing file and the application log
 * `boards/`   - one module per job board, all returning `Job`
 * `reviews/`  - company ratings from AmbitionBox and Glassdoor

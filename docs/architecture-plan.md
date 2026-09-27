@@ -701,6 +701,38 @@ above, or goes beyond it:
   the browser mode too, which doesn't go through `HttpClient`. Phase 3 moves it
   with the rest of the orchestration.
 
+**Phase 2 status: done.** `tests/test_filters.py`, `tests/test_target_job_filters.py`
+and every other existing test pass unchanged. A new `tests/test_domain.py` (38 tests)
+holds the layer rule and the rest. Where it differs from the row above, or goes
+beyond it:
+
+- **The layer rule is a test that reads the source.** It parses every
+  `domain/*.py` with `ast` and fails on an import of an I/O library (httpx,
+  playwright, os, pathlib, csv, sqlite3, …) or of any layer above, and on any call
+  to `open()`. I checked that it catches a real violation. `logging` is allowed.
+- **The clock is still a default, not a ban.** `JobFilter.matches(today=None)` and
+  `relative_to_iso(now=None)` fall back to the current date when none is given.
+  Checks read `today` from the `FilterContext`, so tests and services can pin it.
+- **The domain `JobFilter` never fetches.** With `rates=None` it has no figures,
+  so a foreign-currency salary is flagged `rate-unavailable` and kept. The
+  `applicant.filters.JobFilter` everyone already imports is a thin subclass that
+  supplies the live cache and the board capability table, so its behaviour is
+  unchanged.
+- **Rates are fetched once per batch.** `prepared(filters, jobs)` fetches every rate
+  a batch needs in one go (`Rates.snapshot()`), and the facade and `apply` call it
+  before filtering. This fixes the per-job FX retry that Phase 1 held back.
+- **Capabilities are declared in `boards/__init__.py`, not in each adapter
+  module.** The row asked for them on each adapter, but that would make reading a
+  stored job's capability import httpx and Playwright. The declarations use the
+  `Field` enum, the comments that cited line numbers are gone, and a test parses
+  each board's fixtures to check them. `Field` is a `str` enum, so `'posted' in
+  capability.filters` still works.
+- **The reviews and financials models stay where they are.** D11's move of
+  `CompanyRating` to Pydantic isn't in this row. The flag constants are done.
+- **Old import paths are re-export shims:** `applicant.models`, `dates`, `salary`
+  and `places`. `storage.fingerprint` and `storage._key` now come from
+  `domain.dedupe`.
+
 Phases 1–3 are refactors behind the existing tests, and the test suite is the
 contract. Phase 4 is the only one that changes on-disk formats, which is why it
 imports the old files and keeps exporting them.

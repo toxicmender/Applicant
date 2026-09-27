@@ -19,10 +19,11 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
 from .boards import Capability
-from .filters import JobFilter
+from .domain import dedupe, flags
+from .filters import JobFilter, prepared
 from .log import get
 from .models import Job, JobsError, experience_from
-from .storage import ApplicationLog, fingerprint, save_jobs
+from .storage import ApplicationLog, save_jobs
 
 if TYPE_CHECKING:
     from .boards.linkedin import LinkedIn
@@ -222,12 +223,14 @@ class Jobs:
             )
             seen = len(jobs)
 
+            # every rate this batch needs, fetched once - then filtering is pure
+            ready = prepared(filters, jobs)
             kept = []
             for job in jobs:
-                keep, flags = filters.matches(job, skip=skip)
+                keep, found = ready.matches(job, skip=skip)
                 if not keep:
                     continue
-                job.flags = flags
+                job.flags = found
                 kept.append(job)
 
             if deferred and plan is not None:
@@ -281,7 +284,7 @@ class Jobs:
             phrase, low, high = found
             job.experience_text = phrase
             job.experience_min, job.experience_max = low, high
-            job.flags = [*job.flags, 'experience-enriched']
+            job.flags = [*job.flags, flags.EXPERIENCE_ENRICHED]
 
     def _recheck_experience(self, jobs: list[Job], filters: JobFilter) -> list[Job]:
         """The check held back for enrichment, now that the postings have been read."""
@@ -292,9 +295,9 @@ class Jobs:
         )
         kept = []
         for job in jobs:
-            keep, flags = check.matches(job)
+            keep, found = check.matches(job)
             if keep:
-                job.flags = [*job.flags, *flags]
+                job.flags = [*job.flags, *found]
                 kept.append(job)
         return kept
 
@@ -323,17 +326,19 @@ class Jobs:
         needs-manual-apply with their url rather than guessed at.
         """
         if filters is not None:
+            jobs = list(jobs)
+            ready = prepared(filters, jobs)
             kept = []
             for job in jobs:
-                keep, flags = filters.matches(job)
+                keep, found = ready.matches(job)
                 if keep:
                     # record why this one could not be fully checked, so the log
                     # says so rather than carrying stale flags from search time
-                    job.flags = flags
+                    job.flags = found
                     kept.append(job)
             jobs = kept
 
-        jobs = self._one_per_job(jobs)
+        jobs = dedupe.one_per_job(jobs)
         entries: list[tuple[Job, str, str]] = []
         linkedin_targets = []
 
@@ -359,60 +364,6 @@ class Jobs:
             '{} new rows in {} ({} already recorded)'.format(written, log, len(entries) - written)
         )
         return entries
-
-    def _reach(self, job: Job) -> int:
-        """How far this copy of a posting gets you, highest first.
-
-        Easy Apply can be automated; a url can at least be opened; a Google Jobs
-        row has neither and leaves you searching for it again by hand.
-        """
-        if job.source == 'linkedin' and job.url and job.easy_apply is not False:
-            return 2
-        return 1 if job.url else 0
-
-    def _one_per_job(self, jobs: Iterable[Job]) -> list[Job]:
-        """Collapse the same posting from several boards into the usable copy.
-
-        Boards are searched independently, so a job advertised on three of them
-        arrives three times - and applying to each is three approaches to one
-        employer. The copies that lose are recorded on the survivor as
-        `also-on-<board>` flags, so nothing disappears silently.
-
-        Only across boards. Two postings from one board are two postings, however
-        alike they look: there the board's own id is the authority, and second
-        guessing it would throw away a job somebody really did advertise twice.
-        """
-        best: dict[str, Job] = {}
-        ordered: list[Job] = []
-
-        for job in jobs:
-            mark = fingerprint(job.to_dict())
-            rival = best.get(mark or '')
-            if mark is None or rival is None or rival.source == job.source:
-                # nothing to collapse against: not enough to be sure it is the
-                # same job, the first copy of it, or the same board again
-                if mark is not None and rival is None:
-                    best[mark] = job
-                ordered.append(job)
-                continue
-
-            winner, loser = (job, rival) if self._reach(job) > self._reach(rival) else (rival, job)
-            if winner is not rival:
-                ordered[ordered.index(rival)] = winner
-                best[mark] = winner
-            # the loser may itself have outlived an earlier copy, so carry its
-            # record of them across rather than losing it with the object
-            winner.flags = self._merge_flags(winner, loser)
-
-        return ordered
-
-    def _merge_flags(self, winner: Job, loser: Job) -> list[str]:
-        elsewhere = dict.fromkeys(
-            flag for flag in (*winner.flags, *loser.flags) if flag.startswith('also-on-')
-        )
-        elsewhere['also-on-{}'.format(loser.source)] = None
-        own = [flag for flag in winner.flags if not flag.startswith('also-on-')]
-        return [*own, *elsewhere]
 
     def _easy_apply(self, jobs: list[Job]) -> list[tuple[Job, str, str]]:
         client = self.linkedin()

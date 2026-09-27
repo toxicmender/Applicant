@@ -28,6 +28,14 @@ from pathlib import Path
 
 import httpx
 
+from .domain.rates import (
+    BASE,
+    COUNTRY_CURRENCY,
+    CURRENCY_COUNTRY,
+    RateSnapshot,
+    RateTable,
+)
+from .domain.rates import convert as _convert
 from .errors import SourceError
 from .files import read_document, write_document
 from .infra.http import HttpClient
@@ -44,70 +52,6 @@ CACHE_PATH = os.environ.get('APPLICANT_MONEY_CACHE', '.money_cache.json')
 FACTORS_PATH = Path(__file__).with_name('ppp_factors.json')
 FX_TTL = 24 * 3600  # exchange rates move daily
 PPP_TTL = 180 * 24 * 3600  # PPP factors are published yearly
-
-# Which economy a currency belongs to, for the PPP lookup. ISO 4217 -> ISO 3166
-# alpha-3, which is what the World Bank keys on.
-#
-# Two caveats worth knowing before reading a converted figure:
-#
-# * EUR maps to the euro area aggregate (EMU). Price levels differ a lot between
-#   Ireland and Portugal, so a euro figure is coarser than a single country one.
-# * A currency used by several economies (USD, EUR) is priced at the economy
-#   named here, not wherever the job actually is.
-#
-# TWD is deliberately absent: Taiwan is not a World Bank member, so there is no
-# PA.NUS.PPP series to fetch and a PPP comparison would have to be invented.
-CURRENCY_COUNTRY = {
-    # requested explicitly
-    'USD': 'USA',
-    'GBP': 'GBR',
-    'INR': 'IND',
-    'NZD': 'NZL',
-    'AUD': 'AUS',
-    'EUR': 'EMU',
-    'SEK': 'SWE',
-    # the rest of the majors, by trade volume
-    'JPY': 'JPN',
-    'CHF': 'CHE',
-    'CAD': 'CAN',
-    'CNY': 'CHN',
-    'HKD': 'HKG',
-    'SGD': 'SGP',
-    'NOK': 'NOR',
-    'DKK': 'DNK',
-    'KRW': 'KOR',
-    'PLN': 'POL',
-    'CZK': 'CZE',
-    'HUF': 'HUN',
-    'RON': 'ROU',
-    'TRY': 'TUR',
-    'ILS': 'ISR',
-    'ZAR': 'ZAF',
-    'MXN': 'MEX',
-    'BRL': 'BRA',
-    'CLP': 'CHL',
-    'COP': 'COL',
-    'ARS': 'ARG',
-    'AED': 'ARE',
-    'SAR': 'SAU',
-    'EGP': 'EGY',
-    'NGN': 'NGA',
-    'KES': 'KEN',
-    'PKR': 'PAK',
-    'BDT': 'BGD',
-    'LKR': 'LKA',
-    'NPR': 'NPL',
-    'IDR': 'IDN',
-    'MYR': 'MYS',
-    'THB': 'THA',
-    'PHP': 'PHL',
-    'VND': 'VNM',
-}
-
-# the reverse, for reporting - first currency wins where several share a country
-COUNTRY_CURRENCY = {}
-for _currency, _country in CURRENCY_COUNTRY.items():
-    COUNTRY_CURRENCY.setdefault(_country, _currency)
 
 
 def load_factors(path: str | Path = FACTORS_PATH):
@@ -219,6 +163,28 @@ class Rates:
         self._cache['ppp'][country] = dict(newest, fetched=time.time())
         self._save()
         return newest['value']
+
+    # -- a fixed view for one run -----------------------------------------
+
+    def snapshot(self, currencies, basis: str = 'ppp') -> RateSnapshot:
+        """The figures needed to compare these currencies, fetched now, once.
+
+        PPP factors are one lookup per currency, and only for ones not already
+        cached. Market rates are one request whatever the currencies, and are
+        only asked for when they will be used: on the market basis, or as the
+        fallback for a currency with no PPP factor - exactly when a comparison
+        made job by job would have asked. What cannot be had is left out, and
+        `convert` reports it rather than guesses.
+        """
+        wanted = sorted({code.upper() for code in currencies if code})
+        if len(wanted) < 2:
+            return RateSnapshot()  # nothing to compare across
+        factors = {}
+        if basis == 'ppp':
+            factors = {code: value for code in wanted if (value := self.ppp(code)) is not None}
+        needs_market = basis != 'ppp' or len(factors) < len(wanted)
+        market = dict(self.fx(BASE)) if needs_market else {}
+        return RateSnapshot(market=market, ppp_factors=factors)
 
 
 def _series(response: httpx.Response) -> list[dict] | None:
@@ -337,36 +303,26 @@ def rates():
     return _DEFAULT
 
 
-def convert(amount, source, target, basis='ppp', table=None):
-    """-> (converted, note). `note` is None when the conversion was exact.
+def convert(amount, source, target, basis='ppp', table: RateTable | None = None):
+    """-> (converted, note), against the shared live cache unless given a table.
 
-    basis 'ppp' compares purchasing power, 'market' uses the exchange rate.
-    A missing PPP factor degrades to a market rate and says so in the note
-    rather than inventing anything.
+    The arithmetic is `applicant.domain.rates.convert`; this only supplies the
+    default table, which may fetch on a miss. Pass a `RateSnapshot` to keep a
+    conversion off the network.
     """
-    if amount is None or not source or not target:
-        return None, 'currency-unknown'
-
-    source, target = source.upper(), target.upper()
-    if source == target:
-        return amount, None
-
-    table = table or rates()
-
-    if basis == 'ppp':
-        source_ppp, target_ppp = table.ppp(source), table.ppp(target)
-        if source_ppp and target_ppp:
-            # local -> international $ -> the other local currency
-            return amount / source_ppp * target_ppp, None
-        converted, note = _market(amount, source, target, table)
-        return converted, note or 'ppp-unavailable'
-
-    return _market(amount, source, target, table)
+    return _convert(amount, source, target, basis=basis, table=table or rates())
 
 
-def _market(amount, source, target, table):
-    rate_table = table.fx('USD')
-    source_rate, target_rate = rate_table.get(source), rate_table.get(target)
-    if not source_rate or not target_rate:
-        return None, 'rate-unavailable'
-    return amount / source_rate * target_rate, None
+__all__ = [
+    'BASE',
+    'COUNTRY_CURRENCY',
+    'CURRENCY_COUNTRY',
+    'FACTORS_PATH',
+    'RateSnapshot',
+    'Rates',
+    'convert',
+    'fetch_factor',
+    'load_factors',
+    'rates',
+    'refresh_factors',
+]

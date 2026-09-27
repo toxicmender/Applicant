@@ -250,7 +250,10 @@ def run_apply(args) -> int:
         print('no jobs to apply to in {}'.format(args.input))
         return 1
 
-    filters = _filters(args)
+    from .filters import prepared
+
+    # every rate these jobs need, fetched once before any is filtered
+    filters = prepared(_filters(args), jobs)
     matching = []
     for job in jobs:
         keep, flags = filters.matches(job)

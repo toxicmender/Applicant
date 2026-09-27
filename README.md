@@ -341,25 +341,30 @@ before subcommands existed keep working.
 
 ```
 src/applicant/
-  cli.py         argument parsing and the subcommand handlers
-  files.py       atomic JSON writes; unreadable stores are moved aside, never overwritten
-  __main__.py    python -m applicant
-  models.py      the Job model (JobsError / BlockedError are aliases from errors.py)
+  domain/        the pure core: no network, no files, and a test that keeps it so
+    job.py         the Job model, and required experience read out of text
+    filtering.py   JobFilter, compiled to one Check per criterion
+    capability.py  Field, and what a board filters on and publishes
+    flags.py       every flag a posting can carry - a file format, so fixed
+    rates.py       currency conversion from a RateSnapshot handed in
+    dedupe.py      when postings on different boards are one job
+    dates.py salary.py places.py   posting dates, pay, and where a place is
   errors.py      one error hierarchy for every source: Blocked, NotFound, Unreachable, ...
-  dates.py       relative and epoch posting dates -> ISO
-  salary.py      reading pay off a posting, normalised to an annual figure
   infra/         the shared HTTP client (retries, backoff, 429s, per-host pacing)
                  and the one browser launcher (Chrome, then Edge, then bundled)
-  filters.py     JobFilter, and the flags saying what could not be checked
-  places.py      whether a posting's location is inside the one you asked for
-  log.py         logging: stderr, levels, per-run file, escaping, secret masking
-  storage.py     job_listing.json and applied_jobs.csv
-  search.py      the facade over boards, filters and storage
-  boards/        one module per job board, all returning Job
-  money.py       FX and PPP factors, for comparing pay across currencies
+  filters.py     JobFilter wired to live rates and the board table; prepared()
+  money.py       the FX and PPP cache, and Rates.snapshot() for a run
   ppp_factors.json  the checked in PPP table, filled by `applicant rates --refresh`
+  boards/        one module per job board, all returning Job, and their capabilities
   reviews/       company ratings from AmbitionBox and Glassdoor
   financials/    company funding from Crunchbase and Tracxn, tracked over time
+  storage.py     job_listing.json and applied_jobs.csv
+  files.py       atomic JSON writes; unreadable stores are moved aside, never overwritten
+  search.py      the facade over boards, filters and storage
+  log.py         logging: stderr, levels, per-run file, escaping, secret masking
+  cli.py         argument parsing and the subcommand handlers
+  __main__.py    python -m applicant
+  models.py dates.py salary.py places.py   old import paths, re-exporting domain/
 tests/           unittest.TestCase suites, run under pytest
 ```
 
