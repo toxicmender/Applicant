@@ -27,6 +27,7 @@ from .storage import ApplicationLog, fingerprint, save_jobs
 if TYPE_CHECKING:
     from .boards.linkedin import LinkedIn
 
+
 class Board(Protocol):
     """What every board module offers, and all this facade needs of one."""
 
