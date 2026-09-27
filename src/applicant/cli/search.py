@@ -7,7 +7,7 @@ import sys
 
 from ..log import get
 from ..services.search import SOURCES
-from .common import add_filters, filters_from
+from .common import add_filters, file_arg, filters_from
 
 logger = get(__name__)
 
@@ -54,7 +54,9 @@ def add_parser(add) -> argparse.ArgumentParser:
         'pull and re-reading what it already saw (default 4)',
     )
     search.add_argument(
-        '-o', '--output', help='file path to store the scraped jobs (default job_listing.json)'
+        '-o',
+        '--output',
+        help='file path to store the scraped jobs (default: [files] listing, job_listing.json)',
     )
     search.add_argument(
         '--show', action='store_true', help='run the browser visibly, to solve a bot check yourself'
@@ -83,7 +85,6 @@ DEFAULTS = {
     'source': ['all'],
     'limit': 25,
     'max_rounds': 4,
-    'output': 'job_listing.json',
     'enrich': False,
     'enrich_limit': 25,
 }
@@ -159,7 +160,7 @@ def run(args) -> int:
         print('nothing matched')
         return 1
 
-    stored = store(found, settings.path(args.output), settings.store)
+    stored = store(found, file_arg(args, 'output', 'listing'), settings.store)
     print(
         '{} jobs written to {} ({} stored in total)'.format(stored.saved, stored.path, stored.total)
     )

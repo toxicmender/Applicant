@@ -28,7 +28,7 @@ from ..interaction import Interaction, Terminal
 from .linkedin import LinkedInGuest
 
 if TYPE_CHECKING:
-    from playwright.sync_api import BrowserContext, Page
+    from playwright.sync_api import Page
 
 logger = logging.getLogger(__name__)
 
@@ -87,12 +87,12 @@ class LinkedIn(LinkedInGuest):
             )
         return self._browser_session.start()
 
-    def _session(self) -> BrowserContext:
-        """The live context, started if it is not already."""
+    def _session(self) -> BrowserSession:
+        """The live browser session, started if it is not already."""
         self._start()
         if self._browser_session is None:  # pragma: no cover - _start always sets it
             raise SourceError('the browser session did not start')
-        return self._browser_session.context
+        return self._browser_session
 
     def login(
         self,
@@ -110,8 +110,8 @@ class LinkedIn(LinkedInGuest):
             )
             return None
 
-        context = self._session()
-        page = self._start()
+        session = self._session()
+        page = session.page
         page.goto('https://www.linkedin.com/login', wait_until='domcontentloaded')
         page.fill('#username', username)
         page.fill('#password', password)
@@ -134,7 +134,8 @@ class LinkedIn(LinkedInGuest):
                 'headless disabled.'.format(page.url)
             )
 
-        context.storage_state(path=str(target))
+        # owner-only, and the directory made if need be: it is a session credential
+        target = session.save_state(target)
         logger.info(f'linkedin: signed in{" with 2FA" if twoFA else ""}; session saved to {target}')
         return target
 

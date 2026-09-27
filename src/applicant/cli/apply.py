@@ -6,7 +6,7 @@ import argparse
 import sys
 
 from ..log import get
-from .common import add_filters, filters_from
+from .common import add_filters, file_arg, filters_from
 from .render import terminal
 
 logger = get(__name__)
@@ -15,9 +15,14 @@ logger = get(__name__)
 def add_parser(add) -> argparse.ArgumentParser:
     apply_ = add('apply', help='apply to stored jobs and log them for a spreadsheet')
     apply_.add_argument(
-        '-i', '--input', default='job_listing.json', help='file path to the scraped jobs'
+        '-i',
+        '--input',
+        help='file path to the scraped jobs (default: [files] listing, job_listing.json)',
     )
-    apply_.add_argument('--log', default='applied_jobs.csv', help='CSV to append applications to')
+    apply_.add_argument(
+        '--log',
+        help='CSV to append applications to (default: [files] applications, applied_jobs.csv)',
+    )
     apply_.add_argument(
         '-l', '--location', default=None, help='only apply to jobs in this location'
     )
@@ -42,7 +47,7 @@ def run(args) -> int:
     from ..services.apply import worklist
 
     settings = args.settings
-    source, log = settings.path(args.input), settings.path(args.log)
+    source, log = file_arg(args, 'input', 'listing'), file_arg(args, 'log', 'applications')
     work = worklist(source, filters_from(args), settings.store)
     if not work.read:
         print('no jobs to apply to in {}'.format(source))

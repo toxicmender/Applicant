@@ -37,10 +37,13 @@ def companies_to_track(
 ) -> list[str]:
     """The companies named, then any others in a job listing, each once."""
     companies = list(named)
+    # the same company in another case is the same company - fetched once
+    seen = {name.strip().lower() for name in companies}
     if from_jobs:
-        companies += [
-            name for name in companies_from_jobs(from_jobs, backend) if name not in companies
-        ]
+        for name in companies_from_jobs(from_jobs, backend):
+            if name.lower() not in seen:
+                seen.add(name.lower())
+                companies.append(name)
     return companies
 
 

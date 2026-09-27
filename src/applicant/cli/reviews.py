@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 
 from ..services.reviews import REVIEW_SOURCES
+from .common import file_arg
 from .render import Renderer, terminal
 
 
@@ -28,8 +29,8 @@ def add_parser(add) -> argparse.ArgumentParser:
     reviews.add_argument(
         '-o',
         '--output',
-        default='company_reviews.json',
-        help='file path to store the scraped ratings',
+        help='file path to store the scraped ratings (default: [files] reviews, '
+        'company_reviews.json)',
     )
     reviews.add_argument(
         '--login',
@@ -38,8 +39,8 @@ def add_parser(add) -> argparse.ArgumentParser:
     )
     reviews.add_argument(
         '--profile',
-        default='.gd_profile',
-        help='directory holding the reused Glassdoor browser profile',
+        help='directory holding the reused Glassdoor browser profile (default: [files] '
+        'glassdoor_profile, .gd_profile)',
     )
     reviews.add_argument('--show', action='store_true', help='run the browser visibly')
     return reviews
@@ -56,7 +57,7 @@ def clients(args) -> dict:
             made[source] = AmbitionBoxClient()
         else:
             made[source] = GlassdoorClient(
-                profile_dir=args.settings.path(args.profile),
+                profile_dir=file_arg(args, 'profile', 'glassdoor_profile'),
                 login=args.login,
                 headless=not args.show,
                 interaction=terminal(),
@@ -71,7 +72,7 @@ def run(args) -> int:
     found = fetch_reviews(
         args.company,
         clients(args),
-        settings.path(args.output),
+        file_arg(args, 'output', 'reviews'),
         max_reviews=args.max_reviews,
         emit=Renderer(),
         backend=settings.store,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 
 from ..services.financials import FINANCIAL_SOURCES
+from .common import file_arg
 from .render import Renderer, terminal
 
 
@@ -36,8 +37,8 @@ def add_parser(add) -> argparse.ArgumentParser:
     financials.add_argument(
         '-o',
         '--output',
-        default='company_financials.json',
-        help='file that keeps the history and is compared against',
+        help='file that keeps the history and is compared against (default: [files] '
+        'financials, company_financials.json)',
     )
     financials.add_argument('--rounds', action='store_true', help='print each funding round too')
     financials.add_argument(
@@ -56,13 +57,13 @@ def add_parser(add) -> argparse.ArgumentParser:
     financials.add_argument('--show', action='store_true', help='run the browser visibly')
     financials.add_argument(
         '--cb-profile',
-        default='.cb_profile',
-        help='directory holding the reused Crunchbase browser profile',
+        help='directory holding the reused Crunchbase browser profile (default: [files] '
+        'crunchbase_profile, .cb_profile)',
     )
     financials.add_argument(
         '--tx-profile',
-        default='.tx_profile',
-        help='directory holding the reused Tracxn browser profile',
+        help='directory holding the reused Tracxn browser profile (default: [files] '
+        'tracxn_profile, .tx_profile)',
     )
     return financials
 
@@ -77,7 +78,7 @@ def clients(args) -> dict:
         made['crunchbase'] = CrunchbaseClient(
             # flag, then $CRUNCHBASE_API_KEY, resolved by Settings
             api_key=args.settings.secret('crunchbase_key'),
-            profile_dir=args.settings.path(args.cb_profile),
+            profile_dir=file_arg(args, 'cb_profile', 'crunchbase_profile'),
             login=args.login,
             headless=not args.show,
             interaction=terminal(),
@@ -85,7 +86,7 @@ def clients(args) -> dict:
     if 'tracxn' in wanted:
         made['tracxn'] = TracxnClient(
             api_key=args.settings.secret('tracxn_key'),
-            profile_dir=args.settings.path(args.tx_profile),
+            profile_dir=file_arg(args, 'tx_profile', 'tracxn_profile'),
             login=args.login,
             headless=not args.show,
             interaction=terminal(),
@@ -109,7 +110,7 @@ def run(args) -> int:
     tracked = track_financials(
         companies,
         clients(args),
-        settings.path(args.output),
+        file_arg(args, 'output', 'financials'),
         max_rounds=args.max_rounds,
         emit=Renderer(rounds=args.rounds, failures=True),
         backend=settings.store,

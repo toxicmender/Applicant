@@ -69,6 +69,10 @@ that removes what those phases kept for compatibility.
   last-resort error handler, and pytest stopped after 124 of 480 tests.
 - CI now fails on a failing test or type error.
 - Glassdoor saved a signed-in session into whatever directory it ran from.
+- The `[files]` table in `applicant.toml` was read but never used: every command
+  hard-coded its file names. Each file and profile flag now defaults to it.
+- `financials NAME --from-jobs` fetched a company twice when the listing spelt
+  it in another case.
 
 ### Security
 
@@ -76,6 +80,8 @@ that removes what those phases kept for compatibility.
   against log forging, in the log file and on the console alike. The logging module
   that did this had not been wired in.
 - `applicant.db` and every exported file are owner-only.
+- The LinkedIn session saved by `applicant jobs` (`cookies.json`) is owner-only,
+  as other saved sessions already were, and an older, looser one is tightened.
 - Code that acts on your LinkedIn account is one module that a search never loads,
   and nothing is submitted without confirmation.
 - API keys are refused in `applicant.toml`.

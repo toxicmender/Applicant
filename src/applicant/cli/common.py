@@ -72,6 +72,17 @@ def shared_flags(*, suppress: bool) -> argparse.ArgumentParser:
     return flags
 
 
+def file_arg(args, name: str, field: str) -> str:
+    """The path a file flag names, or else the one `[files] <field>` names.
+
+    File flags default to None so that applicant.toml's [files] table decides
+    the name; either way the result is under `data_dir`.
+    """
+    settings = args.settings
+    value = getattr(args, name)
+    return settings.path(value if value is not None else getattr(settings.files, field))
+
+
 def add_filters(command) -> None:
     command.add_argument(
         '-t',

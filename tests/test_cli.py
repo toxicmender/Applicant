@@ -111,7 +111,8 @@ class ParserTest(unittest.TestCase):
         self.assertEqual(resolved.keywords, 'python developer')
         self.assertEqual(resolved.source, ['all'])
         self.assertEqual(resolved.limit, 25)
-        self.assertEqual(resolved.output, 'job_listing.json')
+        # left to [files] listing in applicant.toml, job_listing.json by default
+        self.assertIsNone(resolved.output)
         self.assertFalse(resolved.show)
 
     def test_search_accepts_several_sources(self):
@@ -190,6 +191,23 @@ class StatusCommandTest(unittest.TestCase):
         with redirect_stdout(buffer):
             code = main(['status', '-i', self.listing, '--log', self.log, '--no-log-file', *extra])
         return code, buffer.getvalue()
+
+    def test_the_files_table_names_the_listing(self):
+        """[files] listing in applicant.toml is what a command reads by default."""
+        config = self.root / 'applicant.toml'
+        config.write_text('[files]\nlisting = "mine.json"\n', encoding='utf-8')
+        save_jobs([Job(source='naukri', id='1', title='SDE')], str(self.root / 'mine.json'))
+        flags = ['--config', str(config), '--data-dir', str(self.root), '--store', 'files']
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = main(['status', *flags, '--no-log-file'])
+        self.assertEqual(code, 0)
+        self.assertIn('1 jobs stored in {}'.format(self.root / 'mine.json'), buffer.getvalue())
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            main(['status', '-i', 'other.json', *flags, '--no-log-file'])
+        self.assertIn('0 jobs stored in {}'.format(self.root / 'other.json'), buffer.getvalue())
 
     def test_empty_state_reports_zeroes_rather_than_failing(self):
         code, output = self.run_status()
@@ -370,7 +388,7 @@ class FinancialsCommandTest(unittest.TestCase):
         args = build_parser().parse_args(['financials', 'zomato'])
         self.assertEqual(args.source, 'both')
         self.assertEqual(args.max_rounds, 20)
-        self.assertEqual(args.output, 'company_financials.json')
+        self.assertIsNone(args.output)  # [files] financials decides
 
     def test_nothing_to_track_fails_cleanly(self):
         code, output = self.run_financials()
@@ -402,6 +420,18 @@ class FinancialsCommandTest(unittest.TestCase):
         )
         self.run_financials('--from-jobs', listing, '-s', 'crunchbase')
         self.assertEqual(self.asked, [('crunchbase', 'Zomato Ltd.'), ('crunchbase', 'Swiggy')])
+
+    def test_a_named_company_is_not_fetched_again_in_another_case(self):
+        listing = str(self.root / 'jobs.json')
+        save_jobs(
+            [
+                Job(source='naukri', id='1', title='SDE', company='zomato ltd.'),
+                Job(source='indeed', id='3', title='Dev', company='Swiggy'),
+            ],
+            listing,
+        )
+        self.run_financials(' ZOMATO LTD.', '--from-jobs', listing, '-s', 'crunchbase')
+        self.assertEqual([company.strip() for _, company in self.asked], ['ZOMATO LTD.', 'Swiggy'])
 
     def test_a_profile_url_only_goes_to_its_own_site(self):
         self.run_financials('https://tracxn.com/d/companies/zomato/__abc')

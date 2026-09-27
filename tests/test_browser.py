@@ -161,6 +161,36 @@ class StateTest(TempDir):
         self.assertTrue((profile / STATE_FILE).exists())
         self.assertFalse((self.root / STATE_FILE).exists(), 'nothing loose in the cwd')
 
+    def test_a_linkedin_sign_in_is_saved_owner_only_making_its_directory(self):
+        """cookies.json is a credential too, and --data-dir may not exist yet."""
+        fake = FakePlaywright()
+        target = self.root / 'new' / 'cookies.json'
+        signed_in = mock.Mock(url='https://www.linkedin.com/feed/')
+        with (
+            fake.patch(),
+            mock.patch.object(BrowserSession, 'page', new_callable=mock.PropertyMock) as page,
+            LinkedIn(delay=0) as client,
+        ):
+            page.return_value = signed_in
+            saved = client.login('someone', 'secret', filepath=target)
+        self.assertEqual(saved, target)
+        self.assertEqual(stat.S_IMODE(os.stat(target).st_mode), 0o600)
+
+    def test_signing_in_again_tightens_an_older_session_file(self):
+        fake = FakePlaywright()
+        target = self.root / 'cookies.json'
+        target.write_text('{}', encoding='utf-8')
+        os.chmod(target, 0o644)
+        signed_in = mock.Mock(url='https://www.linkedin.com/feed/')
+        with (
+            fake.patch(),
+            mock.patch.object(BrowserSession, 'page', new_callable=mock.PropertyMock) as page,
+            LinkedIn(delay=0) as client,
+        ):
+            page.return_value = signed_in
+            client.login('someone', 'secret', filepath=target, overwrite=True)
+        self.assertEqual(stat.S_IMODE(os.stat(target).st_mode), 0o600)
+
 
 class OwnershipTest(TempDir):
     """With no __del__, whoever opens a LinkedIn session closes it."""

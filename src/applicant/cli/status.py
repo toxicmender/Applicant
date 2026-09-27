@@ -6,6 +6,7 @@ import argparse
 import json
 
 from ..log import get
+from .common import file_arg
 
 logger = get(__name__)
 
@@ -13,10 +14,14 @@ logger = get(__name__)
 def add_parser(add) -> argparse.ArgumentParser:
     status = add('status', help='summarise stored jobs and applications')
     status.add_argument(
-        '-i', '--input', default='job_listing.json', help='file path to the scraped jobs'
+        '-i',
+        '--input',
+        help='file path to the scraped jobs (default: [files] listing, job_listing.json)',
     )
     status.add_argument(
-        '--log', default='applied_jobs.csv', help='CSV the applications were appended to'
+        '--log',
+        help='CSV the applications were appended to (default: [files] applications, '
+        'applied_jobs.csv)',
     )
     status.add_argument('--json', help='also write the summary to this file as JSON')
     return status
@@ -27,7 +32,9 @@ def run(args) -> int:
     from ..services.status import summarise
 
     settings = args.settings
-    status = summarise(settings.path(args.input), settings.path(args.log), settings.store)
+    status = summarise(
+        file_arg(args, 'input', 'listing'), file_arg(args, 'log', 'applications'), settings.store
+    )
 
     print('{} jobs stored in {}'.format(status.jobs, status.input))
     for source in sorted(status.by_source):
