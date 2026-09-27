@@ -18,7 +18,7 @@ uv run playwright install chromium
 uv sync                       # includes the dev group: ruff, pyright, pytest
 uv run pytest tests           # or: uv run python -m unittest discover -s tests -t .
 uv run ruff check . && uv run ruff format .
-uv run pyright
+uv run pyright                # CI also runs: uv run pyright --pythonversion 3.12
 ```
 
 Tests are `unittest.TestCase` subclasses run under pytest, so both runners work and
@@ -28,9 +28,10 @@ injected `httpx` client, the parsers run against fixtures, and currency tests us
 Pass `rates=` yourself to keep a real search off the network too.
 
 CI mirrors this in two workflows. `format` is the only one that writes - it runs
-`ruff format` and pushes the result back to the branch. `ci` runs ruff, pyright and
-the tests across Python 3.10-3.13, reports everything to the run summary, and stores
-a `status.json` artifact; none of it gates a merge.
+`ruff format` and pushes the result back to the branch. `ci` runs ruff, type checks
+with pyright against both Python 3.10 (the floor) and 3.12, runs the tests across
+Python 3.10-3.13, reports everything to the run summary, and stores a `status.json`
+artifact; none of it gates a merge.
 
 No chromedriver step any more - everything runs on Playwright, which manages its own
 browser. The `--driver` flag is still accepted but ignored.
@@ -207,11 +208,46 @@ Job scraping also has its own subcommand, `applicant jobs`, which takes the same
 Running `applicant` with bare flags still means the job run, so invocations documented
 before subcommands existed keep working.
 
+## Logging
+
+Printed output is each command's result. Diagnostics go to **stderr** through
+Python's `logging`, so they never mix into piped output. Every subcommand takes:
+
+| Flag | Console shows |
+|---|---|
+| `-q` | errors only |
+| *(default)* | warnings and errors |
+| `-v` | progress: what each source fetched, kept, saved |
+| `-vv` | debug detail, including each HTTP request and why a filter dropped a job |
+| `--log-file PATH` | also writes everything, at debug level, to `PATH` |
+
+```
+uv run applicant search "python developer" -l India -v
+uv run applicant financials zomato --log-file financials.log
+```
+
+What is logged and how it is protected (the log inventory [OWASP ASVS 5.0](https://github.com/OWASP/ASVS/blob/v5.0.0/5.0/en/0x25-V16-Security-Logging-and-Error-Handling.md) 16.1.1 asks for):
+
+- **Where:** stderr, and the `--log-file` if given. Nothing is sent anywhere else.
+- **Format:** `2026-09-27T08:42:42Z WARNING applicant.search: naukri: ...` - UTC time,
+  level, module, message.
+- **Never logged:** passwords, cookies and session files. API keys given by flag or
+  environment are masked as `***` anywhere they would appear, tracebacks included.
+- **Log injection:** job titles and company names come from websites, so control
+  characters are escaped - a newline in a scraped title cannot forge a second entry.
+- **The log file** is created readable by its owner only (`0600`).
+- **Unexpected errors** print one line naming the error; the traceback goes to the
+  debug log (`-vv` or `--log-file`). Ctrl-C exits with status 130.
+
+Used as a library, `applicant` logs nothing until you configure `logging` yourself.
+
 ## Where things are
 
 ```
 src/applicant/
   cli.py         argument parsing and the subcommand handlers
+  logs.py        logging setup: escaping, secret masking, UTC timestamps
+  files.py       atomic JSON writes; unreadable stores are moved aside, never overwritten
   __main__.py    python -m applicant
   models.py      the Job dataclass and the shared error types
   dates.py       relative and epoch posting dates -> ISO
