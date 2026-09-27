@@ -8,10 +8,11 @@ and financials.
 
 The layout, roughly in dependency order:
 
-* `models`    - the `Job` dataclass and the error hierarchy every board shares
+* `errors`    - one error hierarchy for every source
+* `models`    - the `Job` model every board returns
 * `dates`     - relative and epoch posting dates into ISO ones
 * `salary`    - reading pay off a posting, normalised to an annual figure
-* `browser`   - launching Playwright in a way the boards will accept
+* `infra`     - the shared HTTP client and the one browser launcher
 * `filters`   - `JobFilter`, and the flags explaining what could not be checked
 * `storage`   - the job listing file and the application log
 * `boards/`   - one module per job board, all returning `Job`

@@ -4,6 +4,7 @@ import json
 import re
 from contextlib import suppress
 
+from ..infra.browser import BrowserSession, looks_blocked
 from ..log import get
 from .errors import ChallengeError, ParseError, ReviewsError
 from .models import CompanyRating, Review
@@ -20,11 +21,6 @@ REVIEWS_URL = re.compile(
 SLUG_AND_ID = re.compile(r'^(?P<slug>.+?)-?E(?P<id>\d+)$', re.IGNORECASE)
 APOLLO_STATE = re.compile(r'apolloState"\s*:\s*(\{.+?\})\s*\}\s*;', re.DOTALL)
 NEXT_DATA = re.compile(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.DOTALL)
-
-USER_AGENT = (
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-    '(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36'
-)
 
 
 def reviews_url(company, page=1):
@@ -80,51 +76,33 @@ class GlassdoorClient:
         return rating
 
     def _fetch(self, company, max_reviews):
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError:
-            raise ReviewsError(
-                'the glassdoor source needs playwright: '
-                'pip install playwright && playwright install chromium'
-            ) from None
-
         url, slug, employer_id = reviews_url(company)
         payloads = []
         html_pages = []
 
-        with sync_playwright() as driver:
-            context = driver.chromium.launch_persistent_context(
-                self.profile_dir,
-                headless=self.headless,
-                user_agent=USER_AGENT,
-                locale='en-US',
-                viewport={'width': 1366, 'height': 900},
-                args=['--disable-blink-features=AutomationControlled', '--disable-extensions'],
-            )
-            try:
-                page = context.pages[0] if context.pages else context.new_page()
-                page.set_default_timeout(self.timeout)
-                page.on('response', lambda response: self._capture(response, payloads))
+        with BrowserSession(
+            self.profile_dir, headless=self.headless, timeout=self.timeout
+        ) as session:
+            page = session.start()
+            page.on('response', lambda response: self._capture(response, payloads))
 
-                page.goto(url, wait_until='domcontentloaded')
+            page.goto(url, wait_until='domcontentloaded')
+            self._settle(page)
+            html_pages.append(page.content())
+
+            # Glassdoor shows ~10 reviews per page; keep paging until we have enough
+            current = 1
+            while self._review_count(payloads, html_pages) < max_reviews and current < 30:
+                current += 1
+                next_url, _, _ = reviews_url(company, current)
+                response = page.goto(next_url, wait_until='domcontentloaded')
+                if response is not None and response.status >= 400:
+                    break
                 self._settle(page)
                 html_pages.append(page.content())
 
-                # Glassdoor shows ~10 reviews per page; keep paging until we have enough
-                current = 1
-                while self._review_count(payloads, html_pages) < max_reviews and current < 30:
-                    current += 1
-                    next_url, _, _ = reviews_url(company, current)
-                    response = page.goto(next_url, wait_until='domcontentloaded')
-                    if response is not None and response.status >= 400:
-                        break
-                    self._settle(page)
-                    html_pages.append(page.content())
-
-                if self.login:
-                    self._save_state(context)
-            finally:
-                context.close()
+            if self.login:
+                self._save_state(session)
 
         rating = self._build(payloads, html_pages, slug, employer_id, url)
         rating.reviews = rating.reviews[: max(0, max_reviews)]
@@ -156,13 +134,7 @@ class GlassdoorClient:
             )
 
     def _blocked(self, page):
-        try:
-            title = page.title()
-        except Exception:  # noqa: BLE001 - a page mid-navigation has no title yet
-            title = ''
-        if 'just a moment' in title.lower() or 'attention required' in title.lower():
-            return True
-        return page.locator('#challenge-platform, #cf-challenge-running').count() > 0
+        return looks_blocked(page)
 
     def _capture(self, response, payloads):
         if '/graph' not in response.url:
@@ -174,11 +146,18 @@ class GlassdoorClient:
         if body:
             payloads.append(body)
 
-    def _save_state(self, context):
+    def _save_state(self, session):
+        """Export the signed in session beside the profile it belongs to.
+
+        It is a session credential: owner-only, and inside `.gd_profile/`
+        rather than loose in whatever directory the command ran from.
+        """
         try:
-            context.storage_state(path='storage_state.json')
+            target = session.save_state()
         except Exception as error:  # noqa: BLE001 - reported, never fatal to the scrape
-            logger.warning(f'glassdoor: could not write storage_state.json: {error}')
+            logger.warning(f'glassdoor: could not save the session state: {error}')
+            return
+        logger.info(f'glassdoor: session state saved to {target}')
 
     # -- parsing ----------------------------------------------------------
 

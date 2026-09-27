@@ -3,12 +3,12 @@ from __future__ import annotations
 import logging
 import os
 import re
-import time
 from contextlib import suppress
 
 import httpx
 
 from .. import log
+from ..infra.http import USER_AGENT, HttpClient
 from .errors import AuthError, ChallengeError, CompanyNotFound, FinancialsError, ParseError
 from .models import CompanyFinancials, FundingRound
 from .parsing import (
@@ -49,13 +49,7 @@ REVENUE_RANGES = {
 }
 EMPLOYEES = re.compile(r'^c_0*(\d+)_(?:0*(\d+)|max)$')
 
-HEADERS = {
-    'User-Agent': (
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-        '(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36'
-    ),
-    'Accept': 'application/json',
-}
+HEADERS = {'User-Agent': USER_AGENT, 'Accept': 'application/json'}
 
 
 def permalink(company):
@@ -116,6 +110,7 @@ class CrunchbaseClient:
         self.delay = delay
         self.retries = retries
         self._client = client
+        self._http: HttpClient | None = None
 
     def fetch(self, company, max_rounds=20):
         """Every failure leaves as a FinancialsError, so a caller trying several
@@ -145,31 +140,30 @@ class CrunchbaseClient:
     # -- api --------------------------------------------------------------
 
     @property
-    def client(self):
-        if self._client is None:
-            self._client = httpx.Client(
-                headers=HEADERS, timeout=self.timeout, follow_redirects=True
+    def http(self) -> HttpClient:
+        """Made on first use: a run on the website never needs one."""
+        if self._http is None:
+            self._http = HttpClient(
+                'Crunchbase',
+                client=self._client,
+                headers=HEADERS,
+                timeout=self.timeout,
+                retries=self.retries,
+                backoff=self.delay,
+                interval=self.delay,
+                secret=self.api_key,
             )
-        return self._client
+        return self._http
+
+    @property
+    def client(self) -> httpx.Client:
+        return self.http.client
 
     def _get(self, path, params):
-        response = None
-        attempts = max(1, self.retries)
-        for attempt in range(attempts):
-            if attempt:
-                time.sleep(self.delay * 2**attempt)
-            try:
-                response = self.client.get(
-                    API + path, params=params, headers={'X-cb-user-key': self.api_key or ''}
-                )
-            except httpx.TransportError as error:
-                if attempt == attempts - 1:
-                    raise FinancialsError('could not reach Crunchbase: {}'.format(error)) from error
-                continue
-            if response.status_code not in (429, 502, 503):
-                break
-            logger.debug(f'crunchbase: HTTP {response.status_code} for {path}; backing off')
-        assert response is not None  # every attempt either assigned it or raised
+        # a rate limit that outlasts the retries leaves HttpClient as Blocked
+        response = self.http.get(
+            API + path, params=params, headers={'X-cb-user-key': self.api_key or ''}
+        )
 
         if response.status_code == 401:
             raise AuthError('Crunchbase rejected the API key')
@@ -183,8 +177,6 @@ class CrunchbaseClient:
                 'Crunchbase refused the request, usually a card the plan does '
                 'not include: {}'.format(_error(response))
             )
-        if response.status_code == 429:
-            raise FinancialsError('Crunchbase rate limit hit; try again in a minute')
         return response
 
     def _fetch_api(self, company, max_rounds):
@@ -222,8 +214,7 @@ class CrunchbaseClient:
     # -- web --------------------------------------------------------------
 
     def _fetch_web(self, company, max_rounds):
-        from ..browser import browser, looks_blocked
-        from ..models import JobsError
+        from ..infra.browser import browser, looks_blocked
 
         slug = permalink(company)
         url = '{}/organization/{}'.format(WEB, slug)
@@ -250,8 +241,6 @@ class CrunchbaseClient:
                         texts.append(page.inner_text('body'))
         except FinancialsError:
             raise
-        except JobsError as error:
-            raise FinancialsError(str(error)) from error
         # navigation failures, timeouts and a closed browser all surface as plain
         # playwright errors, and each should read as this source failing
         except Exception as error:

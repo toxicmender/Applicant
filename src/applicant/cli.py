@@ -31,23 +31,26 @@ def run_jobs(args) -> int:
             'which manages its own browser'
         )
 
-    operator = LinkedIn(path=args.driver, headless=args.Display)
-
     fp = Path(args.cookies)
 
-    if fp.exists() and not fp.is_dir() and not args.overwrite:
-        logger.info(f'jobs: restoring the LinkedIn session from {fp}')
-        operator.restore_session(fp)
-    else:
-        # the credentials go to the browser and nowhere else - never to a log
-        logger.info(f'jobs: signing in to LinkedIn, session to be saved at {fp}')
-        user = input('Username/Email ID: ')
-        passw = getpass.getpass()
-        operator.login(
-            username=user, password=passw, twoFA=args.twofa, filepath=fp, overwrite=args.overwrite
-        )
+    with LinkedIn(path=args.driver, headless=args.Display) as operator:
+        if fp.exists() and not fp.is_dir() and not args.overwrite:
+            logger.info(f'jobs: restoring the LinkedIn session from {fp}')
+            operator.restore_session(fp)
+        else:
+            # the credentials go to the browser and nowhere else - never to a log
+            logger.info(f'jobs: signing in to LinkedIn, session to be saved at {fp}')
+            user = input('Username/Email ID: ')
+            passw = getpass.getpass()
+            operator.login(
+                username=user,
+                password=passw,
+                twoFA=args.twofa,
+                filepath=fp,
+                overwrite=args.overwrite,
+            )
 
-    operator.scrape_jobs(args.jobs)
+        operator.scrape_jobs(args.jobs)
     return 0
 
 
@@ -215,16 +218,16 @@ def run_search(args) -> int:
 
     wanted = ALL if 'all' in args.source else args.source
     logger.info(f'search: {args.keywords!r} on {", ".join(wanted)}, up to {args.limit} per board')
-    board = Jobs(sources=wanted, headless=not args.show)
-    found = board.search(
-        args.keywords,
-        _filters(args),
-        limit=args.limit,
-        want=args.want,
-        max_rounds=args.max_rounds,
-        enrich=args.enrich,
-        enrich_limit=args.enrich_limit,
-    )
+    with Jobs(sources=wanted, headless=not args.show) as board:
+        found = board.search(
+            args.keywords,
+            _filters(args),
+            limit=args.limit,
+            want=args.want,
+            max_rounds=args.max_rounds,
+            enrich=args.enrich,
+            enrich_limit=args.enrich_limit,
+        )
 
     if not found:
         logger.info('search: no job survived the filters')
@@ -262,7 +265,8 @@ def run_apply(args) -> int:
     logger.info(
         f'apply: {len(matching)} job(s) to {args.log}' + (' (dry run)' if args.dry_run else '')
     )
-    Jobs(headless=not args.show).apply(matching, log=args.log, dry_run=args.dry_run)
+    with Jobs(headless=not args.show) as board:
+        board.apply(matching, log=args.log, dry_run=args.dry_run)
     return 0
 
 

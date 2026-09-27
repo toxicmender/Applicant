@@ -16,8 +16,8 @@ import logging
 import re
 from urllib.parse import urlencode
 
-from ..browser import browser, looks_blocked
 from ..dates import relative_to_iso
+from ..infra.browser import browser, looks_blocked
 from ..models import BlockedError, Job
 from . import CAPABILITIES
 

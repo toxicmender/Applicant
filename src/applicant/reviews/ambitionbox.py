@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import re
-import time
 
 import httpx
 
+from ..infra.http import HEADERS, HttpClient
 from .errors import CompanyNotFound, ParseError, ReviewsError
 from .models import CompanyRating, Review
 
@@ -16,14 +16,6 @@ BASE = 'https://www.ambitionbox.com'
 PAGE_SIZE = 20
 # AmbitionBox stops paginating at 500 pages, so 10k reviews is the hard ceiling
 MAX_PAGES = 500
-
-HEADERS = {
-    'User-Agent': (
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-        '(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36'
-    ),
-    'Accept-Language': 'en-US,en;q=0.9',
-}
 
 NEXT_DATA = re.compile(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.DOTALL)
 LD_JSON = re.compile(r'<script type="application/ld\+json"[^>]*>(.*?)</script>', re.DOTALL)
@@ -56,40 +48,27 @@ class AmbitionBoxClient:
     """
 
     def __init__(self, timeout=30.0, delay=1.0, retries=3, client=None):
-        self.delay = delay
-        self.retries = retries
-        self.client = client or httpx.Client(
-            headers=HEADERS, timeout=timeout, follow_redirects=True
+        # `delay` is both the gap between pages and the base of the retry
+        # backoff, as it always was; HttpClient now does both
+        self.http = HttpClient(
+            'AmbitionBox',
+            client=client,
+            headers=HEADERS,
+            timeout=timeout,
+            retries=retries,
+            backoff=delay,
+            interval=delay,
         )
+        self.client = self.http.client
 
     def _get(self, url, **kwargs) -> httpx.Response:
-        """GET with backoff, so one flaky hop does not kill a multi-page scrape."""
-        last_error: Exception | None = None
-        response: httpx.Response | None = None
-        for attempt in range(max(1, self.retries)):
-            if attempt:
-                time.sleep(self.delay * 2**attempt)
-            try:
-                response = self.client.get(url, **kwargs)
-            except httpx.TransportError as error:
-                logger.debug(f'ambitionbox: attempt {attempt + 1} for {url} failed: {error}')
-                last_error = error
-                continue
-            if response.status_code in (429, 502, 503):
-                logger.debug(f'ambitionbox: HTTP {response.status_code} for {url}; backing off')
-                last_error = None
-                continue
-            return response
-        if response is not None:
-            # exhausted the retries on 429/502/503; the caller raises on the status
-            return response
-        if last_error is not None:
-            raise last_error
-        raise ReviewsError('no response from {}'.format(url))
+        return self.http.get(url, **kwargs)
 
     def fetch(self, company, max_reviews=PAGE_SIZE):
         """Every failure leaves as a ReviewsError, so a caller trying several
-        sources can report this one and carry on with the rest."""
+        sources can report this one and carry on with the rest. The network
+        failing through every retry arrives as `Unreachable`, a rate limit that
+        outlasts them as `Blocked` - both ReviewsErrors."""
         try:
             rating = self._fetch(company, max_reviews)
         except httpx.HTTPStatusError as error:
@@ -131,7 +110,6 @@ class AmbitionBoxClient:
         build_id = props.get('__buildId')
         page = 2
         while len(rating.reviews) < wanted and page <= total_pages and build_id:
-            time.sleep(self.delay)
             page_props, build_id = self._fetch_page(slug, build_id, page)
             items = page_props.get('reviewsData') or []
             if not items:

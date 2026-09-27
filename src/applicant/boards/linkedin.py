@@ -17,29 +17,24 @@ from __future__ import annotations
 import json
 import logging
 import re
-import time
 from html import unescape
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlencode
 
-import httpx
-
-from ..browser import BROWSER_ARGS, USER_AGENT
+from ..infra.browser import BrowserSession
+from ..infra.http import HEADERS, HttpClient
 from ..models import BlockedError, Job, JobsError
 from . import CAPABILITIES
 
 if TYPE_CHECKING:
-    from playwright.sync_api import Browser as PlaywrightBrowser
-    from playwright.sync_api import BrowserContext, Page, Playwright
+    from playwright.sync_api import BrowserContext, Page
 
 logger = logging.getLogger(__name__)
 
 GUEST_SEARCH = 'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search'
 GUEST_POSTING = 'https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{}'
 GUEST_PAGE_SIZE = 10
-
-HEADERS = {'User-Agent': USER_AGENT, 'Accept-Language': 'en-US,en;q=0.9'}
 
 CARD = re.compile(r'<li>(.*?)</li>', re.DOTALL)
 FIELDS = {
@@ -78,11 +73,19 @@ class LinkedIn:
         self.state = state
         self.timeout = timeout
         self.delay = delay
-        self.client = client or httpx.Client(headers=HEADERS, timeout=30.0, follow_redirects=True)
-        self._playwright: Playwright | None = None
-        self._browser: PlaywrightBrowser | None = None
-        self._context: BrowserContext | None = None
-        self._page: Page | None = None
+        # 429 is deliberately not retried: carrying on through a rate limit is
+        # how a working scrape becomes a blocked one, so it is Blocked at once.
+        # `delay` spaces every guest request, search pages and posting reads alike.
+        self.http = HttpClient(
+            'LinkedIn',
+            client=client,
+            headers=HEADERS,
+            backoff=delay,
+            interval=delay,
+            retry_on=(502, 503, 504),
+        )
+        self.client = self.http.client
+        self._browser_session: BrowserSession | None = None
 
     # -- guest search (no account needed) ---------------------------------
 
@@ -97,14 +100,8 @@ class LinkedIn:
                 # LinkedIn wants the window in seconds, as r<seconds>
                 query['f_TPR'] = 'r{}'.format(int(posted_within_days) * 86400)
             logger.debug(f'linkedin: guest search page at offset {start}')
-            try:
-                response = self.client.get('{}?{}'.format(GUEST_SEARCH, urlencode(query)))
-            except httpx.TransportError as error:
-                raise JobsError(f'could not reach LinkedIn: {error}') from error
-            if response.status_code == 429:
-                raise BlockedError(
-                    'LinkedIn rate limited the guest search; slow down or retry later'
-                )
+            # an unreachable host or a 429 leaves HttpClient as a JobsError
+            response = self.http.get('{}?{}'.format(GUEST_SEARCH, urlencode(query)))
             if response.is_error:
                 raise JobsError(f'LinkedIn guest search answered HTTP {response.status_code}')
 
@@ -128,8 +125,6 @@ class LinkedIn:
                 break
 
             start += GUEST_PAGE_SIZE
-            if len(jobs) < limit:
-                time.sleep(self.delay)
 
         logger.info(f'linkedin: {min(len(jobs), limit)} job(s) from the guest search')
         return jobs[:limit]
@@ -166,9 +161,8 @@ class LinkedIn:
         if not job.id:
             return None
 
-        response = self.client.get(GUEST_POSTING.format(job.id))
-        if response.status_code == 429:
-            raise BlockedError('LinkedIn rate limited the guest posting reads; slow down or retry')
+        # a 429 leaves as Blocked, which stops the enrichment rather than this job
+        response = self.http.get(GUEST_POSTING.format(job.id))
         if response.status_code != 200:
             return None
 
@@ -178,36 +172,23 @@ class LinkedIn:
     # -- browser session --------------------------------------------------
 
     def _start(self, storage_state=None) -> Page:
-        if self._page is not None:
-            return self._page
+        """The signed in flows' page, launched on first use.
 
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError:
-            raise JobsError(
-                'the LinkedIn browser flows need playwright: '
-                'uv sync && uv run playwright install chromium'
-            ) from None
-
-        self._playwright = sync_playwright().start()
-        self._browser = self._playwright.chromium.launch(headless=self.headless, args=BROWSER_ARGS)
-        self._context = self._browser.new_context(
-            user_agent=USER_AGENT,
-            locale='en-US',
-            viewport={'width': 1366, 'height': 900},
-            storage_state=storage_state,
-        )
-        page = self._context.new_page()
-        page.set_default_timeout(self.timeout)
-        self._page = page
-        return page
+        Through the shared launcher, so it gets the same installed-Chrome-first
+        fallback as every other source rather than the bundled Chromium only.
+        """
+        if self._browser_session is None:
+            self._browser_session = BrowserSession(
+                headless=self.headless, timeout=self.timeout, storage_state=storage_state
+            )
+        return self._browser_session.start()
 
     def _session(self) -> BrowserContext:
         """The live context, started if it is not already."""
         self._start()
-        if self._context is None:  # pragma: no cover - _start always sets it
+        if self._browser_session is None:  # pragma: no cover - _start always sets it
             raise JobsError('the browser session did not start')
-        return self._context
+        return self._browser_session.context
 
     def login(
         self,
@@ -439,20 +420,19 @@ class LinkedIn:
     # -- teardown ---------------------------------------------------------
 
     def close(self):
-        for handle in ('_context', '_browser'):
-            target = getattr(self, handle, None)
-            if target is not None:
-                try:
-                    target.close()
-                except Exception as error:  # noqa: BLE001 - teardown is best effort
-                    logger.debug(f'linkedin: closing {handle[1:]} failed: {error}')
-                setattr(self, handle, None)
-        if self._playwright is not None:
-            try:
-                self._playwright.stop()
-            except Exception as error:  # noqa: BLE001 - teardown is best effort
-                logger.debug(f'linkedin: stopping playwright failed: {error}')
-            self._playwright = None
+        """Release the browser, if one was started, and the HTTP client.
 
-    def __del__(self):
+        Explicit rather than left to garbage collection: a `__del__` running at
+        interpreter shutdown meets a Playwright that is already torn down.
+        Safe to call more than once.
+        """
+        if self._browser_session is not None:
+            self._browser_session.close()
+            self._browser_session = None
+        self.http.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
         self.close()

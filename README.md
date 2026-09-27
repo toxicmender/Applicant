@@ -344,10 +344,12 @@ src/applicant/
   cli.py         argument parsing and the subcommand handlers
   files.py       atomic JSON writes; unreadable stores are moved aside, never overwritten
   __main__.py    python -m applicant
-  models.py      the Job dataclass and the shared error types
+  models.py      the Job model (JobsError / BlockedError are aliases from errors.py)
+  errors.py      one error hierarchy for every source: Blocked, NotFound, Unreachable, ...
   dates.py       relative and epoch posting dates -> ISO
   salary.py      reading pay off a posting, normalised to an annual figure
-  browser.py     launching Playwright in a way the boards accept
+  infra/         the shared HTTP client (retries, backoff, 429s, per-host pacing)
+                 and the one browser launcher (Chrome, then Edge, then bundled)
   filters.py     JobFilter, and the flags saying what could not be checked
   places.py      whether a posting's location is inside the one you asked for
   log.py         logging: stderr, levels, per-run file, escaping, secret masking

@@ -1,14 +1,15 @@
-class ReviewsError(Exception):
-    """Base class for every failure raised by the reviews clients."""
+"""The reviews clients' error names, kept as aliases of `applicant.errors`.
 
+`ReviewsError` is `SourceError`, so `except ReviewsError` catches every failure
+a reviews client raises - and, since it is the shared base, any other source's
+too. See `applicant.errors` for the hierarchy.
+"""
 
-class CompanyNotFound(ReviewsError):
-    """The company slug/url does not resolve to a reviews page."""
+from ..errors import Blocked, NotFound, SourceError, Unparseable
 
+ReviewsError = SourceError
+CompanyNotFound = NotFound
+ChallengeError = Blocked
+ParseError = Unparseable
 
-class ChallengeError(ReviewsError):
-    """A bot check (Cloudflare interstitial, login wall) blocked the request."""
-
-
-class ParseError(ReviewsError):
-    """The page loaded but the expected data blob was missing or malformed."""
+__all__ = ['ChallengeError', 'CompanyNotFound', 'ParseError', 'ReviewsError']

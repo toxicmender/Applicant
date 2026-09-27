@@ -1,6 +1,7 @@
 """The shared vocabulary of the job boards.
 
-Every board module returns the same `Job` objects and raises the same errors, so
+Every board module returns the same `Job` objects and raises the errors in
+`applicant.errors` (under their old names `JobsError` / `BlockedError` here), so
 `applicant.search` and any other caller can mix sources without special casing them.
 """
 
@@ -10,13 +11,12 @@ import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .errors import Blocked, SourceError
 
-class JobsError(Exception):
-    """Base class for every failure raised by the job board clients."""
-
-
-class BlockedError(JobsError):
-    """A bot check, captcha or login wall stopped the scrape."""
+# The job boards' error names, kept as aliases of the shared hierarchy in
+# applicant.errors so existing imports and `except` clauses keep working.
+JobsError = SourceError
+BlockedError = Blocked
 
 
 EXPERIENCE = re.compile(

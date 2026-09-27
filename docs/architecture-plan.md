@@ -672,6 +672,35 @@ unless it says so. Phase 0 is urgent. The rest can be reordered.
   step. **Mark `status` as a required check in the branch protection settings**,
   because a workflow file can't do that itself.
 
+**Phase 1 status: done.** No existing test was changed. 47 new tests cover the HTTP
+client, the error aliases and the browser session. Where it differs from the row
+above, or goes beyond it:
+
+- **There were three browser launch paths, not two.** Glassdoor also had its own
+  `sync_playwright` block. All three now go through `infra.browser.BrowserSession`,
+  so Glassdoor and LinkedIn's signed-in flow gain the Chrome→Edge→bundled fallback.
+- **D7 is fixed here** because it fell out of the move: Glassdoor saves its session
+  to `.gd_profile/storage_state.json`, owner-only, not to the working directory.
+- **A 429 is always `Blocked`, whether or not it was retried.** LinkedIn and Indeed
+  don't retry it: LinkedIn so as not to push through a rate limit, and Indeed
+  because it falls back to the browser. The API clients retry it and honour
+  `Retry-After` up to 60s.
+- **Each client's `delay` is both the backoff base and the gap between requests to
+  one host.** The gap is shared across clients in the process. It replaces the
+  sleeps between pages in LinkedIn, Indeed and AmbitionBox, and between countries
+  in `refresh_factors`. LinkedIn's `describe()` is paced now too; it wasn't before.
+- **The World Bank's retry-on-bad-body became a `retry_when` predicate**, so
+  `money.py` has no loop of its own. `grep "for attempt" src/` only matches
+  `infra/http.py`.
+- **`LinkedIn.__del__` is gone.** `LinkedIn` and `Jobs` are context managers, and
+  the CLI closes them with `with`.
+- **The error aliases are the shared classes, not subclasses.** As a result,
+  `except ReviewsError` also catches a job board's failure. Nothing calls both
+  inside one `try`.
+- **The CLI's 1s sleep between companies in `financials` stays for now.** It paces
+  the browser mode too, which doesn't go through `HttpClient`. Phase 3 moves it
+  with the rest of the orchestration.
+
 Phases 1–3 are refactors behind the existing tests, and the test suite is the
 contract. Phase 4 is the only one that changes on-disk formats, which is why it
 imports the old files and keeps exporting them.

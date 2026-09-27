@@ -28,7 +28,9 @@ from pathlib import Path
 
 import httpx
 
+from .errors import SourceError
 from .files import read_document, write_document
+from .infra.http import HttpClient
 
 logger = logging.getLogger(__name__)
 
@@ -168,8 +170,11 @@ class Rates:
             return entry['rates'] if entry else {}
 
         try:
-            with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
-                payload = client.get(FX_URL, params={'base': base}).json()
+            # one attempt, as before: a failure is not cached and the salary
+            # filter asks once per job, so retrying here would stall an offline
+            # run on every posting. Phase 2 fetches rates once, up front.
+            with HttpClient('frankfurter.dev', timeout=self.timeout, retries=1, interval=0) as http:
+                payload = http.get(FX_URL, params={'base': base}).json()
             rates = dict(payload['rates'])
             rates[base] = 1.0
         except Exception as error:  # noqa: BLE001 - any FX failure falls back to the cache
@@ -216,33 +221,50 @@ class Rates:
         return newest['value']
 
 
+def _series(response: httpx.Response) -> list[dict] | None:
+    """The rows of a World Bank answer that carry a value, or None if it is
+    not an answer at all - a throttle message, an error page, a reshaped body.
+
+    An empty list is an answer: the series has no data for that country.
+    """
+    try:
+        payload = response.json()
+        return [row for row in payload[1] if row.get('value') is not None]
+    except Exception:  # noqa: BLE001 - any shape but the expected one is unusable
+        return None
+
+
 def fetch_factor(country, timeout=20.0, attempts=3, pause=2.0, client=None):
     """One country's newest PPP factor -> {value, year}, or None.
 
-    The World Bank answers roughly one country per attempt under load, so this
-    retries with a widening pause rather than treating a throttle as an answer.
+    The World Bank answers roughly one country per attempt under load, and
+    sometimes throttles with HTTP 200 and an error body, so an answer that is
+    not a series is retried like a throttling status rather than read as one.
+    `pause` is the backoff base and the gap between requests to the API.
     """
-    for attempt in range(max(1, attempts)):
-        if attempt:
-            time.sleep(pause * attempt)
-        try:
-            if client is not None:
-                response = client.get(WB_URL.format(country), params=WB_PARAMS)
-            else:
-                with httpx.Client(timeout=timeout, follow_redirects=True) as owned:
-                    response = owned.get(WB_URL.format(country), params=WB_PARAMS)
-            payload = response.json()
-            rows = [row for row in payload[1] if row.get('value') is not None]
-        except Exception as error:  # noqa: BLE001 - throttled, reshaped, or offline
-            logger.debug(
-                f'PPP factor for {country}, attempt {attempt + 1}: {type(error).__name__}: {error}'
-            )
-            continue
-        if not rows:
-            return None  # a real answer: the series has no data for this country
-        rows.sort(key=lambda row: row['date'], reverse=True)
-        return {'value': rows[0]['value'], 'year': rows[0]['date']}
-    return None
+    http = HttpClient(
+        'the World Bank',
+        client=client,
+        timeout=timeout,
+        retries=attempts,
+        backoff=pause,
+        interval=pause,
+        retry_when=lambda response: _series(response) is None,
+    )
+    try:
+        with http:
+            response = http.get(WB_URL.format(country), params=WB_PARAMS)
+    except SourceError as error:  # unreachable, or throttled through every attempt
+        logger.debug(f'PPP factor for {country}: {type(error).__name__}: {error}')
+        return None
+
+    rows = _series(response)
+    if not rows:
+        # None: the retries ran out on unusable answers. []: a real answer,
+        # the series has no data for this country
+        return None
+    rows.sort(key=lambda row: row['date'], reverse=True)
+    return {'value': rows[0]['value'], 'year': rows[0]['date']}
 
 
 def refresh_factors(
@@ -296,7 +318,6 @@ def refresh_factors(
             updated.append(country)
         if on_result:
             on_result(country, factors.get(country), False)
-        time.sleep(pause)
 
     if updated:
         document['factors'] = dict(sorted(factors.items()))

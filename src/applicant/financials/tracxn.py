@@ -3,14 +3,21 @@ from __future__ import annotations
 import logging
 import os
 import re
-import time
 from contextlib import suppress
 from datetime import datetime, timezone
 
 import httpx
 
 from .. import log
-from .errors import AuthError, ChallengeError, CompanyNotFound, FinancialsError, ParseError
+from ..infra.http import HttpClient
+from .errors import (
+    AuthError,
+    ChallengeError,
+    CompanyNotFound,
+    FinancialsError,
+    ParseError,
+    QuotaExhausted,
+)
 from .models import CompanyFinancials, FundingRound
 from .parsing import (
     clean_name,
@@ -150,6 +157,7 @@ class TracxnClient:
         self.delay = delay
         self.retries = retries
         self._client = client
+        self._http: HttpClient | None = None
 
     def fetch(self, company, max_rounds=20):
         """Every failure leaves as a FinancialsError, so a caller trying several
@@ -185,47 +193,46 @@ class TracxnClient:
     # -- api --------------------------------------------------------------
 
     @property
-    def client(self):
-        if self._client is None:
-            self._client = httpx.Client(timeout=self.timeout, follow_redirects=True)
-        return self._client
+    def http(self) -> HttpClient:
+        """Made on first use: a run on the website never needs one."""
+        if self._http is None:
+            self._http = HttpClient(
+                'Tracxn',
+                client=self._client,
+                headers={},
+                timeout=self.timeout,
+                retries=self.retries,
+                backoff=self.delay,
+                interval=self.delay,
+                secret=self.api_key,
+            )
+        return self._http
+
+    @property
+    def client(self) -> httpx.Client:
+        return self.http.client
 
     def _post(self, path, body, base=API):
-        response = None
-        attempts = max(1, self.retries)
-        for attempt in range(attempts):
-            if attempt:
-                time.sleep(self.delay * 2**attempt)
-            try:
-                response = self.client.post(
-                    base + path,
-                    json=body,
-                    headers={'accessToken': self.api_key or '', 'Content-Type': 'application/json'},
-                )
-            except httpx.TransportError as error:
-                if attempt == attempts - 1:
-                    raise FinancialsError('could not reach Tracxn: {}'.format(error)) from error
-                continue
-            # no Retry-After is sent, so plain backoff is all we can do
-            if response.status_code not in (429, 502, 503):
-                break
-            logger.debug(f'tracxn: HTTP {response.status_code} for {path}; backing off')
-        assert response is not None  # every attempt either assigned it or raised
+        # no Retry-After is sent, so HttpClient's own backoff is all there is;
+        # a rate limit that outlasts it leaves as Blocked
+        response = self.http.post(
+            base + path,
+            json=body,
+            headers={'accessToken': self.api_key or '', 'Content-Type': 'application/json'},
+        )
 
         if response.status_code == 401:
             raise AuthError('Tracxn rejected the API token')
         if response.status_code == 403:
             message = _error(response)
             if 'credit' in message.lower():
-                raise AuthError(
+                raise QuotaExhausted(
                     'Tracxn API is out of credits - retrying cannot help until they are renewed'
                 )
             raise AuthError(
                 'Tracxn refused the request (token expired, or the plan does '
                 'not cover it): {}'.format(message)
             )
-        if response.status_code == 429:
-            raise FinancialsError('Tracxn rate limit hit; try again later')
         if response.status_code == 400:
             raise FinancialsError('Tracxn rejected the request: {}'.format(_error(response)))
         response.raise_for_status()
@@ -358,8 +365,7 @@ class TracxnClient:
     # -- web --------------------------------------------------------------
 
     def _fetch_web(self, url, max_rounds):
-        from ..browser import browser, looks_blocked
-        from ..models import JobsError
+        from ..infra.browser import browser, looks_blocked
 
         match = PROFILE_URL.match(url)
         if match is None:
@@ -390,8 +396,6 @@ class TracxnClient:
                         texts.append(page.inner_text('body'))
         except FinancialsError:
             raise
-        except JobsError as error:
-            raise FinancialsError(str(error)) from error
         # navigation failures, timeouts and a closed browser all surface as plain
         # playwright errors, and each should read as this source failing
         except Exception as error:

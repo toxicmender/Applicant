@@ -13,7 +13,14 @@ is set (CRUNCHBASE_API_KEY / TRACXN_API_KEY) and a browser otherwise.
 """
 
 from .crunchbase import CrunchbaseClient
-from .errors import AuthError, ChallengeError, CompanyNotFound, FinancialsError, ParseError
+from .errors import (
+    AuthError,
+    ChallengeError,
+    CompanyNotFound,
+    FinancialsError,
+    ParseError,
+    QuotaExhausted,
+)
 from .models import CompanyFinancials, FundingRound, Money
 from .parsing import parse_money
 from .tracker import FinancialsTracker
@@ -30,6 +37,7 @@ __all__ = [
     'FundingRound',
     'Money',
     'ParseError',
+    'QuotaExhausted',
     'TracxnClient',
     'parse_money',
 ]

@@ -88,6 +88,22 @@ class Jobs:
             self._linkedin = LinkedIn(headless=self.headless)
         return self._linkedin
 
+    def close(self) -> None:
+        """Release the LinkedIn session this facade kept open for `apply`.
+
+        Every other board is closed as soon as its search is done. Safe to call
+        more than once, and a failure is logged rather than raised.
+        """
+        if self._linkedin is not None:
+            self._close('linkedin', self._linkedin)
+            self._linkedin = None
+
+    def __enter__(self) -> Jobs:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
     def _client(self, name: str) -> Board:
         if name == 'linkedin':
             return self.linkedin()

@@ -11,14 +11,12 @@ from __future__ import annotations
 import json
 import logging
 import re
-import time
 from urllib.parse import urlencode
 
-import httpx
-
-from ..browser import USER_AGENT, browser, looks_blocked
 from ..dates import epoch_to_iso
-from ..models import BlockedError, Job
+from ..infra.browser import browser, looks_blocked
+from ..infra.http import USER_AGENT, HttpClient
+from ..models import BlockedError, Job, JobsError
 from ..places import country_for
 from . import CAPABILITIES
 
@@ -94,9 +92,18 @@ class Indeed:
         self.host = self.domain or BASE  # re-resolved per search from the location
         self.delay = delay
         self.headless = headless
-        self.client = client or httpx.Client(
-            headers=HEADERS, timeout=timeout, follow_redirects=True
+        # `delay` spaces the result pages. A 429 is not retried here: any
+        # refusal of the plain request sends it to the browser instead
+        self.http = HttpClient(
+            'Indeed',
+            client=client,
+            headers=HEADERS,
+            timeout=timeout,
+            backoff=delay,
+            interval=delay,
+            retry_on=(502, 503, 504),
         )
+        self.client = self.http.client
 
     def search(self, keywords, location='', limit=25, posted_within_days=None):
         self.host = self.domain or host_for(location)
@@ -127,15 +134,13 @@ class Indeed:
                 break
 
             start += PAGE_SIZE
-            if len(jobs) < limit:
-                time.sleep(self.delay)
 
         logger.info(f'indeed: {min(len(jobs), limit)} job(s)')
         return jobs[:limit]
 
     def close(self):
         """Release the HTTP client. Safe to call more than once."""
-        self.client.close()
+        self.http.close()
 
     def _url(self, keywords, location, start, posted_within_days=None):
         query = {'q': keywords, 'l': location}
@@ -147,14 +152,15 @@ class Indeed:
 
     def _html(self, url):
         try:
-            response = self.client.get(url)
+            response = self.http.get(url)
             if response.status_code == 200 and MOSAIC.search(response.text):
                 return response.text
             logger.info(
                 f'indeed: plain request got HTTP {response.status_code} without job cards; '
                 'retrying in a browser'
             )
-        except httpx.TransportError as error:
+        # unreachable after the retries, or rate limited
+        except JobsError as error:
             logger.info(f'indeed: plain request failed ({error}); retrying in a browser')
         # Indeed challenged or reshaped the plain request - try it in a browser
         return self._html_via_browser(url)
