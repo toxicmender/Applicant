@@ -90,7 +90,6 @@ def add_filters(command) -> None:
     command.add_argument('--currency', help='currency for --min-salary, e.g. INR or USD')
     command.add_argument(
         '--salary-basis',
-        default='ppp',
         choices=['ppp', 'market', 'strict'],
         help='how to compare pay in another currency: purchasing power (default), '
         'the exchange rate, or not at all',
@@ -108,6 +107,7 @@ def add_filters(command) -> None:
     command.add_argument(
         '--strict',
         action='store_true',
+        default=None,
         help='drop jobs whose salary, experience or date could not be read '
         '(they are kept and flagged by default). Note that this drops every '
         'board that does not publish the field at all',
@@ -115,6 +115,7 @@ def add_filters(command) -> None:
     command.add_argument(
         '--strict-published',
         action='store_true',
+        default=None,
         help='drop a job only when its board does publish the field and the '
         'posting stayed silent, keeping boards that never publish it - which '
         'for --experience is every board but Naukri',
@@ -122,17 +123,21 @@ def add_filters(command) -> None:
 
 
 def filters_from(args) -> JobFilter:
-    """The JobFilter the filter flags describe."""
+    """The JobFilter the filter flags describe.
+
+    Flags left unset are None - so a saved search can tell them from a value
+    given - and fall back to their defaults here.
+    """
     return JobFilter(
         title=args.title,
         company=args.company,
         location=args.location,
         min_salary=args.min_salary,
         currency=args.currency,
-        salary_basis=args.salary_basis,
+        salary_basis=args.salary_basis or 'ppp',
         experience=args.experience,
         posted_within_days=args.posted_within,
         keep_unknown=not (args.strict or args.strict_published),
         # --strict is the stricter of the two, so it wins when both are given
-        keep_unpublished=args.strict_published and not args.strict,
+        keep_unpublished=bool(args.strict_published and not args.strict),
     )

@@ -82,12 +82,18 @@ class ParserTest(unittest.TestCase):
                 self.assertTrue(callable(self.parser.parse_args(argv).handler))
 
     def test_search_defaults(self):
+        """Unset flags parse as None - so a saved search can fill them - and
+        take their defaults when the search is resolved."""
+        from applicant.cli.search import resolve
+
         args = self.parser.parse_args(['search', 'python developer'])
-        self.assertEqual(args.keywords, 'python developer')
-        self.assertEqual(args.source, ['all'])
-        self.assertEqual(args.limit, 25)
-        self.assertEqual(args.output, 'job_listing.json')
-        self.assertFalse(args.show)
+        self.assertIsNone(args.limit)
+        resolved = resolve(args, {})
+        self.assertEqual(resolved.keywords, 'python developer')
+        self.assertEqual(resolved.source, ['all'])
+        self.assertEqual(resolved.limit, 25)
+        self.assertEqual(resolved.output, 'job_listing.json')
+        self.assertFalse(resolved.show)
 
     def test_search_accepts_several_sources(self):
         args = self.parser.parse_args(['search', 'python', '-s', 'linkedin', 'indeed'])

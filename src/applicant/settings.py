@@ -22,6 +22,10 @@ as `SecretStr`, so a stray `repr()` cannot put one in a log.
 
     [files]
     listing = "job_listing.json"
+
+    [searches.ai-ml]            # `applicant search --saved ai-ml`
+    keywords = "ai ml engineer"
+    title = ["ai", "ml", "machine learning"]
 """
 
 from __future__ import annotations
@@ -32,7 +36,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError
+from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError, field_validator
 
 from . import log
 from .errors import ConfigError
@@ -45,6 +49,8 @@ else:  # pragma: no cover - exercised on the 3.10 CI leg
 CONFIG_FILE = 'applicant.toml'
 
 Store = Literal['sqlite', 'files']
+# the boards a saved search may name (applicant.services.search.SOURCES, and 'all')
+SourceName = Literal['linkedin', 'indeed', 'naukri', 'googlejobs', 'all']
 
 
 class Files(BaseModel):
@@ -66,6 +72,49 @@ class Files(BaseModel):
     tracxn_profile: str = '.tx_profile'
 
 
+class SavedSearch(BaseModel):
+    """A standing `applicant search`, kept in applicant.toml under [searches.<name>].
+
+    Every field is a search flag, named as its long option (`--posted-within`
+    is `posted_within`) and optional. Run it with `applicant search --saved
+    <name>`; anything given on the command line wins over what is saved.
+
+        [searches.ai-ml]
+        keywords = "ai ml engineer"
+        location = "India"
+        title = ["ai", "ml", "machine learning", "data scientist"]
+        experience = 3
+        source = ["naukri", "linkedin"]
+    """
+
+    model_config = ConfigDict(frozen=True, extra='forbid')
+
+    keywords: str | None = None
+    location: str | None = None
+    source: list[SourceName] | None = None
+    limit: int | None = None
+    want: int | None = None
+    max_rounds: int | None = None
+    output: str | None = None
+    enrich: bool | None = None
+    enrich_limit: int | None = None
+    title: list[str] | None = None
+    company: list[str] | None = None
+    min_salary: float | None = None
+    currency: str | None = None
+    salary_basis: Literal['ppp', 'market', 'strict'] | None = None
+    experience: float | None = None
+    posted_within: int | None = None
+    strict: bool | None = None
+    strict_published: bool | None = None
+
+    @field_validator('source', 'title', 'company', mode='before')
+    @classmethod
+    def _one_or_several(cls, value):
+        """`title = "ai"` and `title = ["ai"]` mean the same."""
+        return [value] if isinstance(value, str) else value
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(frozen=True, extra='forbid')
 
@@ -76,6 +125,8 @@ class Settings(BaseModel):
     files: Files = Files()
     crunchbase_key: SecretStr | None = None
     tracxn_key: SecretStr | None = None
+    # standing searches, from [searches.<name>] tables in applicant.toml
+    searches: dict[str, SavedSearch] = {}
 
     def path(self, name: str | os.PathLike[str]) -> str:
         """`name` under `data_dir`, unless it is absolute already.

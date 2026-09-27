@@ -370,6 +370,30 @@ store = "sqlite"                 # or "files"
 listing = "job_listing.json"     # any file name can be changed here
 ```
 
+### Saved searches
+
+A search worth running is usually worth running again. Save it in `applicant.toml`
+under a name, using the long flag names (`--posted-within` is `posted_within`):
+
+```toml
+[searches.ai-ml]
+keywords = "ai ml engineer"
+location = "India"
+source = ["naukri", "linkedin"]
+experience = 3
+title = ["ai", "ml", "machine learning", "data scientist"]
+posted_within = 14
+```
+
+```
+uv run applicant search --saved ai-ml                 # the twelve flags, by name
+uv run applicant search --saved ai-ml -t "nlp"        # a flag given here wins
+uv run applicant search --list-saved
+```
+
+A misspelt field, or a board that doesn't exist, is reported when the file is read,
+not ignored.
+
 API keys are read from the environment (`CRUNCHBASE_API_KEY`, `TRACXN_API_KEY`) or
 their flags only. A config file that sets one is refused, because config files get
 committed.
