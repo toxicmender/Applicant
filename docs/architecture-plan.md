@@ -287,19 +287,25 @@ src/applicant/
 class JobSource(Protocol):
     name: str
     capability: Capability
+
     def search(self, query: JobQuery) -> list[Job]: ...
     def close(self) -> None: ...
 
-class DescribesPostings(Protocol):          # optional, checked with isinstance
+
+class DescribesPostings(Protocol):  # optional, checked with isinstance
     def describe(self, job: Job) -> str | None: ...
+
 
 class ReviewSource(Protocol):
     name: str
+
     def fetch(self, company: str, *, max_reviews: int) -> CompanyRating: ...
+
 
 class FinancialsSource(Protocol):
     name: str
-    def accepts(self, company: str) -> bool: ...   # replaces 'tracxn.com' in company
+
+    def accepts(self, company: str) -> bool: ...  # replaces 'tracxn.com' in company
     def fetch(self, company: str, *, max_rounds: int) -> CompanyFinancials: ...
 ```
 
@@ -366,17 +372,20 @@ quietly never applies.
 class Verdict:
     keep: bool
     flag: Flag | None = None
-    reason: str | None = None          # for the debug "why dropped" line
+    reason: str | None = None  # for the debug "why dropped" line
+
 
 class Check(Protocol):
-    field: Field                        # lets `skip`/capability logic be generic
+    field: Field  # lets `skip`/capability logic be generic
+
     def __call__(self, job: Job, ctx: FilterContext) -> Verdict: ...
+
 
 @dataclass(frozen=True)
 class FilterContext:
     today: date
-    rates: RateSnapshot                 # already-fetched FX/PPP, no I/O
-    policy: SilencePolicy               # keep_unknown / keep_unpublished
+    rates: RateSnapshot  # already-fetched FX/PPP, no I/O
+    policy: SilencePolicy  # keep_unknown / keep_unpublished
 ```
 
 `JobFilter` stays as the public, user-facing configuration. It compiles to a list
@@ -554,6 +563,7 @@ to `linkedin_apply.py`, behind an `Applier` port:
 ```python
 class Applier(Protocol):
     source: str
+
     def apply(self, jobs: list[Job], *, dry_run: bool) -> list[ApplicationResult]: ...
 ```
 
