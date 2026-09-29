@@ -55,8 +55,9 @@ STAMP = '%Y%m%d-%H%M%S'
 # redacted too; httpx logs every request at INFO, which is only wanted at -vv
 THIRD_PARTY = ('httpx', 'httpcore')
 
-# C0 controls and DEL, minus tab; newlines are what forge a log line
-CONTROL = re.compile(r'[\x00-\x08\x0a-\x1f\x7f]')
+# C0 controls, DEL and the C1 controls, minus tab: newlines are what forge a
+# log line, and ESC or the 8-bit CSI (\x9b) what rewrites a terminal
+CONTROL = re.compile(r'[\x00-\x08\x0a-\x1f\x7f-\x9f]')
 
 _secrets: set[str] = set()
 

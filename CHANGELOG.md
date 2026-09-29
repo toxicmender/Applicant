@@ -88,6 +88,12 @@ that removes what those phases kept for compatibility.
 - A history that cannot be saved stops `financials` once, instead of being
   reported as each source failing in turn.
 - `applicant jobs` keeps what it scrapes in the store `--store` names.
+- Indeed reports a page that changed as `Unparseable` (exit 5), not `Blocked`
+  (exit 3), and a later page that no longer reads keeps the pages before it.
+- LinkedIn titles decode every HTML entity (`&#39;`, `&quot;`), so they match
+  title filters and the same job on other boards.
+- A relative `data_dir` in `applicant.toml` is relative to that file, not to
+  wherever the command is run from.
 
 ### Security
 
@@ -101,6 +107,9 @@ that removes what those phases kept for compatibility.
 - Code that acts on your LinkedIn account is one module that a search never loads,
   and nothing is submitted without confirmation.
 - API keys are refused in `applicant.toml`.
+- Scraped text printed on the terminal is escaped like the log, so a posting
+  cannot rewrite the list `apply` asks you to confirm; the log escapes C1
+  control characters too.
 
 ## [0.1.0]
 

@@ -361,6 +361,11 @@ store = "sqlite"                 # or "files"
 listing = "job_listing.json"     # any file name can be changed here
 ```
 
+A relative `data_dir` in `applicant.toml` is relative to that file, so
+`data_dir = "data"` means the `data` folder beside it wherever you run from. On
+the command line (`--data-dir`, `APPLICANT_HOME`) it is relative to the current
+directory, as paths there usually are.
+
 ### Saved searches
 
 A search worth running is usually worth running again. Save it in `applicant.toml`

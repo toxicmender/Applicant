@@ -43,7 +43,8 @@ TAGS = re.compile(r'<[^>]+>')
 def _clean(value):
     if value is None:
         return None
-    return TAGS.sub('', value).replace('&amp;', '&').strip() or None
+    # every entity, not just &amp;: titles carry &#39; and &quot; as often
+    return unescape(TAGS.sub('', value)).strip() or None
 
 
 class LinkedInGuest:

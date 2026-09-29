@@ -7,7 +7,7 @@ import sys
 
 from ..log import get
 from .common import add_filters, file_arg, filters_from
-from .render import terminal
+from .render import shown, terminal
 
 logger = get(__name__)
 
@@ -67,7 +67,10 @@ def run(args) -> int:
             return True
         print('about to submit {} application(s) in your name:'.format(len(targets)))
         for job in targets:
-            print('  {} - {} ({})'.format(job.title, job.company or '?', job.url))
+            # scraped text, escaped: nothing in a posting may rewrite this list
+            print(
+                '  {} - {} ({})'.format(shown(job.title), shown(job.company or '?'), shown(job.url))
+            )
         if not sys.stdin.isatty():
             print('no terminal to confirm on: nothing submitted. Pass --yes to submit anyway.')
             declined.extend(targets)

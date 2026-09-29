@@ -16,7 +16,7 @@ from urllib.parse import urlencode
 from ..domain.dates import epoch_to_iso
 from ..domain.job import Job
 from ..domain.places import country_for
-from ..errors import Blocked, SourceError
+from ..errors import Blocked, SourceError, Unparseable
 from ..infra.browser import browser, looks_blocked
 from ..infra.http import USER_AGENT, HttpClient
 from . import CAPABILITIES
@@ -115,7 +115,18 @@ class Indeed:
         while len(jobs) < limit:
             url = self._url(keywords, location, start, posted_within_days)
             html = self._html(url)
-            results = self._results(html)
+            try:
+                results = self._results(html)
+            except Unparseable as error:
+                if not start:
+                    raise
+                # a later page that did not read is not a reason to lose the
+                # ones that did
+                logger.warning(
+                    f'indeed: page at offset {start} unreadable ({error}); '
+                    f'keeping the {len(jobs)} job(s) already read'
+                )
+                break
             if not results:
                 break
 
@@ -177,13 +188,15 @@ class Indeed:
             return page.content()
 
     def _results(self, html):
+        # a bot check has been ruled out by now (_html_via_browser raises
+        # Blocked for one), so a page without the payload is a page that changed
         match = MOSAIC.search(html)
         if not match:
-            raise Blocked('no job cards found in the Indeed response')
+            raise Unparseable('no job cards found in the Indeed response')
         try:
             payload = json.loads(match.group(1))
         except ValueError:
-            raise Blocked('Indeed job card payload was not valid JSON') from None
+            raise Unparseable('Indeed job card payload was not valid JSON') from None
         model = (payload.get('metaData') or {}).get('mosaicProviderJobCardsModel') or {}
         return model.get('results') or []
 

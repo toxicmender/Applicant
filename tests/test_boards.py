@@ -19,7 +19,7 @@ from applicant.boards.indeed import Indeed, host_for
 from applicant.boards.linkedin import LinkedInGuest
 from applicant.boards.naukri import Naukri, search_url
 from applicant.domain.job import Job, experience_from
-from applicant.errors import Blocked
+from applicant.errors import Blocked, Unparseable
 from applicant.search import SOURCES
 
 
@@ -134,15 +134,18 @@ class IndeedParseTest(unittest.TestCase):
         results = self.client._results(mosaic_html([self.ITEM]))
         self.assertEqual(len(results), 1)
 
-    def test_a_page_without_the_blob_reads_as_blocked(self):
-        with self.assertRaises(Blocked):
-            self.client._results('<html>Access Denied</html>')
+    # A bot check is caught before this (_html_via_browser raises Blocked), so a
+    # page that reaches here without the payload is one that changed: exit 5,
+    # "file a bug" - not exit 3, "retry later"
+    def test_a_page_without_the_blob_reads_as_unparseable(self):
+        with self.assertRaises(Unparseable):
+            self.client._results('<html><body>Jobs, redesigned</body></html>')
 
-    def test_a_malformed_blob_reads_as_blocked(self):
+    def test_a_malformed_blob_reads_as_unparseable(self):
         html = (
             '<script>window.mosaic.providerData["mosaic-provider-jobcards"] = {not json};</script>'
         )
-        with self.assertRaises(Blocked):
+        with self.assertRaises(Unparseable):
             self.client._results(html)
 
 
@@ -188,6 +191,28 @@ class IndeedSearchTest(unittest.TestCase):
         jobs = self.client(handler).search('python', limit=25)
         self.assertEqual(len(jobs), 5)
         self.assertEqual(len(calls), 2, 'one page of results, one that added nothing')
+
+    def unreadable_after(self, pages: int):
+        """A board whose results stop parsing after `pages` good pages."""
+
+        def handler(request):
+            start = int(dict(request.url.params).get('start', 0))
+            if start // 10 < pages:
+                return httpx.Response(200, text=mosaic_html(self.items(start, 10)))
+            return httpx.Response(200, text='<html><body>Jobs, redesigned</body></html>')
+
+        client = self.client(handler)
+        # the browser retry sees the same changed page, and no bot check
+        client._html_via_browser = lambda url: '<html><body>Jobs, redesigned</body></html>'
+        return client
+
+    def test_a_later_page_that_changed_keeps_the_pages_already_read(self):
+        jobs = self.unreadable_after(1).search('python', limit=25)
+        self.assertEqual([job.id for job in jobs], ['k{}'.format(n) for n in range(10)])
+
+    def test_a_first_page_that_changed_is_unparseable(self):
+        with self.assertRaises(Unparseable):
+            self.unreadable_after(0).search('python', limit=25)
 
     def test_partial_overlap_between_pages_still_advances(self):
         def handler(request):
@@ -345,6 +370,25 @@ class LinkedInGuestCardTest(unittest.TestCase):
         job = self.client._card_to_job(self.CARD)
         assert job is not None
         self.assertEqual(job.company, 'Acme & Co')
+
+    def test_every_entity_is_decoded_not_just_the_ampersand(self):
+        """So the title matches, and fingerprints like, Indeed's copy of it."""
+        from applicant.domain.dedupe import fingerprint
+
+        card = self.CARD.replace(
+            'Senior Python Developer', 'Women&#39;s Health &quot;ML&quot; Engineer'
+        )
+        job = self.client._card_to_job(card)
+        assert job is not None
+        self.assertEqual(job.title, 'Women\'s Health "ML" Engineer')
+        indeed = Job(
+            source='indeed',
+            id='k1',
+            title='Women\'s Health "ML" Engineer',
+            company='Acme & Co',
+            location='Bengaluru',
+        )
+        self.assertEqual(fingerprint(job.to_dict()), fingerprint(indeed.to_dict()))
 
     def test_query_strings_are_dropped_from_the_link(self):
         job = self.client._card_to_job(self.CARD)

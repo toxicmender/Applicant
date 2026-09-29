@@ -81,7 +81,8 @@ class SettingsTest(TempDir):
         config = self.root / 'applicant.toml'
         config.write_text('data_dir = "from-file"\nstore = "files"\n', encoding='utf-8')
         from_file = self.load(config=str(config))
-        self.assertEqual((from_file.data_dir, from_file.store), (Path('from-file'), 'files'))
+        # relative in the file: beside the file
+        self.assertEqual((from_file.data_dir, from_file.store), (self.root / 'from-file', 'files'))
 
         env = {'APPLICANT_HOME': 'from-env', 'APPLICANT_STORE': 'sqlite'}
         from_env = self.load(config=str(config), environ=env)
@@ -89,6 +90,35 @@ class SettingsTest(TempDir):
 
         from_flags = self.load(config=str(config), environ=env, data_dir='from-flag')
         self.assertEqual(from_flags.data_dir, Path('from-flag'))
+
+    def test_a_relative_data_dir_in_the_file_is_beside_the_file(self):
+        """The same folder whichever directory the command runs from."""
+        conf = self.root / 'conf'
+        conf.mkdir()
+        (conf / 'applicant.toml').write_text('data_dir = "data"\n', encoding='utf-8')
+        elsewhere = self.root / 'elsewhere'
+        elsewhere.mkdir()
+        cwd = os.getcwd()
+        os.chdir(elsewhere)
+        self.addCleanup(os.chdir, cwd)
+        settings = self.load(config=str(conf / 'applicant.toml'))
+        self.assertEqual(settings.data_dir, conf / 'data')
+
+    def test_a_relative_data_dir_on_the_command_line_is_the_cwd_s(self):
+        config = self.root / 'applicant.toml'
+        config.write_text('data_dir = "data"\n', encoding='utf-8')
+        self.assertEqual(self.load(config=str(config), data_dir='mine').data_dir, Path('mine'))
+        env = {'APPLICANT_HOME': 'theirs'}
+        self.assertEqual(self.load(config=str(config), environ=env).data_dir, Path('theirs'))
+
+    def test_absolute_and_home_data_dirs_in_the_file_are_kept(self):
+        config = self.root / 'applicant.toml'
+        config.write_text('data_dir = "/srv/applicant"\n', encoding='utf-8')
+        self.assertEqual(self.load(config=str(config)).data_dir, Path('/srv/applicant'))
+        config.write_text('data_dir = "~/applicant"\n', encoding='utf-8')
+        self.assertEqual(
+            self.load(config=str(config)).data_dir, Path(os.path.expanduser('~/applicant'))
+        )
 
     def test_keys_are_refused_in_the_config_file(self):
         config = self.root / 'applicant.toml'

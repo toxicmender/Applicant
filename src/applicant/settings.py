@@ -12,7 +12,9 @@ Every module used to pick its own default path: `job_listing.json` here,
 4. flags - `--data-dir`, `--store`, and each command's own file flags
 
 A relative file name is relative to `data_dir`, so moving your data is one
-setting. API keys come from the environment or flags only - never from the
+setting. A relative `data_dir` is relative to the file that sets it - so
+`applicant.toml` can say `data_dir = "data"` and mean the folder beside it - or,
+from `--data-dir` or `APPLICANT_HOME`, to the working directory. API keys come from the environment or flags only - never from the
 config file, which is the kind of thing that ends up committed - and are held
 as `SecretStr`, so a stray `repr()` cannot put one in a log.
 
@@ -216,6 +218,15 @@ def _read_config(path: Path, required: bool) -> dict[str, Any]:
             f'{path} sets {", ".join(sorted(secrets))}: keys belong in the environment '
             '(CRUNCHBASE_API_KEY / TRACXN_API_KEY), not in a file that may be committed'
         )
+    # a relative data_dir in a file means beside that file, wherever the command
+    # is run from; on the command line it means the working directory, as usual
+    data_dir = document.get('data_dir')
+    if (
+        isinstance(data_dir, str)
+        and not data_dir.startswith('~')
+        and not Path(data_dir).is_absolute()
+    ):
+        document['data_dir'] = str(path.parent / data_dir)
     return document
 
 

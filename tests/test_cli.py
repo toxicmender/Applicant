@@ -279,6 +279,67 @@ class RatesCommandTest(unittest.TestCase):
         self.assertIn('not cached - fetched on demand', output)
 
 
+class EscapedOutputTest(unittest.TestCase):
+    """Scraped text cannot rewrite what the terminal shows - above all the list
+    `apply` asks you to confirm."""
+
+    HOSTILE = 'Legit Role\r\x1b[2K\x1b[1Afake line\n\x9b31m'
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.root = Path(self._dir.name)
+
+    def assert_inert(self, text: str) -> None:
+        for raw in ('\r', '\x1b', '\x9b'):
+            self.assertNotIn(raw, text)
+
+    def test_the_confirmation_list_is_escaped(self):
+        listing = str(self.root / 'jobs.json')
+        save_jobs(
+            [
+                Job(
+                    source='linkedin',
+                    id='1',
+                    title=self.HOSTILE,
+                    company='Acme\x1b]0;owned\x07',
+                    url='https://www.linkedin.com/jobs/view/1',
+                )
+            ],
+            listing,
+        )
+        out = io.StringIO()
+        with (
+            mock.patch('sys.stdin.isatty', return_value=False),
+            redirect_stdout(out),
+            redirect_stderr(io.StringIO()),
+        ):
+            main(['apply', '-i', listing, '--log', str(self.root / 'a.csv'), '--no-log-file'])
+        listed = [line for line in out.getvalue().splitlines() if line.startswith('  Legit')]
+        self.assertEqual(len(listed), 1, 'the posting is one line of the list, whatever it holds')
+        self.assert_inert(out.getvalue())
+        self.assertIn('\\x1b[2K', listed[0])
+
+    def test_a_rating_is_escaped(self):
+        from applicant.cli.render import Renderer
+        from applicant.reviews.models import CompanyRating
+        from applicant.services.events import RatingFetched
+
+        rating = CompanyRating(
+            source='ambitionbox', company=self.HOSTILE, url='https://x', overall_rating=4.0
+        )
+        out = io.StringIO()
+        with redirect_stdout(out):
+            Renderer()(RatingFetched('ambitionbox', rating))
+        self.assertEqual(len(out.getvalue().splitlines()), 1)
+        self.assert_inert(out.getvalue())
+
+    def test_the_log_escapes_c1_controls_too(self):
+        from applicant.log import escape
+
+        self.assertEqual(escape('a\x9bb'), 'a\\x9bb')
+
+
 class JobsCommandTest(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()

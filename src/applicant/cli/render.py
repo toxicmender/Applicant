@@ -7,6 +7,7 @@ answered, which one refused - is logging, on stderr, and not repeated here.
 
 from __future__ import annotations
 
+from .. import log
 from ..interaction import Interaction, Terminal
 from ..services.events import (
     Event,
@@ -15,6 +16,17 @@ from ..services.events import (
     RatingFetched,
     SourceFailed,
 )
+
+
+def shown(value: object) -> str:
+    """Scraped text as it may appear on a terminal: one line, no escapes.
+
+    A job title or company name is whatever a board served. Printed raw, a
+    carriage return or an ANSI sequence in it could rewrite the lines around
+    it - including the list `apply` asks you to confirm. The same escaping the
+    log applies, and the same masking.
+    """
+    return log.escape(log.redact(str(value)))
 
 
 def terminal() -> Interaction:
@@ -49,7 +61,7 @@ class Renderer:
         print(
             '{}: {} - {} out of 5 from {} ratings ({} reviews fetched)'.format(
                 event.source,
-                rating.company,
+                shown(rating.company),
                 rating.overall_rating,
                 rating.review_count,
                 len(rating.reviews),
@@ -60,22 +72,26 @@ class Renderer:
         from ..financials.tracker import describe_round
 
         financials = event.financials
-        print('{}: {} - {}'.format(event.source, financials.company, financials.summary()))
+        print(
+            '{}: {} - {}'.format(
+                event.source, shown(financials.company), shown(financials.summary())
+            )
+        )
         for change in event.changes:
-            print('  changed: {}'.format(change))
+            print('  changed: {}'.format(shown(change)))
         for note in financials.notes:
-            print('  note: {}'.format(note))
+            print('  note: {}'.format(shown(note)))
         if self.rounds:
             for item in financials.rounds:
-                print('  - {}'.format(describe_round(item)))
+                print('  - {}'.format(shown(describe_round(item))))
 
     def _failure(self, event: SourceFailed) -> None:
         if not self.failures:
             return
         if event.subject:
-            print('{}: {}: {}'.format(event.source, event.subject, event.error))
+            print('{}: {}: {}'.format(event.source, shown(event.subject), shown(event.error)))
         else:
-            print('{}: {}'.format(event.source, event.error))
+            print('{}: {}'.format(event.source, shown(event.error)))
 
     def _factor(self, event: FactorFetched) -> None:
         if event.skipped:
