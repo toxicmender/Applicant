@@ -129,6 +129,18 @@ class SalaryFilterTest(unittest.TestCase):
         self.assertFalse(keep)
         self.assertEqual(flags, ['salary-currency-mismatch'])
 
+    def test_the_currency_can_be_typed_in_any_case(self):
+        """'inr' is INR: a posting in rupees is not a currency mismatch."""
+        keep, flags = JobFilter(
+            min_salary=1_000_000,
+            currency='inr',
+            salary_basis='strict',
+            keep_unknown=False,
+            rates=OFFLINE,
+        ).matches(job(salary='₹12,00,000 - ₹15,00,000 a year'))
+        self.assertTrue(keep)
+        self.assertEqual(flags, [])
+
     def test_an_unconvertible_currency_is_flagged_not_invented(self):
         # ISK is in neither the PPP seed nor an offline FX table
         keep, flags = JobFilter(min_salary=1_000_000, currency='ISK', rates=OFFLINE).matches(

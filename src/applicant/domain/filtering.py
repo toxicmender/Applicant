@@ -261,6 +261,11 @@ class JobFilter:
     # drop the second and keep the first, rather than deleting whole boards.
     keep_unpublished: bool = False
 
+    def __post_init__(self) -> None:
+        # currency codes are compared as parsed ('INR'), whatever was typed
+        if self.currency:
+            self.currency = self.currency.strip().upper()
+
     def checks(self) -> list[Check]:
         """The criteria this filter sets, in the order they are applied."""
         found: list[Check] = []

@@ -75,6 +75,6 @@ def run(args) -> int:
                 print('session saved to {}'.format(saved))
 
         listing = file_arg(args, 'jobs', 'listing')
-        jobs = operator.scrape_jobs(listing)
+        jobs = operator.scrape_jobs(listing, backend=args.settings.store)
     print('scraped {} recommended jobs into {}'.format(len(jobs), listing))
     return 0

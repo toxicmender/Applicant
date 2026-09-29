@@ -82,6 +82,12 @@ that removes what those phases kept for compatibility.
   not as a crash, and a schema migration lands whole or not at all.
 - `applicant jobs` with an expired LinkedIn session says to rerun with
   `--overwrite`, instead of failing on the scrape.
+- Easy Apply counts an application only once LinkedIn confirms it; a form it
+  refused is left for review instead of being logged as applied.
+- `--currency` is read in any case: `inr` is INR.
+- A history that cannot be saved stops `financials` once, instead of being
+  reported as each source failing in turn.
+- `applicant jobs` keeps what it scrapes in the store `--store` names.
 
 ### Security
 

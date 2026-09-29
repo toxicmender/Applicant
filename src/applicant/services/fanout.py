@@ -14,7 +14,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
-from ..errors import SourceError
+from ..errors import ApplicantError, SourceError
 from .events import Emit, SourceFailed, ignore
 
 logger = logging.getLogger(__name__)
@@ -45,7 +45,9 @@ def fan_out(
 
     `subject` names what was being fetched ("zomato"), for the log line and
     the event. KeyboardInterrupt and SystemExit are not caught: stopping the
-    run is the person's decision, not a source failing.
+    run is the person's decision, not a source failing. Nor is an
+    `ApplicantError` that is not a `SourceError` - a `StoreError`, a
+    `ConfigError`: that is the whole run's problem, not the source's.
     """
     outcomes: list[Outcome[R]] = []
     about = f' for {subject!r}' if subject else ''
@@ -57,6 +59,11 @@ def fan_out(
             emit(SourceFailed(source, error, expected=True, subject=subject))
             outcomes.append(Outcome(source, error=error))
             continue
+        except ApplicantError:
+            # a store that cannot be written, a setting that does not hold: the
+            # whole run's problem, not this source's - and the next source would
+            # only meet it again
+            raise
         except Exception as error:
             logger.error(f'{source}: unexpected {type(error).__name__}{about}: {error}')
             logger.debug(f'{source}: traceback', exc_info=True)

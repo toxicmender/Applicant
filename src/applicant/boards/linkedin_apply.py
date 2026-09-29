@@ -30,7 +30,16 @@ from .linkedin import LinkedInGuest
 if TYPE_CHECKING:
     from playwright.sync_api import Page
 
+    from ..infra.store.repositories import Backend
+
 logger = logging.getLogger(__name__)
+
+# What LinkedIn shows once an application has gone through, and what it shows
+# when a form refused it. Kept here, together, because they are the first thing
+# to update when LinkedIn changes its markup.
+APPLICATION_SENT = 'text=/application (was )?(sent|submitted)/i'
+FORM_ERROR = '.artdeco-inline-feedback--error'
+CONFIRM_TIMEOUT_MS = 10_000
 
 
 class LinkedIn(LinkedInGuest):
@@ -177,9 +186,10 @@ class LinkedIn(LinkedInGuest):
 
     # -- logged in flows --------------------------------------------------
 
-    def scrape_jobs(self, filepath='job_listing.json'):
-        """Recommended jobs from the signed in Jobs page."""
-        from ..storage import save_jobs
+    def scrape_jobs(self, filepath='job_listing.json', backend: Backend = 'files'):
+        """Recommended jobs from the signed in Jobs page, merged into `filepath`
+        through the store `backend` names."""
+        from ..infra.store.repositories import listing
 
         page = self._start()
         page.goto(
@@ -223,11 +233,12 @@ class LinkedIn(LinkedInGuest):
                     company=text[1] if len(text) > 1 else None,
                     location=text[2] if len(text) > 2 else None,
                     url=url.split('?')[0] if url else None,
-                    easy_apply='Easy Apply' in card.inner_text(),
+                    # from the text already read: the card may be gone by now
+                    easy_apply=any('Easy Apply' in line for line in text),
                 )
             )
 
-        total = save_jobs(jobs, filepath)
+        total = listing(filepath, backend).save(jobs)
         logger.info(f'linkedin: {len(jobs)} recommended job(s) scraped, {total} in {filepath}')
         return jobs
 
@@ -291,14 +302,33 @@ class LinkedIn(LinkedInGuest):
         submit = page.locator('button[aria-label*="Submit application"]').first
         if submit.count():
             submit.click()
-            page.wait_for_timeout(1500)
-            logger.info(f'linkedin: applied to {item.get("title") or item["url"]} ({item["url"]})')
-            return True
+            if self._confirmed(page):
+                logger.info(
+                    f'linkedin: applied to {item.get("title") or item["url"]} ({item["url"]})'
+                )
+                return True
+            # a click is not an application: a required field, a hiccup, and
+            # LinkedIn keeps the form open. Logged as applied, it would never
+            # be offered again - so it is left for a person to finish
+            page.keyboard.press('Escape')
+            logger.warning(f'linkedin: submitted but not confirmed, left for review: {item["url"]}')
+            return False
 
         # multi step form - close it and leave this one alone
         page.keyboard.press('Escape')
         logger.info(f'linkedin: left a multi step form open for review: {item["url"]}')
         return False
+
+    def _confirmed(self, page) -> bool:
+        """Whether LinkedIn confirmed the application, rather than refused it."""
+        from playwright.sync_api import TimeoutError as PlaywrightTimeout
+
+        sent = page.locator(APPLICATION_SENT)
+        try:
+            sent.or_(page.locator(FORM_ERROR)).first.wait_for(timeout=CONFIRM_TIMEOUT_MS)
+        except PlaywrightTimeout:
+            return False
+        return sent.count() > 0
 
     # -- teardown ---------------------------------------------------------
 

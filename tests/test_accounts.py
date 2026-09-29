@@ -9,6 +9,7 @@ before anything is sent.
 from __future__ import annotations
 
 import io
+import json
 import os
 import subprocess
 import sys
@@ -254,6 +255,101 @@ class ConfirmCommandTest(TempDir):
         self.assertNotIn('about to submit', out)
         statuses = {row['id']: row['status'] for row in ApplicationLog(self.log).rows()}
         self.assertEqual(statuses['1'], 'applied')
+
+
+POSTING = {'source': 'linkedin', 'url': 'https://www.linkedin.com/jobs/view/7', 'title': 'ML'}
+
+
+class ConfirmedApplicationTest(unittest.TestCase):
+    """A click on Submit is not an application until LinkedIn says it is."""
+
+    def page(self, *, sent: bool, timed_out: bool = False) -> mock.MagicMock:
+        from playwright.sync_api import TimeoutError as PlaywrightTimeout
+
+        from applicant.boards.linkedin_apply import APPLICATION_SENT
+
+        page = mock.MagicMock()
+        located: dict[str, mock.MagicMock] = {}
+
+        def locator(selector):
+            if selector not in located:
+                found = mock.MagicMock(name=selector)
+                found.count.return_value = 1
+                found.first.count.return_value = 1
+                located[selector] = found
+            return located[selector]
+
+        page.locator.side_effect = locator
+        locator('#follow-company-checkbox').count.return_value = 0
+        sent_locator = locator(APPLICATION_SENT)
+        sent_locator.count.return_value = 1 if sent else 0
+        either = sent_locator.or_.return_value.first
+        if timed_out:
+            either.wait_for.side_effect = PlaywrightTimeout('no answer')
+        return page
+
+    def test_a_confirmed_application_counts(self):
+        page = self.page(sent=True)
+        self.assertTrue(LinkedIn(delay=0)._apply_one(page, POSTING))
+
+    def test_a_form_error_does_not_count_and_the_form_is_left_open(self):
+        page = self.page(sent=False)
+        self.assertFalse(LinkedIn(delay=0)._apply_one(page, POSTING))
+        page.keyboard.press.assert_called_with('Escape')
+
+    def test_no_answer_at_all_does_not_count(self):
+        page = self.page(sent=False, timed_out=True)
+        self.assertFalse(LinkedIn(delay=0)._apply_one(page, POSTING))
+
+
+class ScrapeJobsTest(unittest.TestCase):
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.root = Path(self._dir.name)
+
+    def card(self, job_id: str, text: str, *, once: bool = False) -> mock.MagicMock:
+        """A recommended-job card; `once` makes it leave the DOM after one read."""
+        card = mock.MagicMock()
+        if once:
+            card.inner_text.side_effect = [text, RuntimeError('element detached')]
+        else:
+            card.inner_text.return_value = text
+        card.get_attribute.return_value = job_id
+        link = card.locator.return_value.first
+        link.count.return_value = 1
+        link.get_attribute.return_value = f'/jobs/view/{job_id}/?trk=x'
+        return card
+
+    def scrape(self, backend) -> list[Job]:
+        cards = [
+            self.card('1', 'ML Engineer\nAcme\nPune\nEasy Apply', once=True),
+            self.card('2', 'Data Scientist\nBeta\nBengaluru'),
+        ]
+        page = mock.MagicMock()
+        page.url = 'https://www.linkedin.com/jobs/collections/recommended/'
+        listed = page.locator.return_value
+        listed.count.return_value = len(cards)
+        listed.nth.side_effect = lambda index: cards[index]
+        with mock.patch.object(LinkedIn, '_start', return_value=page):
+            return LinkedIn(delay=0).scrape_jobs(str(self.root / 'jobs.json'), backend=backend)
+
+    def test_a_card_that_leaves_the_dom_does_not_end_the_scrape(self):
+        jobs = self.scrape('files')
+        self.assertEqual([job.id for job in jobs], ['1', '2'])
+        self.assertEqual([job.easy_apply for job in jobs], [True, False])
+        self.assertEqual(jobs[0].url, 'https://www.linkedin.com/jobs/view/1/')
+
+    def test_the_jobs_go_through_the_store_asked_for(self):
+        from applicant.infra.store.sqlite import DB_NAME, Store
+
+        self.scrape('sqlite')
+        self.assertTrue((self.root / DB_NAME).exists())
+        # straight from the table: a read through the store would import the
+        # file, and pass whether or not the scrape wrote to the database
+        with Store(self.root / DB_NAME) as store:
+            rows = store.db.execute('SELECT payload FROM jobs ORDER BY seq').fetchall()
+        self.assertEqual([json.loads(payload)['id'] for (payload,) in rows], ['1', '2'])
 
 
 if __name__ == '__main__':

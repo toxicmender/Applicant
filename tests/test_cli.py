@@ -445,6 +445,24 @@ class FinancialsCommandTest(unittest.TestCase):
         self.run_financials('--from-jobs', listing, '-s', 'crunchbase')
         self.assertEqual(self.asked, [('crunchbase', 'Zomato Ltd.'), ('crunchbase', 'Swiggy')])
 
+    def test_a_history_that_cannot_be_saved_stops_the_run_once(self):
+        """Not blamed on Crunchbase, and not met again for every company."""
+        from applicant.errors import StoreError
+
+        err = io.StringIO()
+        with (
+            mock.patch(
+                'applicant.financials.tracker.FinancialsTracker.save',
+                side_effect=StoreError('could not write company_financials.json'),
+            ),
+            redirect_stderr(err),
+        ):
+            code, _ = self.run_financials('zomato', 'swiggy', '-s', 'crunchbase')
+        self.assertEqual(code, 1)
+        self.assertEqual(self.asked, [('crunchbase', 'zomato')])
+        self.assertIn('financials: could not write company_financials.json', err.getvalue())
+        self.assertNotIn('unexpected', err.getvalue())
+
     def test_a_named_company_is_not_fetched_again_in_another_case(self):
         listing = str(self.root / 'jobs.json')
         save_jobs(
