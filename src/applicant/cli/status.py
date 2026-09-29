@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 
 from ..log import get
 from .common import file_arg
@@ -46,6 +47,7 @@ def run(args) -> int:
 
     if args.json:
         target = settings.path(args.json)
+        os.makedirs(os.path.dirname(os.path.abspath(target)), exist_ok=True)
         with open(target, 'w', encoding='utf-8') as file:
             json.dump(status.to_dict(), file, indent=2)
         logger.info(f'status: summary written to {target}')

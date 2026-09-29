@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import sqlite3
+import tempfile
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -37,11 +38,16 @@ from ...domain.dedupe import fingerprint, key
 from ...domain.job import Job
 from ...errors import StoreError
 from ...files import read_document, write_document
-from ...storage import APPLIED_COLUMNS, ApplicationLog, plan_rows, write_rows
+from ...storage import APPLIED_COLUMNS, PROVISIONAL, ApplicationLog, plan_rows, write_rows
 
 logger = logging.getLogger(__name__)
 
 DB_NAME = 'applicant.db'
+
+# only a row with a final status stops another being logged; see storage.plan_rows
+FINAL = '(status IS NULL OR status NOT IN ({}))'.format(
+    ', '.join("'{}'".format(status) for status in sorted(PROVISIONAL))
+)
 
 # Each entry moves the schema one version on; PRAGMA user_version records how
 # far a database has come. Never edit a shipped entry - append a new one.
@@ -162,10 +168,17 @@ class Store:
     def _migrate(self) -> None:
         version = self.db.execute('PRAGMA user_version').fetchone()[0]
         for number, statements in enumerate(MIGRATIONS[version:], start=version + 1):
-            with self.db:
+            # an explicit BEGIN: sqlite3 opens no transaction of its own for
+            # DDL, and a migration must land whole or not at all
+            self.db.execute('BEGIN')
+            try:
                 for statement in statements:
                     self.db.execute(statement)
                 self.db.execute(f'PRAGMA user_version = {number}')
+            except BaseException:
+                self.db.rollback()
+                raise
+            self.db.commit()
             logger.debug(f'{self.path}: schema at version {number}')
 
     # -- which file is which collection -----------------------------------
@@ -348,7 +361,7 @@ class Store:
             return (
                 reader.execute(
                     'SELECT 1 FROM applications WHERE log = ? AND source IS ? AND source_id IS ? '
-                    'LIMIT 1',
+                    f'AND {FINAL} LIMIT 1',
                     (name, source, job_id),
                 ).fetchone()
                 is not None
@@ -358,7 +371,8 @@ class Store:
             return {
                 source
                 for (source,) in reader.execute(
-                    'SELECT DISTINCT source FROM applications WHERE log = ? AND fingerprint = ?',
+                    'SELECT DISTINCT source FROM applications WHERE log = ? AND fingerprint = ? '
+                    f'AND {FINAL}',
                     (name, mark),
                 )
             }
@@ -564,15 +578,20 @@ def _application(name: str, seq: int, row: dict) -> tuple:
 
 def _export_log(target: Path, rows: list[dict]) -> None:
     """The whole log as a CSV, written the way ApplicationLog appends it - so the
-    bytes match - but all at once, to a temporary file, then swapped in."""
-    temporary = target.with_name(f'.{target.name}.tmp')
+    bytes match - but all at once, to a temporary file, then swapped in.
+
+    The temporary file is mkstemp's: unique, so two runs cannot write into one,
+    and owner-only, so a new log is too. An existing log keeps its mode.
+    """
+    descriptor, name = tempfile.mkstemp(prefix=f'.{target.name}.', suffix='.tmp', dir=target.parent)
+    temporary = Path(name)
     try:
-        with open(temporary, 'w', encoding='utf-8-sig', newline='') as handle:
+        if target.exists():
+            os.chmod(temporary, target.stat().st_mode & 0o777)
+        with os.fdopen(descriptor, 'w', encoding='utf-8-sig', newline='') as handle:
             write_rows(handle, rows, header=True)
             handle.flush()
             os.fsync(handle.fileno())
-        if target.exists():
-            os.chmod(temporary, target.stat().st_mode & 0o777)
         os.replace(temporary, target)
     except BaseException:
         temporary.unlink(missing_ok=True)

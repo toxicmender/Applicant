@@ -608,9 +608,19 @@ class CrossBoardTest(unittest.TestCase):
 
     def test_a_later_run_does_not_apply_again_through_another_board(self):
         google, indeed, linked = self.everywhere()
-        self.apply([linked])
+        ApplicationLog(self.log).record([(linked, 'applied', 'linkedin easy apply')])
         self.apply([google, indeed])
         self.assertEqual(len(ApplicationLog(self.log).rows()), 1)
+
+    def test_a_dry_run_does_not_stand_in_for_the_outcome(self):
+        """Only an outcome blocks another row: a dry run is a rehearsal."""
+        google, indeed, linked = self.everywhere()
+        self.apply([linked])
+        self.apply([google, indeed])
+        self.assertEqual(
+            [row['status'] for row in ApplicationLog(self.log).rows()],
+            ['would_apply', 'needs_manual_apply'],
+        )
 
     def test_two_postings_from_one_board_are_two_postings(self):
         """However alike they look, the board's own id is the authority."""

@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import sqlite3
 import stat
 import tempfile
 import unittest
@@ -21,10 +22,11 @@ from unittest import mock
 from applicant import money
 from applicant.cli import main
 from applicant.domain.job import Job
-from applicant.errors import ConfigError
+from applicant.domain.ports import ApplicationResult
+from applicant.errors import ConfigError, StoreError
 from applicant.infra.store import repositories
 from applicant.infra.store.sqlite import DB_NAME, MIGRATIONS, Store
-from applicant.services.apply import easy_apply_with
+from applicant.services.apply import ApplyToJobs, easy_apply_with
 from applicant.settings import Settings
 from applicant.storage import ApplicationLog, save_jobs
 
@@ -388,6 +390,171 @@ class ConfigExitTest(TempDir):
             code = main(['status', '--config', str(self.root / 'nope.toml'), '--no-log-file'])
         self.assertEqual(code, 2)
         self.assertIn('does not exist', err.getvalue())
+
+
+# -- what the log counts as done --------------------------------------------
+
+BACKENDS: tuple[repositories.Backend, ...] = ('files', 'sqlite')
+JOB = jobs(('linkedin', '7', 'ML Engineer', 'Acme', 'https://l/7'))[0]
+
+
+class OutcomeTest(TempDir):
+    """Only an outcome stops another row: a dry run or a failure is an attempt."""
+
+    def statuses(self, backend: repositories.Backend, *steps: str) -> list[str]:
+        log = repositories.applications(str(self.root / backend / 'applied.csv'), backend)
+        for status in steps:
+            log.record([(JOB, status, status)])
+        return [row['status'] for row in log.rows()]
+
+    def test_the_real_application_is_logged_after_a_dry_run(self):
+        for backend in BACKENDS:
+            with self.subTest(backend=backend):
+                self.assertEqual(
+                    self.statuses(backend, 'would_apply', 'applied'), ['would_apply', 'applied']
+                )
+
+    def test_a_success_is_logged_after_a_failure(self):
+        for backend in BACKENDS:
+            with self.subTest(backend=backend):
+                self.assertEqual(self.statuses(backend, 'failed', 'applied'), ['failed', 'applied'])
+
+    def test_an_outcome_still_blocks_a_second_row(self):
+        for backend in BACKENDS:
+            with self.subTest(backend=backend):
+                self.assertEqual(self.statuses(backend, 'applied', 'applied'), ['applied'])
+
+    def test_the_two_backends_export_the_same_bytes(self):
+        for backend in BACKENDS:
+            self.statuses(backend, 'would_apply', 'failed', 'applied')
+        files, sqlite = (self.root / b / 'applied.csv' for b in BACKENDS)
+        # applied_at differs by the second at most; the rest must match
+        self.assertEqual(
+            [line.split(',')[1:] for line in files.read_text(encoding='utf-8-sig').splitlines()],
+            [line.split(',')[1:] for line in sqlite.read_text(encoding='utf-8-sig').splitlines()],
+        )
+
+
+class AlreadyAppliedTest(TempDir):
+    """A job the log shows as applied to is not submitted, or offered, again."""
+
+    def run_apply(self, backend: repositories.Backend, log: str) -> tuple[list, list]:
+        submitted: list = []
+        offered: list = []
+
+        class Applier:
+            source = 'linkedin'
+
+            def apply(self, jobs: list[Job], *, dry_run: bool) -> list[ApplicationResult]:
+                submitted.extend(jobs)
+                return [ApplicationResult(job, 'applied', 'test') for job in jobs]
+
+        def confirm(targets):
+            offered.extend(targets)
+            return True
+
+        other = jobs(('linkedin', '8', 'Data Scientist', 'Beta', 'https://l/8'))[0]
+        ApplyToJobs({'linkedin': Applier()}, backend=backend, confirm=confirm).run(
+            [JOB, other], log=log, dry_run=False
+        )
+        return submitted, offered
+
+    def test_an_applied_job_is_skipped(self):
+        for backend in BACKENDS:
+            with self.subTest(backend=backend):
+                log = str(self.root / backend / 'applied.csv')
+                repositories.applications(log, backend).record([(JOB, 'applied', 'earlier')])
+                submitted, offered = self.run_apply(backend, log)
+                self.assertEqual([job.id for job in submitted], ['8'])
+                self.assertEqual([job.id for job in offered], ['8'])
+
+    def test_the_same_job_applied_to_through_another_board_is_skipped(self):
+        log = str(self.root / 'applied.csv')
+        elsewhere = JOB.model_copy(update={'source': 'indeed', 'id': 'i-7'})
+        ApplicationLog(log).record([(elsewhere, 'applied', 'by hand')])
+        submitted, _ = self.run_apply('files', log)
+        self.assertEqual([job.id for job in submitted], ['8'])
+
+    def test_a_look_alike_posting_on_the_same_board_is_not_skipped(self):
+        """Two ids on one board are two postings, as in the log itself."""
+        log = str(self.root / 'applied.csv')
+        twin = JOB.model_copy(update={'id': '70'})
+        ApplicationLog(log).record([(twin, 'applied', 'earlier')])
+        submitted, _ = self.run_apply('files', log)
+        self.assertEqual(sorted(job.id for job in submitted), ['7', '8'])
+
+    def test_a_rehearsed_job_is_still_submitted(self):
+        for backend in BACKENDS:
+            with self.subTest(backend=backend):
+                log = str(self.root / backend / 'applied.csv')
+                repositories.applications(log, backend).record([(JOB, 'would_apply', 'dry run')])
+                submitted, _ = self.run_apply(backend, log)
+                self.assertEqual(sorted(job.id for job in submitted), ['7', '8'])
+
+
+class WrittenFilesTest(TempDir):
+    """New directories are made; a new application log is owner-only."""
+
+    def mode(self, path: Path) -> int:
+        return stat.S_IMODE(os.stat(path).st_mode)
+
+    def test_a_new_data_directory_is_made_on_first_write(self):
+        for backend in BACKENDS:
+            with self.subTest(backend=backend):
+                where = self.root / backend / 'not' / 'yet'
+                repositories.listing(str(where / 'jobs.json'), backend).save([JOB])
+                repositories.applications(str(where / 'applied.csv'), backend).record(
+                    [(JOB, 'applied', 'x')]
+                )
+                self.assertTrue((where / 'jobs.json').exists())
+                self.assertTrue((where / 'applied.csv').exists())
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX permissions')
+    def test_a_new_log_is_owner_only(self):
+        for backend in BACKENDS:
+            with self.subTest(backend=backend):
+                log = self.root / backend / 'applied.csv'
+                repositories.applications(str(log), backend).record([(JOB, 'applied', 'x')])
+                self.assertEqual(self.mode(log), 0o600)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX permissions')
+    def test_an_existing_log_keeps_its_mode(self):
+        for backend in BACKENDS:
+            with self.subTest(backend=backend):
+                log = self.root / backend / 'applied.csv'
+                log.parent.mkdir(parents=True)
+                ApplicationLog(str(log)).record([(JOB, 'would_apply', 'x')])
+                os.chmod(log, 0o640)
+                repositories.applications(str(log), backend).record([(JOB, 'applied', 'x')])
+                self.assertEqual(self.mode(log), 0o640)
+
+    def test_the_export_leaves_no_temporary_file(self):
+        log = self.root / 'applied.csv'
+        record = repositories.applications(str(log), 'sqlite')
+        record.record([(JOB, 'would_apply', 'x')])
+        record.record([(JOB, 'applied', 'x')])
+        self.assertEqual(sorted(p.name for p in self.root.iterdir()), [DB_NAME, 'applied.csv'])
+
+
+class AtomicMigrationTest(TempDir):
+    def test_a_failing_migration_changes_nothing(self):
+        broken = ((*MIGRATIONS[0], 'CREATE TABLE half ('),)
+        path = self.root / DB_NAME
+        with (
+            mock.patch('applicant.infra.store.sqlite.MIGRATIONS', broken),
+            self.assertRaises(StoreError),
+        ):
+            Store(path)
+        db = sqlite3.connect(path)
+        self.addCleanup(db.close)
+        self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 0)
+        self.assertEqual(
+            db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall(), []
+        )
+        db.close()
+        # and the real schema then applies cleanly
+        with Store(path) as store:
+            self.assertEqual(store.db.execute('PRAGMA user_version').fetchone()[0], len(MIGRATIONS))
 
 
 if __name__ == '__main__':

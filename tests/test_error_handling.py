@@ -80,6 +80,15 @@ class LastResortHandlerTest(TempDir):
         self.assertIn('status failed unexpectedly: RuntimeError: disk on fire', err)
         self.assertNotIn('Traceback', err)
 
+    def test_a_store_error_is_reported_as_itself_not_as_a_crash(self):
+        from applicant.errors import StoreError
+
+        code, _, err = self.run_main(StoreError('could not open applicant.db: read-only'))
+        self.assertEqual(code, 1)
+        self.assertIn('status: could not open applicant.db: read-only', err)
+        self.assertNotIn('unexpectedly', err)
+        self.assertEqual(len(err.strip().splitlines()), 1)
+
     def test_the_traceback_still_reaches_the_debug_log(self):
         path = str(self.root / 'run.log')
         with (

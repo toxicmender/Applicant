@@ -73,13 +73,23 @@ that removes what those phases kept for compatibility.
   hard-coded its file names. Each file and profile flag now defaults to it.
 - `financials NAME --from-jobs` fetched a company twice when the listing spelt
   it in another case.
+- A dry run (`would_apply`) or a failure (`failed`) in the application log no
+  longer stops the real outcome from being logged later, and a job already
+  logged as `applied` is not submitted, or offered for confirmation, again.
+- A data directory that does not exist yet is created on first write, with
+  either store.
+- A database or settings error inside a command is reported as what it is,
+  not as a crash, and a schema migration lands whole or not at all.
+- `applicant jobs` with an expired LinkedIn session says to rerun with
+  `--overwrite`, instead of failing on the scrape.
 
 ### Security
 
 - Log files are owner-only, API keys are masked, and scraped text is escaped
   against log forging, in the log file and on the console alike. The logging module
   that did this had not been wired in.
-- `applicant.db` and every exported file are owner-only.
+- `applicant.db` and every file applicant creates are owner-only, including a
+  new `applied_jobs.csv` on either store.
 - The LinkedIn session saved by `applicant jobs` (`cookies.json`) is owner-only,
   as other saved sessions already were, and an older, looser one is tightened.
 - Code that acts on your LinkedIn account is one module that a search never loads,

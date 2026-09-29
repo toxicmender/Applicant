@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from ..log import get
@@ -50,8 +51,14 @@ def run(args) -> int:
     with LinkedIn(headless=not args.show, interaction=terminal()) as operator:
         if fp.exists() and not fp.is_dir() and not args.overwrite:
             logger.info(f'jobs: restoring the LinkedIn session from {fp}')
-            if operator.restore_session(fp):
-                print('session restored from {}'.format(fp))
+            if not operator.restore_session(fp):
+                print(
+                    'the LinkedIn session in {} has expired or is unusable; '
+                    'rerun with --overwrite to sign in again'.format(fp),
+                    file=sys.stderr,
+                )
+                return 1
+            print('session restored from {}'.format(fp))
         else:
             # the credentials go to the browser and nowhere else - never to a log
             logger.info(f'jobs: signing in to LinkedIn, session to be saved at {fp}')

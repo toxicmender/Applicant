@@ -279,6 +279,30 @@ class RatesCommandTest(unittest.TestCase):
         self.assertIn('not cached - fetched on demand', output)
 
 
+class JobsCommandTest(unittest.TestCase):
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.root = Path(self._dir.name)
+
+    def test_an_expired_session_says_how_to_sign_in_again_and_stops(self):
+        cookies = self.root / 'cookies.json'
+        cookies.write_text('{"cookies": []}', encoding='utf-8')
+        operator = mock.MagicMock()
+        operator.restore_session.return_value = False
+        err = io.StringIO()
+        with (
+            mock.patch('applicant.boards.linkedin_apply.LinkedIn') as linkedin,
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(err),
+        ):
+            linkedin.return_value.__enter__.return_value = operator
+            code = main(['jobs', '-c', str(cookies), '--no-log-file', '--store', 'files'])
+        self.assertEqual(code, 1)
+        self.assertIn('rerun with --overwrite', err.getvalue())
+        operator.scrape_jobs.assert_not_called()
+
+
 class ApplyCommandTest(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()

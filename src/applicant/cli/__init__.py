@@ -20,7 +20,15 @@ import argparse
 import sys
 
 from .. import __version__, log, money
-from ..errors import AuthFailed, Blocked, ConfigError, NotFound, SourceError, Unparseable
+from ..errors import (
+    ApplicantError,
+    AuthFailed,
+    Blocked,
+    ConfigError,
+    NotFound,
+    SourceError,
+    Unparseable,
+)
 from ..log import QUIET, configure, default_file, get
 from ..settings import Settings
 from . import apply, financials, jobs, rates, reviews, search, status
@@ -154,6 +162,11 @@ def main(argv: list[str] | None = None) -> int:
     except SourceError as error:
         logger.error(f'{args.command}: {type(error).__name__}: {error}')
         return exit_code_for(error)
+    # a store that cannot be written, a setting that does not hold: expected
+    # failures with a message that says what to fix, not bugs to trace
+    except ApplicantError as error:
+        logger.error(f'{args.command}: {error}')
+        return 1
     except Exception as error:
         logger.critical(
             f'{args.command} failed unexpectedly: {type(error).__name__}: {error} '

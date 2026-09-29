@@ -12,6 +12,7 @@ import csv
 import logging
 import os
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import IO
 
@@ -46,6 +47,44 @@ APPLIED_COLUMNS = [
 
 # what `status` may hold in applied_jobs.csv
 STATUSES = ('applied', 'needs_manual_apply', 'would_apply', 'failed')
+# rows that record an attempt rather than an outcome: a dry run, or a failure.
+# They stay in the log as history, but do not stop a later run's outcome for
+# the same posting from being recorded
+PROVISIONAL = frozenset({'would_apply', 'failed'})
+
+
+def is_final(row: dict) -> bool:
+    return row.get('status') not in PROVISIONAL
+
+
+@dataclass(frozen=True)
+class Applied:
+    """What a log says has been applied to already, by the rules `plan_rows`
+    logs by: the posting's board id, or the same job applied to through another
+    board. (Two ids on one board are two postings, however alike they look.)"""
+
+    keys: set[tuple[str | None, str | None]] = field(default_factory=set)
+    # fingerprint -> the boards it was applied to through
+    boards: dict[str, set[str | None]] = field(default_factory=dict)
+
+    @classmethod
+    def from_rows(cls, rows: Iterable[dict]) -> Applied:
+        applied = cls()
+        for row in rows:
+            if row.get('status') != 'applied':
+                continue
+            applied.keys.add((row.get('source'), row.get('id')))
+            mark = fingerprint(row)
+            if mark:
+                applied.boards.setdefault(mark, set()).add(row.get('source'))
+        return applied
+
+    def covers(self, job: Job) -> bool:
+        if (job.source, job.id) in self.keys:
+            return True
+        mark = fingerprint(job.to_dict())
+        return bool(mark and self.boards.get(mark, set()) - {job.source})
+
 
 # A spreadsheet runs any cell starting with one of these as a formula, and the
 # log is full of text scraped from job boards: a posting titled
@@ -141,7 +180,8 @@ def plan_rows(
     logged under its board's id is skipped; so is the same job logged from
     another board. Two ids on the *same* board are two postings: there the id is
     authoritative, and collapsing them would throw away a posting the board
-    thinks is real.
+    thinks is real. Only rows with a final status count: a `would_apply` or
+    `failed` row does not stop the real outcome being recorded later.
     """
     batch_seen: set[tuple[str | None, str | None]] = set()
     batch_boards: dict[str, set[str | None]] = {}
@@ -213,7 +253,7 @@ class ApplicationLog:
 
     def record(self, entries: Iterable[tuple[Job, str, str]]) -> int:
         """entries: iterable of (job, status, note). Returns rows written."""
-        rows = self.rows()
+        rows = [row for row in self.rows() if is_final(row)]
         seen = {(row.get('source'), row.get('id')) for row in rows}
         boards_of: dict[str, set[str | None]] = {}
         for row in rows:
@@ -231,11 +271,18 @@ class ApplicationLog:
             return 0
 
         is_new = not os.path.exists(self.path) or os.path.getsize(self.path) == 0
+        os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
+        # created owner-only, like every file applicant writes; an existing
+        # file keeps the mode it has
+        descriptor = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         # utf-8-sig so Sheets and Excel both read the currency symbols correctly
-        with open(self.path, 'a', encoding='utf-8-sig', newline='') as handle:
+        with os.fdopen(descriptor, 'a', encoding='utf-8-sig', newline='') as handle:
             write_rows(handle, fresh, header=is_new)
         logger.info(f'{self.path}: recorded {len(fresh)} application(s)')
         return len(fresh)
+
+    def applied(self) -> Applied:
+        return Applied.from_rows(self.rows())
 
     def rows(self) -> list[dict[str, str]]:
         """Everything recorded so far, in the order it was written."""

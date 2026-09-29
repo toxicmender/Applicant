@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Literal, Protocol
 
 from ...domain.job import Job
-from ...storage import ApplicationLog, jobs_from, load_jobs, save_jobs
+from ...storage import ApplicationLog, Applied, jobs_from, load_jobs, save_jobs
 from .sqlite import DB_NAME, Store
 
 Backend = Literal['files', 'sqlite']
@@ -39,6 +39,8 @@ class Applications(Protocol):
     def rows(self) -> list[dict]: ...
 
     def counts(self) -> dict[str, int]: ...
+
+    def applied(self) -> Applied: ...
 
 
 class FileListing:
@@ -86,6 +88,9 @@ class StoreApplications:
             return []
         with Store.beside(self.path) as store:
             return store.application_rows(self.path)
+
+    def applied(self) -> Applied:
+        return Applied.from_rows(self.rows())
 
     def counts(self) -> dict[str, int]:
         if _nothing_there(self.path):

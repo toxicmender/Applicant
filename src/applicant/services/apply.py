@@ -147,11 +147,18 @@ class ApplyToJobs:
         if filters is not None:
             jobs = select(jobs, filters)
 
+        record = applications(log, self.backend)
+        # applied to on an earlier run: never submitted, or offered, twice
+        done = record.applied()
         entries: list[Entry] = []
         targets: dict[str, list[Job]] = {}
+        already = 0
 
         for job in dedupe.one_per_job(jobs):
             if job.url and job.source in self.appliers:
+                if done.covers(job):
+                    already += 1
+                    continue
                 targets.setdefault(job.source, []).append(job)
             else:
                 entries.append(
@@ -162,6 +169,8 @@ class ApplyToJobs:
                     )
                 )
 
+        if already:
+            logger.info(f'apply: {already} job(s) already applied to in {log}; skipped')
         waiting = [job for batch in targets.values() for job in batch]
         if waiting and not dry_run and self.confirm is not None and not self.confirm(waiting):
             logger.warning(f'apply: {len(waiting)} application(s) not submitted: not confirmed')
@@ -171,7 +180,7 @@ class ApplyToJobs:
         for source, batch in targets.items():
             entries.extend(_apply_isolated(self.appliers[source], source, batch, dry_run))
 
-        written = applications(log, self.backend).record(entries)
+        written = record.record(entries)
         logger.info(
             '{} new rows in {} ({} already recorded)'.format(written, log, len(entries) - written)
         )
