@@ -133,7 +133,7 @@ class Indeed:
             before = len(jobs)
             for item in results:
                 job = self._to_job(item)
-                if job.id in seen:
+                if job is None or job.id in seen:
                     continue
                 seen.add(job.id)
                 jobs.append(job)
@@ -201,6 +201,10 @@ class Indeed:
         return model.get('results') or []
 
     def _to_job(self, item):
+        # a card without a title (sponsored, or half rendered) is skipped, as
+        # every other board does, rather than failing the whole search
+        if not (item.get('title') or '').strip():
+            return None
         link = item.get('link') or ''
         if link.startswith('/'):
             link = self.host + link

@@ -48,7 +48,8 @@ that removes what those phases kept for compatibility.
   database.
 - `applicant --version`.
 - Exit codes that say what ended a run: 3 blocked, 4 not found, 5 unparseable,
-  6 key refused or out of credits, 130 interrupted.
+  6 key refused or out of credits, 7 network unreachable, 130 interrupted. The
+  README has the table.
 - `applicant.services`: every command's work, callable from Python, reporting
   through events rather than printing.
 - `rates --into` to update the shipped PPP table.
@@ -94,6 +95,14 @@ that removes what those phases kept for compatibility.
   title filters and the same job on other boards.
 - A relative `data_dir` in `applicant.toml` is relative to that file, not to
   wherever the command is run from.
+- Glassdoor: the company's rating is never taken from one review's own rating,
+  paging counts each review once instead of stopping halfway, and a `--login`
+  run asks you to clear the check once, not on every page.
+- One Indeed card without a title is skipped instead of failing the search.
+- AmbitionBox keeps the rating and the reviews already read when a later page
+  of reviews fails.
+- A commit pushed by the formatting workflow gets its own CI run, so the
+  `status` check exists on it and cannot block a merge by never arriving.
 
 ### Security
 

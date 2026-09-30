@@ -8,7 +8,9 @@
 # summary and one artifact, and fails if either gate did, so it is the single
 # check to mark as required.
 #
-# Formatting is the one thing that writes, and it lives in format.yml.
+# Formatting is the one thing that writes, and it lives in format.yml. Its push
+# starts no workflow of its own, so format.yml dispatches this one for the
+# formatted commit - otherwise that head would never get a `status` check.
 name: ci
 
 on:

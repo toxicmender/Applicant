@@ -110,7 +110,16 @@ class AmbitionBoxClient:
         build_id = props.get('__buildId')
         page = 2
         while len(rating.reviews) < wanted and page <= total_pages and build_id:
-            page_props, build_id = self._fetch_page(slug, build_id, page)
+            try:
+                page_props, build_id = self._fetch_page(slug, build_id, page)
+            # a later page failing costs only the reviews still to come: the
+            # rating and the reviews already read are kept
+            except (SourceError, httpx.HTTPError, ValueError) as error:
+                logger.warning(
+                    f'ambitionbox: review page {page} failed ({type(error).__name__}: '
+                    f'{error}); keeping the {len(rating.reviews)} review(s) already read'
+                )
+                break
             items = page_props.get('reviewsData') or []
             if not items:
                 break

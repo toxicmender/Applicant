@@ -28,6 +28,7 @@ from ..errors import (
     NotFound,
     SourceError,
     Unparseable,
+    Unreachable,
 )
 from ..log import QUIET, configure, default_file, get
 from ..settings import Settings
@@ -64,6 +65,8 @@ EXIT_CODES: tuple[tuple[type[BaseException], int], ...] = (
     (NotFound, 4),
     (Unparseable, 5),
     (AuthFailed, 6),
+    # the network, through every retry: nothing wrong with the run, try again later
+    (Unreachable, 7),
 )
 
 

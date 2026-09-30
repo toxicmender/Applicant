@@ -99,8 +99,13 @@ class IndeedParseTest(unittest.TestCase):
     def setUp(self):
         self.client = Indeed(domain='https://in.indeed.com')
 
+    def job(self, item: dict) -> Job:
+        job = self.client._to_job(item)
+        assert job is not None
+        return job
+
     def test_fields_are_mapped(self):
-        job = self.client._to_job(self.ITEM)
+        job = self.job(self.ITEM)
         self.assertEqual(job.source, 'indeed')
         self.assertEqual(job.id, 'abc123')
         self.assertEqual(job.title, 'Python Developer')
@@ -110,25 +115,26 @@ class IndeedParseTest(unittest.TestCase):
         self.assertTrue(job.remote)
 
     def test_relative_links_are_made_absolute(self):
-        self.assertEqual(
-            self.client._to_job(self.ITEM).url, 'https://in.indeed.com/rc/clk?jk=abc123'
-        )
+        self.assertEqual(self.job(self.ITEM).url, 'https://in.indeed.com/rc/clk?jk=abc123')
 
     def test_epoch_becomes_an_iso_date(self):
-        self.assertEqual(self.client._to_job(self.ITEM).posted, '2025-08-03')
+        self.assertEqual(self.job(self.ITEM).posted, '2025-08-03')
 
     def test_a_sparse_item_does_not_crash(self):
-        job = self.client._to_job({'title': 'Dev'})
+        job = self.job({'title': 'Dev'})
         self.assertEqual(job.title, 'Dev')
         self.assertIsNone(job.url)
         self.assertIsNone(job.salary)
+
+    def test_an_item_without_a_title_is_no_job(self):
+        self.assertIsNone(self.client._to_job({'jobkey': 'x', 'title': '  '}))
 
     def test_employment_type_from_taxonomy_attributes(self):
         item = {
             'title': 'Dev',
             'taxonomyAttributes': [{'label': 'job-types', 'attributes': [{'label': 'Contract'}]}],
         }
-        self.assertEqual(self.client._to_job(item).employment_type, 'Contract')
+        self.assertEqual(self.job(item).employment_type, 'Contract')
 
     def test_results_are_read_out_of_the_mosaic_blob(self):
         results = self.client._results(mosaic_html([self.ITEM]))
@@ -191,6 +197,17 @@ class IndeedSearchTest(unittest.TestCase):
         jobs = self.client(handler).search('python', limit=25)
         self.assertEqual(len(jobs), 5)
         self.assertEqual(len(calls), 2, 'one page of results, one that added nothing')
+
+    def test_a_card_without_a_title_is_skipped_not_fatal(self):
+        def handler(request):
+            if dict(request.url.params).get('start'):
+                return httpx.Response(200, text=mosaic_html([]))
+            items = self.items(0, 2)
+            items.insert(1, {'jobkey': 'sponsored', 'title': None})
+            return httpx.Response(200, text=mosaic_html(items))
+
+        jobs = self.client(handler).search('python', limit=25)
+        self.assertEqual([job.id for job in jobs], ['k0', 'k1'])
 
     def unreadable_after(self, pages: int):
         """A board whose results stop parsing after `pages` good pages."""

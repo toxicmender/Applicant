@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest import mock
 
 import httpx
 
@@ -160,6 +161,19 @@ class AmbitionBoxFetchTest(unittest.TestCase):
 
         self.assertEqual(self.client(handler).fetch('tcs', max_reviews=0).reviews, [])
 
+    def test_a_later_page_failing_keeps_the_first(self):
+        def handler(request):
+            if '/_next/data/' in request.url.path:
+                return httpx.Response(500)
+            props = {**PAGE_PROPS, 'pagination': {'totalPages': 5}}
+            return httpx.Response(200, text=next_data_html(props))
+
+        with self.assertLogs('applicant.reviews.ambitionbox', 'WARNING') as logged:
+            rating = self.client(handler).fetch('tcs', max_reviews=40)
+        self.assertEqual(rating.overall_rating, 3.3)
+        self.assertEqual(len(rating.reviews), 1)
+        self.assertIn('review page 2 failed', logged.output[0])
+
     def test_retries_a_transient_503(self):
         attempts = []
 
@@ -249,6 +263,33 @@ class GlassdoorExtractTest(unittest.TestCase):
         self.assertEqual(rating.overall_rating, 4.4)
         self.assertEqual(rating.review_count, 12_345)
         self.assertEqual(rating.rating_breakdown['work_life_balance'], 4.1)
+
+    def test_a_review_s_own_rating_is_never_the_company_s(self):
+        """The walk visits the reviews first here; their ratings must not stick."""
+        payload = {
+            'employer': {'ratingOverall': 3.9, 'reviewCount': 12_345},
+            'reviews': [{'ratingOverall': 5, 'reviewCount': 3, 'pros': 'p', 'cons': 'c'}],
+        }
+        rating = self.client._build([payload], [], 'Google', '9079', 'url')
+        self.assertEqual(rating.overall_rating, 3.9)
+        self.assertEqual(rating.review_count, 12_345)
+
+    def test_the_paging_counts_each_review_once(self):
+        """A page's XHR and its embedded HTML carry the same reviews."""
+        page = {'reviews': [{'pros': str(n), 'cons': 'c', 'summary': 's'} for n in range(10)]}
+        self.assertEqual(self.client._review_count([page, page], []), 10)
+
+    def test_a_login_run_asks_the_person_once(self):
+        from applicant.interaction import Scripted
+
+        asked = Scripted()
+        client = GlassdoorClient(login=True, interaction=asked)
+        # pages after the first get the ordinary bot-check probe instead
+        client._blocked = lambda page: False
+        page = mock.MagicMock()
+        client._settle(page)
+        client._settle(page)
+        self.assertEqual(len(asked.said), 1)
 
     def test_a_node_without_pros_or_cons_is_not_a_review(self):
         self.assertIsNone(self.client._read_review({'summary': 'no body'}))

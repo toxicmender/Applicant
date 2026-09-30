@@ -89,6 +89,13 @@ class LastResortHandlerTest(TempDir):
         self.assertNotIn('unexpectedly', err)
         self.assertEqual(len(err.strip().splitlines()), 1)
 
+    def test_a_network_that_never_answered_exits_7(self):
+        from applicant.errors import Unreachable
+
+        code, _, err = self.run_main(Unreachable('could not reach Indeed: timed out'))
+        self.assertEqual(code, 7)
+        self.assertNotIn('unexpectedly', err)
+
     def test_the_traceback_still_reaches_the_debug_log(self):
         path = str(self.root / 'run.log')
         with (

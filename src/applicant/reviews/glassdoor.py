@@ -64,6 +64,8 @@ class GlassdoorClient:
         self.login = login
         self.headless = False if login else headless
         self.timeout = timeout
+        # a --login run asks the person once; the profile remembers after that
+        self._paused = False
 
     def fetch(self, company, max_reviews=PAGE_SIZE):
         """Every failure leaves as a SourceError, so a caller trying several
@@ -126,7 +128,8 @@ class GlassdoorClient:
         with suppress(Exception):
             page.wait_for_load_state('networkidle', timeout=self.timeout)
 
-        if self.login:
+        if self.login and not self._paused:
+            self._paused = True
             self.interaction.pause(
                 'A browser window is open. Clear the Cloudflare check and sign in to '
                 'Glassdoor, then come back here.'
@@ -230,6 +233,9 @@ class GlassdoorClient:
                 stack.extend(current)
 
     def _read_aggregate(self, node, rating):
+        # a review carries its own ratingOverall: never the company's
+        if 'pros' in node or 'cons' in node:
+            return
         if rating.overall_rating is None:
             value = (
                 node.get('ratingOverall')
@@ -284,12 +290,15 @@ class GlassdoorClient:
         )
 
     def _review_count(self, payloads, html_pages):
-        """Cheap progress check for the pagination loop."""
-        total = 0
+        """Cheap progress check for the pagination loop: distinct reviews, the
+        way `_build` counts them - a page's XHR and its embedded HTML carry the
+        same reviews, and counting both stops the paging halfway."""
+        seen = set()
         for source in list(payloads) + [
             page for html in html_pages for page in self._embedded(html)
         ]:
             for node in self._walk(source):
-                if self._read_review(node) is not None:
-                    total += 1
-        return total
+                review = self._read_review(node)
+                if review is not None:
+                    seen.add((review.pros, review.cons, review.title))
+        return len(seen)

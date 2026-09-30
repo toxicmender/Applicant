@@ -339,6 +339,22 @@ A command is required. (Before 0.2.0, `applicant` alone or with bare flags meant
 `--log-file`, `--no-log-file`, `--data-dir`, `--store`, `--config` - go before or after
 the command: `applicant -v search x` and `applicant search x -v` are the same.
 
+### Exit codes
+
+What ended a run, for a script deciding whether to retry:
+
+| Code | Meaning |
+|---|---|
+| 0 | done |
+| 1 | nothing to do, nothing matched, or an unexpected error (one line on stderr) |
+| 2 | a usage or settings error: bad flags, a bad `applicant.toml` |
+| 3 | blocked: a bot check, a login wall, a rate limit - retry later |
+| 4 | not found: the company, slug or url resolves to nothing |
+| 5 | unparseable: the page arrived without the data - the site changed |
+| 6 | an API key refused, or out of credits |
+| 7 | unreachable: the network failed through every retry - retry later |
+| 130 | interrupted (Ctrl-C) |
+
 ## Where your data lives
 
 Everything goes in one **data directory** - the current directory unless you say
