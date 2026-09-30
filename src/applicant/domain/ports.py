@@ -20,6 +20,15 @@ STATUSES = ('applied', 'needs_manual_apply', 'would_apply', 'failed')
 # the same posting from being recorded
 PROVISIONAL = frozenset({'would_apply', 'failed'})
 
+# The notes an Easy Apply outcome is logged with. Two different reasons end in
+# needs_manual_apply, and the person reading the log has to be able to tell
+# them apart: in one case nothing was sent, in the other something may have been.
+NOT_EASY_APPLY = 'not easy apply, or a multi step form'
+UNCONFIRMED = (
+    'submitted, but LinkedIn did not confirm it - check your LinkedIn applications '
+    'before applying again'
+)
+
 
 @dataclass(frozen=True)
 class ApplicationResult:

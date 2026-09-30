@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..domain.job import Job
-from ..domain.ports import ApplicationResult
+from ..domain.ports import NOT_EASY_APPLY, UNCONFIRMED, ApplicationResult
 from ..errors import Blocked, SourceError
 from ..infra.browser import BrowserSession
 from ..interaction import Interaction, Terminal
@@ -40,6 +40,8 @@ logger = logging.getLogger(__name__)
 APPLICATION_SENT = 'text=/application (was )?(sent|submitted)/i'
 FORM_ERROR = '.artdeco-inline-feedback--error'
 CONFIRM_TIMEOUT_MS = 10_000
+# what _apply_one says when it clicked Submit and heard nothing back
+UNCONFIRMED_SUBMIT = 'unconfirmed'
 
 
 class LinkedIn(LinkedInGuest):
@@ -59,6 +61,9 @@ class LinkedIn(LinkedInGuest):
         # asked for the one-time code when a sign in needs two factors
         self.interaction = interaction or Terminal()
         self._browser_session: BrowserSession | None = None
+        # urls the last easy_apply submitted without LinkedIn confirming them:
+        # possibly sent, so never to be retried blindly
+        self.unconfirmed: list[str] = []
 
     # -- the Applier port -------------------------------------------------
 
@@ -73,11 +78,14 @@ class LinkedIn(LinkedInGuest):
         if dry_run:
             return [ApplicationResult(job, 'would_apply', 'dry run') for job in jobs]
         applied = set(self.easy_apply(jobs))
+        unconfirmed = set(self.unconfirmed)
         return [
             ApplicationResult(job, 'applied', 'linkedin easy apply')
             if job.url in applied
             else ApplicationResult(
-                job, 'needs_manual_apply', 'not easy apply, or a multi step form'
+                job,
+                'needs_manual_apply',
+                UNCONFIRMED if job.url in unconfirmed else NOT_EASY_APPLY,
             )
             for job in jobs
         ]
@@ -258,6 +266,7 @@ class LinkedIn(LinkedInGuest):
                 return []
         else:
             stored = [item.to_dict() if isinstance(item, Job) else item for item in source]
+        self.unconfirmed = []
         if not stored:
             return []
         page = self._start()
@@ -273,7 +282,10 @@ class LinkedIn(LinkedInGuest):
             # returned, and so recorded, whatever happens to the rest
             # (OWASP Top 10:2025 A10 - roll back or complete, never lose track).
             try:
-                if self._apply_one(page, item):
+                outcome = self._apply_one(page, item)
+                if outcome == UNCONFIRMED_SUBMIT:
+                    self.unconfirmed.append(item['url'])
+                elif outcome:
                     applied.append(item['url'])
             except Exception as error:  # one posting, logged in full, never fatal
                 logger.error(
@@ -285,8 +297,10 @@ class LinkedIn(LinkedInGuest):
         logger.info(f'linkedin: easy applied to {len(applied)} job(s)')
         return applied
 
-    def _apply_one(self, page, item) -> bool:
-        """Submit one single-step Easy Apply form. True only once it is sent."""
+    def _apply_one(self, page, item) -> bool | str:
+        """Submit one single-step Easy Apply form. True once LinkedIn confirms it;
+        UNCONFIRMED_SUBMIT when Submit was clicked and no confirmation came - it
+        may have gone through; False when nothing was submitted."""
         page.goto(item['url'], wait_until='domcontentloaded')
         button = page.locator('button.jobs-apply-button').first
         if not button.count():
@@ -312,7 +326,7 @@ class LinkedIn(LinkedInGuest):
             # be offered again - so it is left for a person to finish
             page.keyboard.press('Escape')
             logger.warning(f'linkedin: submitted but not confirmed, left for review: {item["url"]}')
-            return False
+            return UNCONFIRMED_SUBMIT
 
         # multi step form - close it and leave this one alone
         page.keyboard.press('Escape')

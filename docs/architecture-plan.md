@@ -832,7 +832,7 @@ All six phases are done. Measured against §2:
 
 | | Before | After |
 |---|---|---|
-| Tests run to completion | 124 of 480, then abort | 731, plus 568 subtests, all passing, on 3.10 to 3.13 (87% line and branch coverage) |
+| Tests run to completion | 124 of 480, then abort | 736, plus 574 subtests, all passing, on 3.10 to 3.13 (87% line and branch coverage) |
 | CI | reports only | fails on a test or type error; lint stays report-only |
 | Logging modules | two, the weaker one wired in | one: stderr, escaping, masking, `0600` files |
 | Retry loops / browser launch paths | four / three | one / one |

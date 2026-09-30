@@ -138,9 +138,12 @@ MULTIPLIERS = [
 
 # A figure, with the grouping any of these boards use: 45,000 / 45.000 /
 # 45 000 (also with a no-break or narrow no-break space) / 110'000 - and the
-# Indian 12,00,000 - then the unit word, if any, that follows it.
+# Indian 12,00,000 - then the unit word, if any, that follows it. Only the units
+# MULTIPLIERS knows: any other word is left in place, so the "to" in "10 to 15
+# Lacs" is still there for RANGE to join the two figures with.
 _GROUPED = r"\d{1,3}(?:(?:[.,'’]|[ \u00a0\u202f](?=\d{3}\b))\d{2,3})+(?:[.,]\d{1,2}(?!\d))?"
-AMOUNT = re.compile(r'(' + _GROUPED + r'|\d+(?:[.,]\d+)?)\s*([A-Za-z]*)')
+_UNIT = r'(?i:crores?|cr|lakhs?|lacs?|lpa|l|tausend|tsd|mio|mn|m|k)\b'
+AMOUNT = re.compile(r'(' + _GROUPED + r'|\d+(?:[.,]\d+)?)\s*(' + _UNIT + r')?')
 
 # what may stand between the two figures of a range: a dash or a word for "to",
 # with a currency sign or unit on either side of it
@@ -150,7 +153,10 @@ RANGE = re.compile(
     re.IGNORECASE,
 )
 
-UNPRICED = re.compile(r'not disclosed|unpaid|negotiable', re.IGNORECASE)
+# no figure to be had, whatever else the text says. "Negotiable" is not here:
+# "15-25 Lacs PA (Negotiable)" is a range open to discussion, and "Negotiable"
+# alone has no figure in it, so it reads as no salary anyway
+UNPRICED = re.compile(r'not disclosed|unpaid', re.IGNORECASE)
 
 # the rupee units that imply their own currency
 RUPEE_SCALES = (100_000, 10_000_000)
@@ -243,7 +249,7 @@ def parse_salary(text: str | None) -> Salary | None:
     amounts = []
     for match in taken:
         raw, suffix = match.groups()
-        multiplier = _multiplier(suffix)
+        multiplier = _multiplier(suffix or '')
         value = number(raw, has_unit=multiplier > 1)
         if value is not None:
             amounts.append((value, multiplier))

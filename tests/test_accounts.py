@@ -338,13 +338,74 @@ class ConfirmedApplicationTest(unittest.TestCase):
         self.assertTrue(LinkedIn(delay=0)._apply_one(page, POSTING))
 
     def test_a_form_error_does_not_count_and_the_form_is_left_open(self):
+        from applicant.boards.linkedin_apply import UNCONFIRMED_SUBMIT
+
         page = self.page(sent=False)
-        self.assertFalse(LinkedIn(delay=0)._apply_one(page, POSTING))
+        self.assertEqual(LinkedIn(delay=0)._apply_one(page, POSTING), UNCONFIRMED_SUBMIT)
         page.keyboard.press.assert_called_with('Escape')
 
     def test_no_answer_at_all_does_not_count(self):
+        from applicant.boards.linkedin_apply import UNCONFIRMED_SUBMIT
+
         page = self.page(sent=False, timed_out=True)
-        self.assertFalse(LinkedIn(delay=0)._apply_one(page, POSTING))
+        self.assertEqual(LinkedIn(delay=0)._apply_one(page, POSTING), UNCONFIRMED_SUBMIT)
+
+    def outcomes(self, *results):
+        """A LinkedIn whose postings come back as `results`, in order."""
+        client = LinkedIn(delay=0)
+        self.addCleanup(client.close)
+        jobs = [
+            Job(
+                source='linkedin',
+                id=str(n),
+                title='ML',
+                url=f'https://www.linkedin.com/jobs/view/{n}',
+            )
+            for n in range(len(results))
+        ]
+        patched = (
+            mock.patch.object(LinkedIn, '_start', return_value=mock.MagicMock()),
+            mock.patch.object(LinkedIn, '_apply_one', side_effect=list(results)),
+        )
+        return client, jobs, patched
+
+    def test_the_log_says_an_unconfirmed_submission_may_have_gone_through(self):
+        """Not 'multi step form': that reads as nothing sent, and invites a second go."""
+        from applicant.boards.linkedin_apply import UNCONFIRMED_SUBMIT
+        from applicant.domain.ports import NOT_EASY_APPLY, UNCONFIRMED
+
+        client, jobs, (start, apply_one) = self.outcomes(True, UNCONFIRMED_SUBMIT, False)
+        with start, apply_one:
+            results = client.apply(jobs, dry_run=False)
+        self.assertEqual(
+            [(result.status, result.note) for result in results],
+            [
+                ('applied', 'linkedin easy apply'),
+                ('needs_manual_apply', UNCONFIRMED),
+                ('needs_manual_apply', NOT_EASY_APPLY),
+            ],
+        )
+        self.assertIn('check your LinkedIn applications', UNCONFIRMED)
+
+    def test_the_service_path_says_so_too(self):
+        from applicant.boards.linkedin_apply import UNCONFIRMED_SUBMIT
+        from applicant.domain.ports import NOT_EASY_APPLY, UNCONFIRMED
+        from applicant.services.apply import easy_apply_with
+
+        client, jobs, (start, apply_one) = self.outcomes(UNCONFIRMED_SUBMIT, False)
+        with start, apply_one:
+            entries = easy_apply_with(client, jobs)
+        self.assertEqual([note for _, _, note in entries], [UNCONFIRMED, NOT_EASY_APPLY])
+
+    def test_each_run_starts_with_nothing_unconfirmed(self):
+        from applicant.boards.linkedin_apply import UNCONFIRMED_SUBMIT
+
+        client, jobs, (start, apply_one) = self.outcomes(UNCONFIRMED_SUBMIT, True)
+        with start, apply_one:
+            client.easy_apply(jobs[:1])
+            self.assertEqual(len(client.unconfirmed), 1)
+            client.easy_apply(jobs[1:])
+        self.assertEqual(client.unconfirmed, [])
 
 
 class ScrapeJobsTest(unittest.TestCase):

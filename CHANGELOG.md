@@ -112,6 +112,12 @@ that removes what those phases kept for compatibility.
   search; `--want 0` used to mean "no target".
 - `rates --refresh -c XYZ` names a currency it does not know, and exits 2 when
   none of those asked for is known, instead of reporting nothing done.
+- A salary range joined by a word - `10 to 15 Lacs`, `$50,000 to $60,000`,
+  `45.000 bis 55.000 €` - keeps its top and its unit, and "Negotiable" no longer
+  throws away a range that is stated.
+- An Easy Apply submission LinkedIn did not confirm is logged as possibly sent -
+  "check your LinkedIn applications before applying again" - rather than with the
+  note for a job that has no Easy Apply, which read as nothing sent.
 - Salaries as Indeed's other country sites write them are read correctly:
   `45.000 €` is forty-five thousand, not forty-five; `45 000 €`, `CHF 110'000`,
   `pro Monat`, `par an` and the other local pay periods; `¥`, `CHF`, `AUD`, `CA$`

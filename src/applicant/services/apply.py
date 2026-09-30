@@ -15,7 +15,7 @@ from typing import Any, Protocol
 from ..domain import dedupe
 from ..domain.filtering import JobFilter
 from ..domain.job import Job
-from ..domain.ports import ApplicationResult, Applier
+from ..domain.ports import NOT_EASY_APPLY, UNCONFIRMED, ApplicationResult, Applier
 from ..errors import SourceError
 from ..filters import prepared
 from ..infra.store.repositories import Backend, applications, listing
@@ -81,10 +81,14 @@ def easy_apply_with(client: EasyApplier, jobs: list[Job]) -> list[Entry]:
         logger.debug('linkedin: easy apply traceback', exc_info=True)
         return [(job, 'failed', type(error).__name__) for job in jobs]
 
+    # submitted without LinkedIn confirming it: possibly sent, and the note has
+    # to say so, or the row reads as "nothing was sent" and invites a second go
+    found = getattr(client, 'unconfirmed', None)
+    unconfirmed = set(found) if isinstance(found, (list, tuple, set)) else set()
     return [
         (job, 'applied', 'linkedin easy apply')
         if job.url in applied
-        else (job, 'needs_manual_apply', 'not easy apply, or a multi step form')
+        else (job, 'needs_manual_apply', UNCONFIRMED if job.url in unconfirmed else NOT_EASY_APPLY)
         for job in jobs
     ]
 

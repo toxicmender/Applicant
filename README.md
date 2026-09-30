@@ -28,11 +28,16 @@ injected `httpx` client, the parsers run against fixtures, and currency tests us
 Pass `rates=` yourself to keep a real search off the network too.
 
 CI mirrors this in two workflows. `format` is the only one that writes - it runs
-`ruff format` and pushes the result back to the branch. `ci` runs ruff, type checks
+`ruff format`, pushes the result back to the branch, and starts `ci` for that commit
+(its own push would not). `ci` runs ruff, type checks
 with pyright against both Python 3.10 (the floor) and 3.12, runs the tests across
 Python 3.10-3.13, reports everything to the run summary, and stores a `status.json`
 artifact. A failing test or type error fails the run (its `status` job is the one to
 mark as required); lint findings and format drift are reported, never blocking.
+
+The steps only a repository admin can take - renaming the default branch from
+`master` to `main`, requiring `status`, tagging a release - are written out in
+[`docs/maintainers.md`](docs/maintainers.md).
 
 No chromedriver step any more - everything runs on Playwright, which manages its own
 browser.

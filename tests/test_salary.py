@@ -131,6 +131,27 @@ class LocaleTest(unittest.TestCase):
                     (low, high, currency, periods),
                 )
 
+    def test_a_range_joined_by_a_word(self):
+        """'to' and 'bis' join a range as a dash does - and are not a unit."""
+        for text, low, high, currency in (
+            ('10 to 15 Lacs', 1_000_000, 1_500_000, 'INR'),
+            ('Salary: 5 to 7 LPA', 500_000, 700_000, 'INR'),
+            ('$50,000 to $60,000 a year', 50_000, 60_000, 'USD'),
+            ('USD 50,000 to USD 60,000', 50_000, 60_000, 'USD'),
+            ('45.000 bis 55.000 € pro Jahr', 45_000, 55_000, 'EUR'),
+            ('£25k to £30k', 25_000, 30_000, 'GBP'),
+        ):
+            with self.subTest(text=text):
+                salary = parse_salary(text)
+                assert salary is not None
+                self.assertEqual((salary.low, salary.high, salary.currency), (low, high, currency))
+
+    def test_negotiable_does_not_void_a_stated_range(self):
+        salary = parse_salary('15-25 Lacs PA (Negotiable)')
+        assert salary is not None
+        self.assertEqual((salary.low, salary.high), (1_500_000, 2_500_000))
+        self.assertIsNone(parse_salary('Negotiable'))
+
     def test_only_the_first_figure_or_range_is_pay(self):
         """'plus 401k' is not the top of the range, and does not rescale it."""
         salary = parse_salary('$120,000 - $150,000 a year, plus 401k')
