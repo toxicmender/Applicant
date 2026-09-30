@@ -362,7 +362,7 @@ What ended a run, for a script deciding whether to retry:
 | 5 | unparseable: the page arrived without the data - the site changed |
 | 6 | an API key refused, or out of credits |
 | 7 | unreachable: the network failed through every retry - retry later |
-| 130 | interrupted (Ctrl-C) |
+| 130 | interrupted (Ctrl-C). `apply` still logs what it had already sent |
 
 ## Where your data lives
 

@@ -15,7 +15,7 @@ from typing import Any, Protocol
 from ..domain import dedupe
 from ..domain.filtering import JobFilter
 from ..domain.job import Job
-from ..domain.ports import NOT_EASY_APPLY, UNCONFIRMED, ApplicationResult, Applier
+from ..domain.ports import ApplicationResult, Applier, Interrupted, easy_apply_results
 from ..errors import SourceError
 from ..filters import prepared
 from ..infra.store.repositories import Backend, applications, listing
@@ -72,6 +72,12 @@ def easy_apply_with(client: EasyApplier, jobs: list[Job]) -> list[Entry]:
     """
     try:
         applied = set(client.easy_apply(jobs))
+    except KeyboardInterrupt as stop:
+        # what was already sent is real: it travels with the interrupt to the log
+        done = easy_apply_results(
+            jobs, _urls(client, 'applied'), _urls(client, 'unconfirmed'), tried_only=True
+        )
+        raise Interrupted(done) from stop
     except SourceError as error:
         logger.warning('linkedin: {}'.format(error))
         return [(job, 'failed', str(error)) for job in jobs]
@@ -83,14 +89,15 @@ def easy_apply_with(client: EasyApplier, jobs: list[Job]) -> list[Entry]:
 
     # submitted without LinkedIn confirming it: possibly sent, and the note has
     # to say so, or the row reads as "nothing was sent" and invites a second go
-    found = getattr(client, 'unconfirmed', None)
-    unconfirmed = set(found) if isinstance(found, (list, tuple, set)) else set()
     return [
-        (job, 'applied', 'linkedin easy apply')
-        if job.url in applied
-        else (job, 'needs_manual_apply', UNCONFIRMED if job.url in unconfirmed else NOT_EASY_APPLY)
-        for job in jobs
+        result.entry() for result in easy_apply_results(jobs, applied, _urls(client, 'unconfirmed'))
     ]
+
+
+def _urls(client: object, name: str) -> set[str]:
+    """The urls a client kept under `name`, if it keeps any (a LinkedIn does)."""
+    found = getattr(client, name, None)
+    return set(found) if isinstance(found, (list, tuple, set)) else set()
 
 
 class EasyApply:
@@ -185,8 +192,17 @@ class ApplyToJobs:
             self.declined = waiting
             targets = {}
 
-        for source, batch in targets.items():
-            entries.extend(_apply_isolated(self.appliers[source], source, batch, dry_run))
+        try:
+            for source, batch in targets.items():
+                entries.extend(_apply_isolated(self.appliers[source], source, batch, dry_run))
+        except KeyboardInterrupt as stop:
+            # stopped part way: what was already sent, and every row for the
+            # other boards, still reach the log; jobs never tried get no row,
+            # so the next run offers them. Then the interrupt goes on (exit 130)
+            entries.extend(result.entry() for result in getattr(stop, 'results', ()))
+            written = record.record(entries)
+            logger.warning(f'apply: interrupted; {written} new row(s) saved in {log}')
+            raise
 
         written = record.record(entries)
         logger.info(

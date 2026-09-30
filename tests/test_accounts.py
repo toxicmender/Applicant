@@ -407,6 +407,86 @@ class ConfirmedApplicationTest(unittest.TestCase):
             client.easy_apply(jobs[1:])
         self.assertEqual(client.unconfirmed, [])
 
+    def test_an_error_after_submit_is_unconfirmed_not_nothing_sent(self):
+        """A page that dies after the click may still have sent the application."""
+        from applicant.boards.linkedin_apply import APPLICATION_SENT, UNCONFIRMED_SUBMIT
+
+        page = self.page(sent=False)
+        waiting = page.locator(APPLICATION_SENT).or_.return_value.first
+        waiting.wait_for.side_effect = RuntimeError('Target page, context or browser closed')
+        page.keyboard.press.side_effect = RuntimeError('closed')
+        with self.assertLogs('applicant.boards.linkedin_apply', 'WARNING'):
+            outcome = LinkedIn(delay=0)._apply_one(page, POSTING)
+        self.assertEqual(outcome, UNCONFIRMED_SUBMIT)
+
+    def test_stopped_while_waiting_for_linkedin_counts_as_unconfirmed(self):
+        from applicant.boards.linkedin_apply import APPLICATION_SENT
+
+        page = self.page(sent=False)
+        waiting = page.locator(APPLICATION_SENT).or_.return_value.first
+        waiting.wait_for.side_effect = KeyboardInterrupt
+        client = LinkedIn(delay=0)
+        self.addCleanup(client.close)
+        with self.assertRaises(KeyboardInterrupt):
+            client._apply_one(page, POSTING)
+        self.assertEqual(client.unconfirmed, [POSTING['url']])
+
+    def test_an_unreadable_file_starts_with_nothing_unconfirmed(self):
+        from applicant.boards.linkedin_apply import UNCONFIRMED_SUBMIT
+
+        client, jobs, (start, apply_one) = self.outcomes(UNCONFIRMED_SUBMIT)
+        with start, apply_one:
+            client.easy_apply(jobs)
+        with (
+            tempfile.TemporaryDirectory() as folder,
+            self.assertLogs('applicant.boards.linkedin_apply', 'WARNING'),
+        ):
+            client.easy_apply(Path(folder) / 'missing.json')
+        self.assertEqual((client.applied, client.unconfirmed), ([], []))
+
+
+class InterruptedApplyTest(TempDir):
+    """Ctrl-C part way through: what was sent is logged, the rest is left open."""
+
+    def run_interrupted(self, applier_for):
+        from applicant.boards.linkedin_apply import UNCONFIRMED_SUBMIT
+
+        client = LinkedIn(delay=0)
+        self.addCleanup(client.close)
+        jobs = [posting('linkedin', str(n)) for n in range(4)] + [posting('indeed', '9')]
+        log = str(self.root / 'applied.csv')
+        service = ApplyToJobs({'linkedin': applier_for(client)})
+        # the third job is where Ctrl-C lands; the fourth is never tried
+        outcomes = [True, UNCONFIRMED_SUBMIT, KeyboardInterrupt()]
+        with (
+            mock.patch.object(LinkedIn, '_start', return_value=mock.MagicMock()),
+            mock.patch.object(LinkedIn, '_apply_one', side_effect=outcomes),
+            self.assertLogs('applicant.services.apply', 'WARNING'),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            service.run(jobs, log=log, dry_run=False)
+        return {row['id']: (row['status'], row['note']) for row in ApplicationLog(log).rows()}
+
+    def check(self, rows):
+        from applicant.domain.ports import UNCONFIRMED
+
+        self.assertEqual(rows['0'], ('applied', 'linkedin easy apply'))
+        self.assertEqual(rows['1'], ('needs_manual_apply', UNCONFIRMED))
+        self.assertEqual(rows['9'][0], 'needs_manual_apply', 'the other boards are logged')
+        self.assertNotIn('2', rows, 'never finished: a later run offers it')
+        self.assertNotIn('3', rows, 'never tried: a later run offers it')
+
+    def test_the_port_path_logs_what_was_sent(self):
+        self.check(self.run_interrupted(lambda client: client))
+
+    def test_the_service_path_logs_what_was_sent(self):
+        self.check(self.run_interrupted(lambda client: EasyApply(lambda: client)))
+
+    def test_it_still_stops_the_run_as_an_interrupt(self):
+        from applicant.domain.ports import Interrupted
+
+        self.assertIsInstance(Interrupted([]), KeyboardInterrupt)  # the CLI exits 130
+
 
 class ScrapeJobsTest(unittest.TestCase):
     def setUp(self):

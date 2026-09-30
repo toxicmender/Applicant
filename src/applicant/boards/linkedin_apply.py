@@ -17,11 +17,12 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterable
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..domain.job import Job
-from ..domain.ports import NOT_EASY_APPLY, UNCONFIRMED, ApplicationResult
+from ..domain.ports import ApplicationResult, Interrupted, easy_apply_results
 from ..errors import Blocked, SourceError
 from ..infra.browser import BrowserSession
 from ..interaction import Interaction, Terminal
@@ -61,8 +62,10 @@ class LinkedIn(LinkedInGuest):
         # asked for the one-time code when a sign in needs two factors
         self.interaction = interaction or Terminal()
         self._browser_session: BrowserSession | None = None
-        # urls the last easy_apply submitted without LinkedIn confirming them:
-        # possibly sent, so never to be retried blindly
+        # the last easy_apply's outcomes, kept as they happen so an interrupt
+        # cannot lose them: the urls applied to, and those submitted without
+        # LinkedIn confirming them - possibly sent, so never retried blindly
+        self.applied: list[str] = []
         self.unconfirmed: list[str] = []
 
     # -- the Applier port -------------------------------------------------
@@ -77,18 +80,12 @@ class LinkedIn(LinkedInGuest):
         """
         if dry_run:
             return [ApplicationResult(job, 'would_apply', 'dry run') for job in jobs]
-        applied = set(self.easy_apply(jobs))
-        unconfirmed = set(self.unconfirmed)
-        return [
-            ApplicationResult(job, 'applied', 'linkedin easy apply')
-            if job.url in applied
-            else ApplicationResult(
-                job,
-                'needs_manual_apply',
-                UNCONFIRMED if job.url in unconfirmed else NOT_EASY_APPLY,
-            )
-            for job in jobs
-        ]
+        try:
+            applied = self.easy_apply(jobs)
+        except KeyboardInterrupt as stop:
+            done = easy_apply_results(jobs, self.applied, self.unconfirmed, tried_only=True)
+            raise Interrupted(done) from stop
+        return easy_apply_results(jobs, set(applied), set(self.unconfirmed))
 
     # -- browser session --------------------------------------------------
 
@@ -257,6 +254,7 @@ class LinkedIn(LinkedInGuest):
         from. Only single step applications go through; anything asking extra
         questions is left open for you rather than guessed at.
         """
+        self.applied, self.unconfirmed = [], []
         if isinstance(source, (str, Path)):
             try:
                 with open(source, encoding='utf-8') as file:
@@ -266,12 +264,11 @@ class LinkedIn(LinkedInGuest):
                 return []
         else:
             stored = [item.to_dict() if isinstance(item, Job) else item for item in source]
-        self.unconfirmed = []
         if not stored:
             return []
         page = self._start()
 
-        applied = []
+        applied = self.applied
         for item in stored:
             if item.get('source') != 'linkedin' or not item.get('url'):
                 continue
@@ -316,7 +313,19 @@ class LinkedIn(LinkedInGuest):
         submit = page.locator('button[aria-label*="Submit application"]').first
         if submit.count():
             submit.click()
-            if self._confirmed(page):
+            # from here on the application may have been sent, whatever happens
+            try:
+                confirmed = self._confirmed(page)
+            except KeyboardInterrupt:
+                # stopped while waiting for LinkedIn's answer
+                self.unconfirmed.append(item['url'])
+                raise
+            except Exception as error:  # noqa: BLE001 - the click may have sent it
+                logger.warning(
+                    f'linkedin: {type(error).__name__} after submitting {item["url"]}: {error}'
+                )
+                confirmed = False
+            if confirmed:
                 logger.info(
                     f'linkedin: applied to {item.get("title") or item["url"]} ({item["url"]})'
                 )
@@ -324,7 +333,8 @@ class LinkedIn(LinkedInGuest):
             # a click is not an application: a required field, a hiccup, and
             # LinkedIn keeps the form open. Logged as applied, it would never
             # be offered again - so it is left for a person to finish
-            page.keyboard.press('Escape')
+            with suppress(Exception):  # a page that is gone has no form to close
+                page.keyboard.press('Escape')
             logger.warning(f'linkedin: submitted but not confirmed, left for review: {item["url"]}')
             return UNCONFIRMED_SUBMIT
 

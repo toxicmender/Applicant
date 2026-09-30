@@ -7,6 +7,7 @@ Only ports the code actually depends on are here. The rest of the plan's list
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -39,6 +40,42 @@ class ApplicationResult:
     def entry(self) -> tuple[Job, str, str]:
         """The (job, status, note) row the application log takes."""
         return self.job, self.status, self.note
+
+
+def easy_apply_results(
+    jobs: list[Job],
+    applied: Collection[str],
+    unconfirmed: Collection[str],
+    *,
+    tried_only: bool = False,
+) -> list[ApplicationResult]:
+    """What an Easy Apply run came to, one result per job, from the urls it
+    applied to and the ones it submitted without LinkedIn confirming them.
+
+    `tried_only`: leave out the jobs that got neither outcome - after an
+    interrupt they were never tried, and with no row a later run offers them.
+    """
+    results = []
+    for job in jobs:
+        if job.url in applied:
+            results.append(ApplicationResult(job, 'applied', 'linkedin easy apply'))
+        elif job.url in unconfirmed:
+            results.append(ApplicationResult(job, 'needs_manual_apply', UNCONFIRMED))
+        elif not tried_only:
+            results.append(ApplicationResult(job, 'needs_manual_apply', NOT_EASY_APPLY))
+    return results
+
+
+class Interrupted(KeyboardInterrupt):
+    """Ctrl-C part way through applying, carrying what had already happened.
+
+    Applications sent before the interrupt are real, so they must still reach
+    the log. Being a KeyboardInterrupt, it still stops the run and exits 130.
+    """
+
+    def __init__(self, results: list[ApplicationResult]):
+        super().__init__()
+        self.results = results
 
 
 class Applier(Protocol):

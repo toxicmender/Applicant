@@ -118,6 +118,10 @@ that removes what those phases kept for compatibility.
 - An Easy Apply submission LinkedIn did not confirm is logged as possibly sent -
   "check your LinkedIn applications before applying again" - rather than with the
   note for a job that has no Easy Apply, which read as nothing sent.
+  So is one where the page failed after Submit was clicked.
+- Ctrl-C part way through `apply` no longer loses the run's log: applications
+  already sent, and the rows for the other boards, are recorded before it exits
+  130. Jobs it never reached get no row, so the next run offers them.
 - Salaries as Indeed's other country sites write them are read correctly:
   `45.000 €` is forty-five thousand, not forty-five; `45 000 €`, `CHF 110'000`,
   `pro Monat`, `par an` and the other local pay periods; `¥`, `CHF`, `AUD`, `CA$`
