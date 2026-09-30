@@ -257,6 +257,51 @@ class ConfirmCommandTest(TempDir):
         self.assertEqual(statuses['1'], 'applied')
 
 
+class TerminalTest(unittest.TestCase):
+    """Questions on stderr, answers from stdin; a secret through getpass. Whether
+    a real terminal then hides what is typed is the terminal's to test."""
+
+    def test_a_question_goes_to_stderr_and_the_answer_comes_from_stdin(self):
+        from applicant.interaction import Terminal
+
+        err = io.StringIO()
+        with redirect_stderr(err), mock.patch('builtins.input', return_value='me@example.com'):
+            answer = Terminal().ask('Username: ')
+        self.assertEqual(answer, 'me@example.com')
+        self.assertEqual(err.getvalue(), 'Username: ')
+
+    def test_a_secret_is_read_with_getpass_on_stderr(self):
+        from applicant.interaction import Terminal
+
+        with mock.patch('getpass.getpass', return_value='hunter2') as asked:
+            self.assertEqual(Terminal().ask('Password: ', secret=True), 'hunter2')
+        self.assertIs(asked.call_args.kwargs['stream'], sys.stderr)
+
+    def test_pause_says_what_to_do_and_waits_for_enter(self):
+        from applicant.interaction import Terminal
+
+        err = io.StringIO()
+        with redirect_stderr(err), mock.patch('builtins.input', return_value='') as waited:
+            Terminal().pause('Clear the check, then press Enter.')
+        waited.assert_called_once()
+        self.assertEqual(err.getvalue(), 'Clear the check, then press Enter.\n')
+
+
+class ModuleEntryTest(unittest.TestCase):
+    def test_python_dash_m_runs_the_cli(self):
+        from applicant import __version__
+
+        done = subprocess.run(
+            [sys.executable, '-m', 'applicant', '--version'],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout.strip(), 'applicant {}'.format(__version__))
+
+
 POSTING = {'source': 'linkedin', 'url': 'https://www.linkedin.com/jobs/view/7', 'title': 'ML'}
 
 

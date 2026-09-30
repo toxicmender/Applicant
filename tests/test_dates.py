@@ -36,8 +36,19 @@ class RelativeToIsoTest(unittest.TestCase):
     def test_case_insensitive(self):
         self.assertEqual(relative_to_iso('6 Days Ago', now=NOW), '2026-07-28')
 
+    def test_the_words_for_the_newest_postings(self):
+        """Google's 'Just posted', Naukri's 'Just Now' and 'Today': the freshest
+        jobs must not be the ones a date filter cannot place."""
+        for text in ('Just posted', 'Just Now', 'Today', 'Posted today', 'Few Hours Ago'):
+            with self.subTest(text=text):
+                self.assertEqual(relative_to_iso(text, now=NOW), '2026-08-03')
+        self.assertEqual(relative_to_iso('Yesterday', now=NOW), '2026-08-02')
+        self.assertEqual(relative_to_iso('an hour ago', now=NOW), '2026-08-03')
+        self.assertEqual(relative_to_iso('a day ago', now=NOW), '2026-08-02')
+        self.assertEqual(relative_to_iso('a month ago', now=NOW), '2026-07-04')
+
     def test_non_relative_text_is_none(self):
-        for text in ('Just posted', 'Today', '2026-08-01', '', None):
+        for text in ('Full-time', '2026-08-01', 'idea day ago', '', None):
             with self.subTest(text=text):
                 self.assertIsNone(relative_to_iso(text, now=NOW))
 

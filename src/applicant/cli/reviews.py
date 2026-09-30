@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 
 from ..services.reviews import REVIEW_SOURCES
 from .common import file_arg
@@ -69,14 +70,17 @@ def run(args) -> int:
     from ..services.reviews import fetch_reviews
 
     settings = args.settings
-    found = fetch_reviews(
-        args.company,
-        clients(args),
-        file_arg(args, 'output', 'reviews'),
-        max_reviews=args.max_reviews,
-        emit=Renderer(),
-        backend=settings.store,
-    )
+    # the clients are made here, so they are closed here - whatever happens
+    with ExitStack() as opened:
+        made = {name: opened.enter_context(client) for name, client in clients(args).items()}
+        found = fetch_reviews(
+            args.company,
+            made,
+            file_arg(args, 'output', 'reviews'),
+            max_reviews=args.max_reviews,
+            emit=Renderer(),
+            backend=settings.store,
+        )
     if found.written_to is None:
         return 1
     print('written to {}'.format(found.written_to))

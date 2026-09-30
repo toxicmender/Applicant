@@ -102,11 +102,29 @@ that removes what those phases kept for compatibility.
 - `apply` does not offer a job again once it has an outcome - applied to, or
   found to need a manual application on its own board; a dry run or a failure
   still leaves it to be offered.
+- A posting with no location is kept and flagged `location-unverified` by a
+  location filter, like any other field a posting leaves out, rather than dropped;
+  `--strict` still drops it.
+- The AmbitionBox, Crunchbase and Tracxn clients can be closed (and used as context
+  managers), and the CLI closes the ones it makes.
 - `search` counts (`--limit`, `--want`, `--max-rounds`, `--enrich-limit`,
   `--posted-within`) must be 1 or more, on the command line and in a saved
   search; `--want 0` used to mean "no target".
 - `rates --refresh -c XYZ` names a currency it does not know, and exits 2 when
   none of those asked for is known, instead of reporting nothing done.
+- Salaries as Indeed's other country sites write them are read correctly:
+  `45.000 €` is forty-five thousand, not forty-five; `45 000 €`, `CHF 110'000`,
+  `pro Monat`, `par an` and the other local pay periods; `¥`, `CHF`, `AUD`, `CA$`
+  and the rest of the currencies a comparison can convert; and a bare `$` on
+  ca/au/sg/nz/mx.indeed.com is that country's dollar. A salary is its first
+  figure or range, so "plus 401k" no longer rescales it.
+- "Today", "Just now", "Just posted", "Yesterday" and "Few hours ago" are dates,
+  so `--posted-within` no longer flags (or, with `--strict`, drops) the newest
+  postings of all.
+- The derived funding-round count is used only when every round was fetched, so
+  `-n` no longer understates it or shows up as a change between runs.
+- An unreadable rate cache is rebuilt, as its comment always said, instead of
+  failing the first salary comparison of a search.
 - AmbitionBox keeps the rating and the reviews already read when a later page
   of reviews fails.
 - A commit pushed by the formatting workflow gets its own CI run, so the

@@ -126,6 +126,27 @@ class IndeedParseTest(unittest.TestCase):
         self.assertIsNone(job.url)
         self.assertIsNone(job.salary)
 
+    def test_a_bare_dollar_is_the_country_site_s_own(self):
+        """'$80,000' on ca.indeed.com is Canadian, not US, pay."""
+        from applicant.domain.salary import parse_salary
+
+        item = {'title': 'Dev', 'salarySnippet': {'text': '$80,000 a year'}}
+        for host, currency in (
+            ('https://ca.indeed.com', 'CAD'),
+            ('https://au.indeed.com', 'AUD'),
+            ('https://www.indeed.com', 'USD'),
+        ):
+            with self.subTest(host=host):
+                job = Indeed(domain=host)._to_job(item)
+                assert job is not None
+                salary = parse_salary(job.salary)
+                assert salary is not None
+                self.assertEqual(salary.currency, currency)
+        stated = {'title': 'Dev', 'salarySnippet': {'text': 'US$80,000 a year'}}
+        job = Indeed(domain='https://ca.indeed.com')._to_job(stated)
+        assert job is not None
+        self.assertEqual(job.salary, 'US$80,000 a year')
+
     def test_an_item_without_a_title_is_no_job(self):
         self.assertIsNone(self.client._to_job({'jobkey': 'x', 'title': '  '}))
 

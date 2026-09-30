@@ -133,6 +133,69 @@ class RatesCacheTest(unittest.TestCase):
         self.assertEqual(table.ppp('USD'), 1.0)
 
 
+class LiveRatesTest(unittest.TestCase):
+    """The fetching side of Rates, through an injected transport."""
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.path = str(Path(self._dir.name) / 'cache.json')
+        self.calls: list[str] = []
+
+    def rates(self, respond) -> Rates:
+        def handler(request):
+            self.calls.append(request.url.host)
+            return respond(request)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        self.addCleanup(client.close)
+        return Rates(path=self.path, client=client)
+
+    def test_exchange_rates_are_fetched_cached_and_based(self):
+        table = self.rates(
+            lambda request: httpx.Response(200, json={'date': '2026-09-30', 'rates': {'INR': 83.0}})
+        )
+        self.assertEqual(table.fx('USD'), {'INR': 83.0, 'USD': 1.0})
+        cached = json.loads(Path(self.path).read_text(encoding='utf-8'))
+        self.assertEqual(cached['fx']['USD']['rates']['INR'], 83.0)
+        table.fx('USD')
+        self.assertEqual(self.calls, ['api.frankfurter.dev'], 'fresh: asked once')
+
+    def test_a_failed_fetch_falls_back_to_the_stale_rates_and_is_not_cached(self):
+        stale = {'rates': {'USD': 1.0, 'INR': 80.0}, 'fetched': 0}
+        Path(self.path).write_text(json.dumps({'fx': {'USD': stale}, 'ppp': {}}), encoding='utf-8')
+        table = self.rates(lambda request: httpx.Response(500, text='down'))
+        with self.assertLogs('applicant.money', 'WARNING'):
+            self.assertEqual(table.fx('USD')['INR'], 80.0)
+        cached = json.loads(Path(self.path).read_text(encoding='utf-8'))
+        self.assertEqual(cached['fx']['USD']['fetched'], 0, 'the failure wrote nothing')
+
+    def test_no_rates_at_all_turns_market_conversion_off(self):
+        table = self.rates(lambda request: httpx.Response(500, text='down'))
+        with self.assertLogs('applicant.money', 'WARNING'):
+            self.assertEqual(table.fx('USD'), {})
+
+    def test_a_cache_that_cannot_be_written_only_warns(self):
+        Path(self.path).mkdir()  # a directory where the cache file should be
+        with self.assertLogs('applicant.money', 'WARNING'):
+            table = self.rates(lambda request: httpx.Response(200, json={'rates': {'INR': 83.0}}))
+        with self.assertLogs('applicant.money', 'WARNING') as logged:
+            self.assertEqual(table.fx('USD')['INR'], 83.0)
+        self.assertIn('could not write the rate cache', '\n'.join(logged.output))
+
+    def test_a_cache_that_cannot_be_read_is_rebuilt_not_fatal(self):
+        Path(self.path).mkdir()
+        with self.assertLogs('applicant.money', 'WARNING') as logged:
+            table = Rates(path=self.path, offline=True)
+        self.assertIn('unreadable', logged.output[0])
+        self.assertEqual(table.ppp('USD'), 1.0)
+
+    def test_a_missing_ppp_factor_is_fetched_through_the_same_client(self):
+        table = self.rates(lambda request: worldbank([{'date': '2024', 'value': 10.5}]))
+        self.assertEqual(table.ppp('SEK'), 10.5)
+        self.assertEqual(self.calls, ['api.worldbank.org'])
+
+
 def worldbank(rows):
     """The World Bank's two element response: metadata, then the series."""
     return httpx.Response(200, json=[{'page': 1}, rows])

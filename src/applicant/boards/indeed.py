@@ -11,11 +11,12 @@ from __future__ import annotations
 import json
 import logging
 import re
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from ..domain.dates import epoch_to_iso
 from ..domain.job import Job
 from ..domain.places import country_for
+from ..domain.salary import parse_salary
 from ..errors import Blocked, SourceError, Unparseable
 from ..infra.browser import browser, looks_blocked
 from ..infra.http import USER_AGENT, HttpClient
@@ -71,6 +72,10 @@ def host_for(location):
     code = COUNTRY_HOSTS.get(country_for(text) or '')
     return 'https://{}.indeed.com'.format(code) if code else BASE
 
+
+# the country sites where a bare '$' is not the US dollar
+DOLLAR_OF_HOST = {'ca': 'CAD', 'au': 'AUD', 'sg': 'SGD', 'nz': 'NZD', 'mx': 'MXN'}
+US_DOLLAR = re.compile(r'US\$|\bUSD\b')
 
 HEADERS = {
     'User-Agent': USER_AGENT,
@@ -208,7 +213,7 @@ class Indeed:
         link = item.get('link') or ''
         if link.startswith('/'):
             link = self.host + link
-        salary = (item.get('salarySnippet') or {}).get('text')
+        salary = self._local_dollar((item.get('salarySnippet') or {}).get('text'))
 
         return Job(
             source='indeed',
@@ -223,6 +228,18 @@ class Indeed:
             salary=salary or None,
             remote=bool(item.get('remoteLocation')) or None,
         )
+
+    def _local_dollar(self, salary):
+        """'$80,000 a year' on ca.indeed.com is Canadian: say so in the text, the
+        way the posting would to anyone reading it there, so pay is not compared
+        as if it were US dollars."""
+        code = DOLLAR_OF_HOST.get(urlsplit(self.host).netloc.split('.')[0])
+        if not salary or code is None or US_DOLLAR.search(salary):
+            return salary
+        parsed = parse_salary(salary)
+        if parsed is None or parsed.currency != 'USD':
+            return salary  # already says which dollar, or none at all
+        return '{} {}'.format(code, salary)
 
     def _employment_type(self, item):
         for attribute in item.get('jobTypes') or []:

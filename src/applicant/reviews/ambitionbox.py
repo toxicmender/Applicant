@@ -61,6 +61,17 @@ class AmbitionBoxClient:
         )
         self.client = self.http.client
 
+    def close(self) -> None:
+        """Release the connection pool, unless it was handed in. Safe to call
+        more than once; whoever makes a client closes it."""
+        self.http.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
+
     def _get(self, url, **kwargs) -> httpx.Response:
         return self.http.get(url, **kwargs)
 

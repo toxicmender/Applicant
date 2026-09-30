@@ -191,6 +191,19 @@ class TracxnClient:
         financials.fill_from_rounds()
         return financials
 
+    def close(self) -> None:
+        """Release the API connection pool, if one was opened (and not handed
+        in). Safe to call more than once; whoever makes a client closes it."""
+        if self._http is not None:
+            self._http.close()
+            self._http = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
+
     # -- api --------------------------------------------------------------
 
     @property
@@ -255,6 +268,8 @@ class TracxnClient:
 
         rounds = []
         start = 0
+        # only a short page shows the list ran out; stopping at max_rounds does not
+        ran_out = False
         while len(rounds) < max_rounds:
             size = min(PAGE_SIZE, max_rounds - len(rounds))
             try:
@@ -269,9 +284,11 @@ class TracxnClient:
             page = self._rounds(payload)
             rounds.extend(page)
             if len(page) < size:
+                ran_out = True
                 break
             start += size
         financials.rounds = _dedupe(rounds)[: max(0, max_rounds)]
+        financials.rounds_cut(not ran_out)
 
         for metric, attribute in (('valuation', 'valuation'), ('revenue', 'revenue')):
             try:
@@ -418,7 +435,9 @@ class TracxnClient:
         rounds = []
         for payload in payloads:
             rounds.extend(self._rounds(payload))
-        financials.rounds = _dedupe(rounds)[: max(0, max_rounds)]
+        found = _dedupe(rounds)
+        financials.rounds = found[: max(0, max_rounds)]
+        financials.rounds_cut(len(found) > len(financials.rounds))
         self._from_text('\n'.join(texts), financials)
 
         if (

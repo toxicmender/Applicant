@@ -120,6 +120,16 @@ class GlassdoorClient:
         rating.reviews = rating.reviews[: max(0, max_reviews)]
         return rating
 
+    def close(self) -> None:
+        """Nothing is held between fetches: each one opens and closes its own
+        browser. Here so every review source can be closed the same way."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
+
     # -- browser ----------------------------------------------------------
 
     def _settle(self, page):

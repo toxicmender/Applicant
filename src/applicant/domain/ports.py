@@ -12,8 +12,13 @@ from typing import Protocol
 
 from .job import Job
 
-# what an application came to, as the log records it
+# what an application came to, as the log records it - part of the file
+# format of applied_jobs.csv, so defined here once
 STATUSES = ('applied', 'needs_manual_apply', 'would_apply', 'failed')
+# rows that record an attempt rather than an outcome: a dry run, or a failure.
+# They stay in the log as history, but do not stop a later run's outcome for
+# the same posting from being recorded
+PROVISIONAL = frozenset({'would_apply', 'failed'})
 
 
 @dataclass(frozen=True)

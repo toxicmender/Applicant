@@ -8,18 +8,25 @@ and financials.
 
 The layout, roughly in dependency order:
 
-* `domain/`   - the pure core: `Job`, filtering, capabilities, flags, rates, dedupe
-* `errors`    - one error hierarchy for every source
-* `infra`     - the shared HTTP client and the one browser launcher
-* `filters`   - `JobFilter` wired to live rates and the board table
+* `domain/`   - the pure core: `Job`, filtering, capabilities, flags, rates,
+  dedupe, salary and date parsing, places, and the ports the core depends on
+* `errors`    - one error hierarchy for every source, and for store and settings
+* `log`       - logging setup: stderr, escaping, secret masking, UTC timestamps
+* `files`     - atomic JSON writes, and unreadable files kept rather than lost
+* `settings`  - where data lives, the store, keys and saved searches, decided once
+* `interaction` - the few moments a source asks the person at the keyboard
+* `infra/`    - the shared HTTP client, the one browser launcher, and the store:
+  `applicant.db` with the JSON and CSV as its exports (`infra/store/`)
 * `money`     - the FX and PPP cache behind cross-currency comparisons
-* `storage`   - the job listing file and the application log
+* `filters`   - `JobFilter` wired to live rates and the board table
+* `storage`   - the job listing file and the application log, and their rules
 * `boards/`   - one module per job board, all returning `Job`
 * `reviews/`  - company ratings from AmbitionBox and Glassdoor
 * `financials/` - company funding from Crunchbase and Tracxn, tracked over time
-* `search`    - the facade tying the boards, filters and storage together
-* `cli`       - argument parsing and the subcommand handlers
-* `log`       - logging setup: stderr, escaping, secret masking, UTC timestamps
+* `services/` - what each command does - search, apply, reviews, financials,
+  rates, status - with no printing, reporting through events
+* `search`    - the `Jobs` facade most library callers use
+* `cli/`      - one module per command: flags in, a service called, the answer out
 """
 
 from __future__ import annotations

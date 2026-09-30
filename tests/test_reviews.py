@@ -174,6 +174,31 @@ class AmbitionBoxFetchTest(unittest.TestCase):
         self.assertEqual(len(rating.reviews), 1)
         self.assertIn('review page 2 failed', logged.output[0])
 
+    def test_closing_releases_the_pool(self):
+        with AmbitionBoxClient() as client:
+            pool = client.http.client
+        self.assertTrue(pool.is_closed)
+
+    def test_a_rotated_build_id_is_fetched_again(self):
+        """Next's data route 404s once a deploy changes the build id: the page is
+        read again for the new one, and paging carries on."""
+        props = {**PAGE_PROPS, 'pagination': {'totalPages': 2}}
+        more = {**PAGE_PROPS['reviewsData'][0], 'reviewTitle': 'Second page'}
+        seen = []
+
+        def handler(request):
+            seen.append(request.url.path)
+            if request.url.path == '/_next/data/old/reviews/tcs-reviews.json':
+                return httpx.Response(404)
+            if request.url.path == '/_next/data/new/reviews/tcs-reviews.json':
+                return httpx.Response(200, json={'pageProps': {'reviewsData': [more]}})
+            build = 'old' if len(seen) == 1 else 'new'
+            return httpx.Response(200, text=next_data_html(props, build_id=build))
+
+        rating = self.client(handler).fetch('tcs', max_reviews=2)
+        self.assertEqual([review.title for review in rating.reviews][-1], 'Second page')
+        self.assertEqual(seen.count('/reviews/tcs-reviews'), 2, 'the page, then its new build id')
+
     def test_retries_a_transient_503(self):
         attempts = []
 

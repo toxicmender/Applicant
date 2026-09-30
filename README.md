@@ -91,8 +91,8 @@ Location and date are handed to the boards themselves where they support it
 **A country filter understands its cities.** Boards answer `-l India` with bare
 city names, so `apply -l India` over a stored file checks "India" against
 "Bengaluru, Karnataka" itself and keeps it. A posting somewhere we can name is
-dropped; one we cannot place at all - "Remote", a town in no table - is kept and
-flagged `location-unverified`. The same table means `-l Bengaluru` reaches
+dropped; one we cannot place at all - "Remote", a town in no table, or no location
+given - is kept and flagged `location-unverified` (and dropped under `--strict`). The same table means `-l Bengaluru` reaches
 Indeed's Indian site rather than its US one.
 `-n/--limit` is how many to pull from each board *before* filtering, so a tight
 filter returns fewer than you asked for - raise it if you want more survivors.
@@ -207,7 +207,11 @@ are written with a leading apostrophe, so `=HYPERLINK(...)` arrives as the text
 ## Comparing pay across currencies
 
 Pay is normalised to an annual figure first, so `2-2.5 Lacs PA`, `₹25K–₹40K a month`
-and `$30 an hour` all compare properly. `--min-salary` needs a `--currency`, and most
+and `$30 an hour` all compare properly - and so do the formats Indeed's other country
+sites use: `45.000 € pro Jahr`, `45 000 € par an`, `CHF 110'000`, `¥5,000,000`, and a
+bare `$` on its Canadian, Australian, Singaporean, New Zealand or Mexican site, read
+as that country's dollar. A salary is its first figure or range; the rest of the text
+("plus 401k") is not pay. `--min-salary` needs a `--currency`, and most
 postings are priced in another one; `--salary-basis` decides how they are compared:
 
 | basis | ₹20,00,000 against a USD floor | when to use it |

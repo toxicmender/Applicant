@@ -388,6 +388,35 @@ class JobsCommandTest(unittest.TestCase):
         operator.scrape_jobs.assert_not_called()
 
 
+class JobsSignInTest(unittest.TestCase):
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+
+    def test_no_saved_session_signs_in_with_what_the_person_types(self):
+        from applicant.interaction import Scripted
+
+        root = Path(self._dir.name)
+        operator = mock.MagicMock()
+        operator.login.return_value = root / 'cookies.json'
+        operator.scrape_jobs.return_value = []
+        asked = Scripted('me@example.com', 'hunter2')
+        with (
+            mock.patch('applicant.boards.linkedin_apply.LinkedIn') as linkedin,
+            mock.patch('applicant.cli.jobs.terminal', return_value=asked),
+            redirect_stdout(io.StringIO()) as out,
+        ):
+            linkedin.return_value.__enter__.return_value = operator
+            code = main(['jobs', '--data-dir', str(root), '--no-log-file', '--store', 'files'])
+        self.assertEqual(code, 0)
+        self.assertEqual(asked.said, ['Username/Email ID: ', 'Password: '])
+        kwargs = operator.login.call_args.kwargs
+        self.assertEqual((kwargs['username'], kwargs['password']), ('me@example.com', 'hunter2'))
+        self.assertEqual(kwargs['filepath'], root / 'cookies.json')
+        self.assertIn('session saved to', out.getvalue())
+        operator.scrape_jobs.assert_called_once()
+
+
 class ApplyCommandTest(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()
@@ -547,6 +576,15 @@ class FinancialsCommandTest(unittest.TestCase):
         self.assertEqual(self.asked, [('crunchbase', 'zomato')])
         self.assertIn('financials: could not write company_financials.json', err.getvalue())
         self.assertNotIn('unexpected', err.getvalue())
+
+    def test_the_clients_it_made_are_closed(self):
+        with (
+            mock.patch('applicant.financials.CrunchbaseClient.close') as crunchbase,
+            mock.patch('applicant.financials.TracxnClient.close') as tracxn,
+        ):
+            self.run_financials('zomato')
+        crunchbase.assert_called_once()
+        tracxn.assert_called_once()
 
     def test_a_named_company_is_not_fetched_again_in_another_case(self):
         listing = str(self.root / 'jobs.json')

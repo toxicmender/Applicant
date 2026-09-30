@@ -192,6 +192,75 @@ class StateTest(TempDir):
         self.assertEqual(stat.S_IMODE(os.stat(target).st_mode), 0o600)
 
 
+class LooksBlockedTest(unittest.TestCase):
+    """The shared bot-check probe, on fake pages: the real interstitials change
+    too often to pin, but the rules for reading one are ours."""
+
+    def page(self, title='Senior Python Developer jobs', challenge=0):
+        page = mock.MagicMock()
+        page.title.return_value = title
+        page.locator.return_value.count.return_value = challenge
+        return page
+
+    def test_a_challenge_title_is_a_bot_check(self):
+        from applicant.infra.browser import looks_blocked
+
+        for title in ('Just a moment...', 'Attention Required! | Cloudflare', 'Access Denied'):
+            with self.subTest(title=title):
+                self.assertTrue(looks_blocked(self.page(title=title)))
+
+    def test_a_challenge_element_is_a_bot_check(self):
+        from applicant.infra.browser import looks_blocked
+
+        self.assertTrue(looks_blocked(self.page(challenge=1)))
+
+    def test_an_ordinary_page_is_not(self):
+        from applicant.infra.browser import looks_blocked
+
+        self.assertFalse(looks_blocked(self.page()))
+
+    def test_a_page_with_no_title_yet_is_not_judged(self):
+        from applicant.infra.browser import looks_blocked
+
+        page = self.page()
+        page.title.side_effect = RuntimeError('navigating')
+        self.assertFalse(looks_blocked(page))
+
+
+class ClientForTest(unittest.TestCase):
+    """Which board class each source name makes - without touching a network."""
+
+    def test_each_source_is_its_own_board(self):
+        from applicant.boards.googlejobs import GoogleJobs
+        from applicant.boards.indeed import Indeed
+        from applicant.boards.linkedin import LinkedInGuest
+        from applicant.boards.naukri import Naukri
+
+        with Jobs(headless=False) as board:
+            for name, kind in (
+                ('linkedin', LinkedInGuest),
+                ('indeed', Indeed),
+                ('naukri', Naukri),
+                ('googlejobs', GoogleJobs),
+            ):
+                with self.subTest(source=name):
+                    client = board._client(name)
+                    self.addCleanup(client.close)
+                    self.assertIsInstance(client, kind)
+                    self.assertFalse(getattr(client, 'headless'))  # noqa: B009 - not on the Board protocol
+
+    def test_a_search_reads_linkedin_as_a_guest(self):
+        from applicant.boards.linkedin import LinkedInGuest
+
+        client = Jobs()._client('linkedin')
+        self.addCleanup(client.close)
+        self.assertIs(type(client), LinkedInGuest)
+
+    def test_an_unknown_source_is_a_source_error(self):
+        with self.assertRaisesRegex(SourceError, 'unknown source'):
+            Jobs()._client('monster')
+
+
 class OwnershipTest(TempDir):
     """With no __del__, whoever opens a LinkedIn session closes it."""
 

@@ -143,6 +143,19 @@ class CrunchbaseClient:
         )
         return financials
 
+    def close(self) -> None:
+        """Release the API connection pool, if one was opened (and not handed
+        in). Safe to call more than once; whoever makes a client closes it."""
+        if self._http is not None:
+            self._http.close()
+            self._http = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
+
     # -- api --------------------------------------------------------------
 
     @property
@@ -308,6 +321,7 @@ class CrunchbaseClient:
         financials.rounds = sorted(rounds.values(), key=lambda r: r.date or '', reverse=True)[
             : max(0, max_rounds)
         ]
+        financials.rounds_cut(len(rounds) > len(financials.rounds))
         return financials
 
     def _read_org(self, node, slug, financials):

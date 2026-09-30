@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 
 from ..services.financials import FINANCIAL_SOURCES
 from .common import file_arg
@@ -107,14 +108,17 @@ def run(args) -> int:
         print('name at least one company, or pass --from-jobs job_listing.json')
         return 1
 
-    tracked = track_financials(
-        companies,
-        clients(args),
-        file_arg(args, 'output', 'financials'),
-        max_rounds=args.max_rounds,
-        emit=Renderer(rounds=args.rounds, failures=True),
-        backend=settings.store,
-    )
+    # the clients are made here, so they are closed here - whatever happens
+    with ExitStack() as opened:
+        made = {name: opened.enter_context(client) for name, client in clients(args).items()}
+        tracked = track_financials(
+            companies,
+            made,
+            file_arg(args, 'output', 'financials'),
+            max_rounds=args.max_rounds,
+            emit=Renderer(rounds=args.rounds, failures=True),
+            backend=settings.store,
+        )
     if not tracked.found:
         return 1
     print('tracked in {}'.format(tracked.output))

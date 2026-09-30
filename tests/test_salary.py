@@ -93,5 +93,58 @@ class ParseSalaryTest(unittest.TestCase):
         self.assertIsNone(salary)
 
 
+class LocaleTest(unittest.TestCase):
+    """Indeed answers from fifteen country sites: pay as each of them writes it."""
+
+    CASES = (
+        # text, low, high, currency, periods per year
+        ('45.000 € - 55.000 € pro Jahr', 45_000, 55_000, 'EUR', 1),
+        ('45 000 € par an', 45_000, 45_000, 'EUR', 1),
+        ('45\u202f000 à 55\u202f000 € par an', 45_000, 55_000, 'EUR', 1),
+        ('3.500 € pro Monat', 3_500, 3_500, 'EUR', 12),
+        ('3.500,50 € pro Monat', 3_500.5, 3_500.5, 'EUR', 12),
+        ('18,00 € pro Stunde', 18, 18, 'EUR', 2080),
+        ("CHF 110'000", 110_000, 110_000, 'CHF', 1),
+        ('zł 12 000 miesięcznie', 12_000, 12_000, 'PLN', 12),
+        ('R$ 4.500 por mês', 4_500, 4_500, 'BRL', 12),
+        ('¥5,000,000 a year', 5_000_000, 5_000_000, 'JPY', 1),
+        ('CA$ 80,000 a year', 80_000, 80_000, 'CAD', 1),
+        ('AUD 120,000 a year', 120_000, 120_000, 'AUD', 1),
+        ('SGD 5,000 a month', 5_000, 5_000, 'SGD', 12),
+        ('US$ 90,000', 90_000, 90_000, 'USD', 1),
+        # and the ones every existing board already writes, unchanged
+        ('₹12,00,000 - ₹15,00,000 a year', 1_200_000, 1_500_000, 'INR', 1),
+        ('₹ 3,50,000 - 5,00,000 P.A.', 350_000, 500_000, 'INR', 1),
+        ('10-15 LPA', 1_000_000, 1_500_000, 'INR', 1),
+        ('2,5 Lacs', 250_000, 250_000, 'INR', 1),
+        ('$18.00 - $22.00 an hour', 18, 22, 'USD', 2080),
+        ('$100K-$120K', 100_000, 120_000, 'USD', 1),
+    )
+
+    def test_each_format(self):
+        for text, low, high, currency, periods in self.CASES:
+            with self.subTest(text=text):
+                salary = parse_salary(text)
+                assert salary is not None
+                self.assertEqual(
+                    (salary.low, salary.high, salary.currency, salary.period_per_year),
+                    (low, high, currency, periods),
+                )
+
+    def test_only_the_first_figure_or_range_is_pay(self):
+        """'plus 401k' is not the top of the range, and does not rescale it."""
+        salary = parse_salary('$120,000 - $150,000 a year, plus 401k')
+        assert salary is not None
+        self.assertEqual((salary.low, salary.high), (120_000, 150_000))
+        salary = parse_salary('₹10L - ₹12L + bonus 2L')
+        assert salary is not None
+        self.assertEqual((salary.low, salary.high), (1_000_000, 1_200_000))
+
+    def test_a_lower_case_word_is_not_a_currency_code(self):
+        salary = parse_salary('50,000 a year, try to negotiate')
+        assert salary is not None
+        self.assertIsNone(salary.currency)
+
+
 if __name__ == '__main__':
     unittest.main()

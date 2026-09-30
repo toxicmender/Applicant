@@ -180,7 +180,7 @@ class ExportTest(TempDir):
         plain, stored = self.run_both(write)
         expected = (plain / 'applied_jobs.csv').read_bytes()
         self.assertEqual((stored / 'applied_jobs.csv').read_bytes(), expected)
-        self.assertTrue(expected.startswith('﻿"applied_at"'.encode()), 'BOM, quoted header')
+        self.assertTrue(expected.startswith('\ufeff"applied_at"'.encode()), 'BOM, quoted header')
         self.assertIn(b"'=HYPERLINK", expected, 'formula starts are still neutralised')
 
     def test_both_backends_dedupe_alike(self):

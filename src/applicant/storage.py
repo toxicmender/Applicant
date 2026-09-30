@@ -20,6 +20,7 @@ from pydantic import ValidationError
 
 from .domain.dedupe import fingerprint, key
 from .domain.job import Job
+from .domain.ports import PROVISIONAL, STATUSES  # noqa: F401 - STATUSES re-exported
 from .domain.salary import parse_salary
 from .files import read_document, write_document
 
@@ -44,13 +45,6 @@ APPLIED_COLUMNS = [
     'flags',
     'note',
 ]
-
-# what `status` may hold in applied_jobs.csv
-STATUSES = ('applied', 'needs_manual_apply', 'would_apply', 'failed')
-# rows that record an attempt rather than an outcome: a dry run, or a failure.
-# They stay in the log as history, but do not stop a later run's outcome for
-# the same posting from being recorded
-PROVISIONAL = frozenset({'would_apply', 'failed'})
 
 
 def is_final(row: dict) -> bool:

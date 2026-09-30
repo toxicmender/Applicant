@@ -107,15 +107,24 @@ PPP_SEED = load_factors(FACTORS_PATH)
 class Rates:
     """Disk cached FX rates and PPP factors."""
 
-    def __init__(self, path=None, timeout=20.0, offline=False):
+    def __init__(self, path=None, timeout=20.0, offline=False, client=None):
         self.path = path if path is not None else CACHE_PATH
         self.timeout = timeout
         self.offline = offline
+        # an httpx.Client to fetch through - a test's MockTransport - kept open
+        # for the caller; None makes a fresh one per fetch
+        self.client = client
         self._cache = self._load()
 
     def _load(self):
-        # only a cache: an unreadable one is reported and rebuilt, not kept
-        cache = read_document(self.path)
+        # only a cache: an unreadable one is reported and rebuilt, not kept -
+        # including one the OS refuses (a directory, no permission), which
+        # read_document rightly lets through for files that are the only copy
+        try:
+            cache = read_document(self.path)
+        except OSError as error:
+            logger.warning(f'rate cache {self.path} unreadable ({error}); starting afresh')
+            cache = {}
         cache.setdefault('fx', {})
         cache.setdefault('ppp', {})
         for country, entry in load_factors().items():
@@ -143,7 +152,13 @@ class Rates:
             # one attempt, as before: a failure is not cached and the salary
             # filter asks once per job, so retrying here would stall an offline
             # run on every posting. Phase 2 fetches rates once, up front.
-            with HttpClient('frankfurter.dev', timeout=self.timeout, retries=1, interval=0) as http:
+            with HttpClient(
+                'frankfurter.dev',
+                client=self.client,
+                timeout=self.timeout,
+                retries=1,
+                interval=0,
+            ) as http:
                 payload = http.get(FX_URL, params={'base': base}).json()
             rates = dict(payload['rates'])
             rates[base] = 1.0
@@ -177,7 +192,7 @@ class Rates:
         if self.offline:
             return entry['value'] if entry else None
 
-        newest = fetch_factor(country, timeout=self.timeout)
+        newest = fetch_factor(country, timeout=self.timeout, client=self.client)
         if newest is None:
             logger.warning(
                 f'no PPP factor for {country}; '
