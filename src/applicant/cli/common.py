@@ -7,6 +7,18 @@ import argparse
 from ..filters import JobFilter
 
 
+def positive_int(text: str) -> int:
+    """An argparse type for counts: `--want 0` or `--limit -5` is a usage error,
+    not a search that silently ignores its target or returns nothing."""
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f'{text!r} is not a whole number') from None
+    if value < 1:
+        raise argparse.ArgumentTypeError(f'must be 1 or more, not {value}')
+    return value
+
+
 def shared_flags(*, suppress: bool) -> argparse.ArgumentParser:
     """The flags every command takes, as a parent parser.
 
@@ -113,7 +125,10 @@ def add_filters(command) -> None:
         help='years of experience you have; keeps jobs asking for it',
     )
     command.add_argument(
-        '--posted-within', type=int, metavar='DAYS', help='keep jobs posted within this many days'
+        '--posted-within',
+        type=positive_int,
+        metavar='DAYS',
+        help='keep jobs posted within this many days',
     )
     command.add_argument(
         '--strict',

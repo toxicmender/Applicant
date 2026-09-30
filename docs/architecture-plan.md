@@ -318,13 +318,14 @@ ApplicantError
 │   ├── Unparseable      (layout changed; carry a snippet id)    exit 5
 │   ├── AuthFailed       (bad key, missing plan)                 exit 6
 │   ├── QuotaExhausted   (Tracxn credits; do not retry)          exit 6
-│   └── Unreachable      (transport; retried before raising)
+│   └── Unreachable      (transport; retried before raising)    exit 7
 ├── StoreError
 └── ConfigError
 ```
 
 Compatibility aliases are kept for a release: `JobsError = SourceError`,
-`BlockedError = Blocked`, and `reviews.ChallengeError = Blocked`.
+`BlockedError = Blocked`, and `reviews.ChallengeError = Blocked`. (Removed in
+0.2.0, as planned; `Unreachable` got exit 7 in the same release.)
 
 A single `services.fan_out(sources, call)` does the per-source isolation that is
 currently written three times. It catches `SourceError` as expected. Any other
@@ -831,11 +832,11 @@ All six phases are done. Measured against §2:
 
 | | Before | After |
 |---|---|---|
-| Tests run to completion | 124 of 480, then abort | 631, plus 483 subtests, all passing, on 3.10 and 3.11 |
+| Tests run to completion | 124 of 480, then abort | 695, plus 526 subtests, all passing, on 3.10 to 3.13 |
 | CI | reports only | fails on a test or type error; lint stays report-only |
 | Logging modules | two, the weaker one wired in | one: stderr, escaping, masking, `0600` files |
 | Retry loops / browser launch paths | four / three | one / one |
-| Error hierarchies | three | one, with the old names as aliases |
+| Error hierarchies | three | one; the 0.1.x aliases were removed in 0.2.0 |
 | Domain I/O | the filter could reach the network | none, checked by a test that reads the source |
 | `print` outside the CLI | 22 | 0, checked by a test |
 | Where data lives | nine defaults chosen per module | one data directory; `applicant.db` as the record |

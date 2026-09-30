@@ -465,8 +465,9 @@ class OutcomeTest(TempDir):
         )
 
 
-class AlreadyAppliedTest(TempDir):
-    """A job the log shows as applied to is not submitted, or offered, again."""
+class SettledTest(TempDir):
+    """A job the log shows as settled - applied to, or needing a person - is not
+    submitted, or offered, again."""
 
     def run_apply(self, backend: repositories.Backend, log: str) -> tuple[list, list]:
         submitted: list = []
@@ -510,6 +511,32 @@ class AlreadyAppliedTest(TempDir):
         log = str(self.root / 'applied.csv')
         twin = JOB.model_copy(update={'id': '70'})
         ApplicationLog(log).record([(twin, 'applied', 'earlier')])
+        submitted, _ = self.run_apply('files', log)
+        self.assertEqual(sorted(job.id for job in submitted), ['7', '8'])
+
+    def test_a_job_that_needs_a_person_is_not_offered_again(self):
+        """A multi step form last time is a multi step form this time."""
+        for backend in BACKENDS:
+            with self.subTest(backend=backend):
+                log = str(self.root / backend / 'applied.csv')
+                repositories.applications(log, backend).record(
+                    [(JOB, 'needs_manual_apply', 'not easy apply, or a multi step form')]
+                )
+                submitted, offered = self.run_apply(backend, log)
+                self.assertEqual([job.id for job in submitted], ['8'])
+                self.assertEqual([job.id for job in offered], ['8'])
+
+    def test_a_listing_on_another_board_does_not_settle_the_easy_apply_copy(self):
+        """'Apply on indeed directly' is a worklist entry, not an application."""
+        log = str(self.root / 'applied.csv')
+        elsewhere = JOB.model_copy(update={'source': 'indeed', 'id': 'i-7'})
+        ApplicationLog(log).record([(elsewhere, 'needs_manual_apply', 'apply on indeed directly')])
+        submitted, _ = self.run_apply('files', log)
+        self.assertEqual(sorted(job.id for job in submitted), ['7', '8'])
+
+    def test_a_failed_job_is_offered_again(self):
+        log = str(self.root / 'applied.csv')
+        ApplicationLog(log).record([(JOB, 'failed', 'browser crashed')])
         submitted, _ = self.run_apply('files', log)
         self.assertEqual(sorted(job.id for job in submitted), ['7', '8'])
 

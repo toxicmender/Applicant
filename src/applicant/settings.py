@@ -38,7 +38,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, SecretStr, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
 
 from . import log
 from .errors import ConfigError
@@ -94,19 +94,20 @@ class SavedSearch(BaseModel):
     keywords: str | None = None
     location: str | None = None
     source: list[SourceName] | None = None
-    limit: int | None = None
-    want: int | None = None
-    max_rounds: int | None = None
+    # counts are 1 or more, as on the command line: `want = 0` is a typo
+    limit: int | None = Field(default=None, gt=0)
+    want: int | None = Field(default=None, gt=0)
+    max_rounds: int | None = Field(default=None, gt=0)
     output: str | None = None
     enrich: bool | None = None
-    enrich_limit: int | None = None
+    enrich_limit: int | None = Field(default=None, gt=0)
     title: list[str] | None = None
     company: list[str] | None = None
-    min_salary: float | None = None
+    min_salary: float | None = Field(default=None, ge=0)
     currency: str | None = None
     salary_basis: Literal['ppp', 'market', 'strict'] | None = None
-    experience: float | None = None
-    posted_within: int | None = None
+    experience: float | None = Field(default=None, ge=0)
+    posted_within: int | None = Field(default=None, gt=0)
     strict: bool | None = None
     strict_published: bool | None = None
 

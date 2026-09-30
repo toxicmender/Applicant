@@ -7,7 +7,7 @@ import sys
 
 from ..log import get
 from ..services.search import SOURCES
-from .common import add_filters, file_arg, filters_from
+from .common import add_filters, file_arg, filters_from, positive_int
 
 logger = get(__name__)
 
@@ -37,18 +37,21 @@ def add_parser(add) -> argparse.ArgumentParser:
         help='which boards to search',
     )
     search.add_argument(
-        '-n', '--limit', type=int, help='jobs to pull per board, before filtering (default 25)'
+        '-n',
+        '--limit',
+        type=positive_int,
+        help='jobs to pull per board, before filtering (default 25)',
     )
     search.add_argument(
         '--want',
-        type=int,
+        type=positive_int,
         metavar='N',
         help='keep reading each board until this many jobs survive the filter, '
         'rather than filtering a fixed pull of --limit',
     )
     search.add_argument(
         '--max-rounds',
-        type=int,
+        type=positive_int,
         metavar='N',
         help='how many times --want may re-read a board, each round doubling the '
         'pull and re-reading what it already saw (default 4)',
@@ -71,7 +74,7 @@ def add_parser(add) -> argparse.ArgumentParser:
     )
     search.add_argument(
         '--enrich-limit',
-        type=int,
+        type=positive_int,
         metavar='N',
         help='how many postings --enrich may read in one run (default 25)',
     )

@@ -48,6 +48,10 @@ def run(args) -> int:
 
         into = args.settings.path(args.into) if args.into else None
         done = refresh(wanted, force=args.force, emit=Renderer(), into=into)
+        if done.unknown:
+            print('not a mapped currency: {}'.format(', '.join(done.unknown)))
+            if wanted and len(done.unknown) == len(wanted):
+                return 2
         print(
             '\n{} updated, {} failed, {} already known'.format(
                 len(done.updated), len(done.failed), len(done.skipped)

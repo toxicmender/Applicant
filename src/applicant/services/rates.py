@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..money import CURRENCY_COUNTRY, load_factors, refresh_factors
 from .events import Emit, FactorFetched, ignore
@@ -18,6 +18,8 @@ class Refreshed:
     failed: list[str]
     skipped: list[str]
     path: str  # where any new factors were written
+    # codes asked for that map to no country: nothing to fetch for them
+    unknown: list[str] = field(default_factory=list)
 
 
 def refresh(
@@ -32,9 +34,14 @@ def refresh(
     def report(country, found, was_skipped):
         emit(FactorFetched(country, found, was_skipped))
 
+    asked = list(currencies) if currencies else None
+    unknown = [code.upper() for code in asked or () if code.upper() not in CURRENCY_COUNTRY]
+    if unknown:
+        logger.warning(f'rates: not a mapped currency: {", ".join(unknown)}')
+
     updated, failed, skipped = refresh_factors(
         path=into,
-        currencies=list(currencies) if currencies else None,
+        currencies=asked,
         force=force,
         on_result=report,
     )
@@ -45,7 +52,7 @@ def refresh(
         logger.warning(f'rates: no PPP factor returned for {", ".join(sorted(failed))}')
     from .. import money
 
-    return Refreshed(updated, failed, skipped, str(into or money.LOCAL_FACTORS))
+    return Refreshed(updated, failed, skipped, str(into or money.LOCAL_FACTORS), unknown)
 
 
 @dataclass(frozen=True)

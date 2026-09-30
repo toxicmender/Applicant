@@ -148,8 +148,9 @@ class ApplyToJobs:
             jobs = select(jobs, filters)
 
         record = applications(log, self.backend)
-        # applied to on an earlier run: never submitted, or offered, twice
-        done = record.applied()
+        # settled on an earlier run - applied to, or found to need a person:
+        # never submitted, or offered, again
+        done = record.settled()
         entries: list[Entry] = []
         targets: dict[str, list[Job]] = {}
         already = 0
@@ -170,7 +171,10 @@ class ApplyToJobs:
                 )
 
         if already:
-            logger.info(f'apply: {already} job(s) already applied to in {log}; skipped')
+            logger.info(
+                f'apply: {already} job(s) already settled in {log} '
+                '(applied, or needing a manual application); skipped'
+            )
         waiting = [job for batch in targets.values() for job in batch]
         if waiting and not dry_run and self.confirm is not None and not self.confirm(waiting):
             logger.warning(f'apply: {len(waiting)} application(s) not submitted: not confirmed')

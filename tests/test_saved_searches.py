@@ -93,6 +93,21 @@ class SavedSearchTest(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, 'searches.ai-ml.experiance'):
             Settings.load(config=str(self.config), environ={})
 
+    def test_a_count_of_zero_is_caught_at_load(self):
+        self.config.write_text(AI_ML + 'want = 0\n', encoding='utf-8')
+        with self.assertRaisesRegex(ConfigError, 'searches.ai-ml.want'):
+            Settings.load(config=str(self.config), environ={})
+
+    def test_a_count_of_zero_is_a_usage_error_on_the_command_line(self):
+        for flag, value in (('--want', '0'), ('--limit', '-5'), ('--posted-within', '0')):
+            with self.subTest(flag=flag):
+                err = io.StringIO()
+                with redirect_stderr(err), self.assertRaises(SystemExit) as exit:
+                    main(['search', 'x', flag, value, '--no-log-file'])
+                self.assertEqual(exit.exception.code, 2)
+                self.assertIn(flag, err.getvalue())
+                self.assertIn('must be 1 or more', err.getvalue())
+
     def test_an_unknown_board_is_caught_at_load(self):
         self.config.write_text(AI_ML.replace('"naukri"', '"monster"'), encoding='utf-8')
         with self.assertRaisesRegex(ConfigError, 'source'):

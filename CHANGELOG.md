@@ -5,7 +5,7 @@ All notable changes to applicant. The format follows
 [Semantic Versioning](https://semver.org/): while the major version is 0, a breaking
 change bumps the minor version.
 
-## [0.2.0] - 2026-09-27
+## [0.2.0] - 2026-09-30
 
 A redesign into layers - a pure domain core, shared infrastructure, services, and a
 thin CLI - carried out in six phases (see `docs/architecture-plan.md`), and a release
@@ -99,6 +99,14 @@ that removes what those phases kept for compatibility.
   paging counts each review once instead of stopping halfway, and a `--login`
   run asks you to clear the check once, not on every page.
 - One Indeed card without a title is skipped instead of failing the search.
+- `apply` does not offer a job again once it has an outcome - applied to, or
+  found to need a manual application on its own board; a dry run or a failure
+  still leaves it to be offered.
+- `search` counts (`--limit`, `--want`, `--max-rounds`, `--enrich-limit`,
+  `--posted-within`) must be 1 or more, on the command line and in a saved
+  search; `--want 0` used to mean "no target".
+- `rates --refresh -c XYZ` names a currency it does not know, and exits 2 when
+  none of those asked for is known, instead of reporting nothing done.
 - AmbitionBox keeps the rating and the reviews already read when a later page
   of reviews fails.
 - A commit pushed by the formatting workflow gets its own CI run, so the

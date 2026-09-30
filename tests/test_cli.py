@@ -270,6 +270,30 @@ class RatesCommandTest(unittest.TestCase):
                 self.assertIn(currency, output)
         self.assertIn('of {} mapped currencies'.format(len(set(CURRENCY_COUNTRY.values()))), output)
 
+    def test_an_unknown_currency_is_named_not_silently_dropped(self):
+        with (
+            tempfile.TemporaryDirectory() as root,
+            mock.patch('applicant.money.fetch_factor', side_effect=AssertionError('fetched')),
+        ):
+            code, output = self.run_rates('--refresh', '-c', 'xyz', '--data-dir', root)
+        self.assertEqual(code, 2)
+        self.assertIn('not a mapped currency: XYZ', output)
+
+    def test_the_known_ones_are_still_refreshed_beside_an_unknown_one(self):
+        with (
+            tempfile.TemporaryDirectory() as root,
+            mock.patch(
+                'applicant.money.fetch_factor', return_value={'value': 0.7, 'year': '2024'}
+            ) as fetched,
+        ):
+            code, output = self.run_rates(
+                '--refresh', '--force', '-c', 'GBP', 'XYZ', '--data-dir', root
+            )
+            self.assertTrue((Path(root) / 'ppp_factors.json').exists())
+        self.assertEqual(code, 0)
+        self.assertIn('not a mapped currency: XYZ', output)
+        self.assertEqual(fetched.call_args.args[0], 'GBR')
+
     def test_a_cached_factor_shows_its_value_and_year(self):
         _, output = self.run_rates()
         self.assertIn('USD (USA): 1.0 per international $ (definition)', output)

@@ -58,26 +58,31 @@ def is_final(row: dict) -> bool:
 
 
 @dataclass(frozen=True)
-class Applied:
-    """What a log says has been applied to already, by the rules `plan_rows`
-    logs by: the posting's board id, or the same job applied to through another
-    board. (Two ids on one board are two postings, however alike they look.)"""
+class Settled:
+    """What a log says is done with - an outcome, not a rehearsal or a failure.
+
+    A posting is settled by any final row under its own board id: applied to,
+    or found to need a person (`needs_manual_apply`). Across boards only an
+    application counts: the same job applied to through another board is done,
+    but one merely listed there ("apply on indeed directly") is not - its
+    LinkedIn copy may still take Easy Apply. And two ids on one board are two
+    postings, however alike they look, as in `plan_rows`."""
 
     keys: set[tuple[str | None, str | None]] = field(default_factory=set)
     # fingerprint -> the boards it was applied to through
     boards: dict[str, set[str | None]] = field(default_factory=dict)
 
     @classmethod
-    def from_rows(cls, rows: Iterable[dict]) -> Applied:
-        applied = cls()
+    def from_rows(cls, rows: Iterable[dict]) -> Settled:
+        settled = cls()
         for row in rows:
-            if row.get('status') != 'applied':
+            if not row.get('status') or not is_final(row):
                 continue
-            applied.keys.add((row.get('source'), row.get('id')))
+            settled.keys.add((row.get('source'), row.get('id')))
             mark = fingerprint(row)
-            if mark:
-                applied.boards.setdefault(mark, set()).add(row.get('source'))
-        return applied
+            if mark and row.get('status') == 'applied':
+                settled.boards.setdefault(mark, set()).add(row.get('source'))
+        return settled
 
     def covers(self, job: Job) -> bool:
         if (job.source, job.id) in self.keys:
@@ -281,8 +286,8 @@ class ApplicationLog:
         logger.info(f'{self.path}: recorded {len(fresh)} application(s)')
         return len(fresh)
 
-    def applied(self) -> Applied:
-        return Applied.from_rows(self.rows())
+    def settled(self) -> Settled:
+        return Settled.from_rows(self.rows())
 
     def rows(self) -> list[dict[str, str]]:
         """Everything recorded so far, in the order it was written."""
