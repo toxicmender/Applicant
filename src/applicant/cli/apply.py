@@ -30,6 +30,11 @@ def add_parser(add) -> argparse.ArgumentParser:
         '--dry-run', action='store_true', help='show what would be applied to, without applying'
     )
     apply_.add_argument('--show', action='store_true', help='run the browser visibly')
+    apply_.add_argument(
+        '--cookies',
+        help='the signed-in session `applicant jobs` saved (default: [files] cookies, '
+        'cookies.json)',
+    )
     add_filters(apply_)
     apply_.add_argument(
         '-y',
@@ -80,7 +85,8 @@ def run(args) -> int:
             declined.extend(targets)
         return answered
 
-    with Jobs(headless=not args.show, backend=settings.store) as board:
+    session = file_arg(args, 'cookies', 'cookies')
+    with Jobs(headless=not args.show, backend=settings.store, session=session) as board:
         board.apply(work.matching, log=log, dry_run=args.dry_run, confirm=confirm)
     if declined:
         print('not submitted: {} application(s); nothing was logged for them'.format(len(declined)))

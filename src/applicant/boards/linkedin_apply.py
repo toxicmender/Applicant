@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 from ..domain.job import Job
 from ..domain.ports import ApplicationResult, Interrupted, easy_apply_results
 from ..errors import Blocked, SourceError
-from ..infra.browser import BrowserSession
+from ..infra.browser import BrowserSession, looks_blocked
 from ..interaction import Interaction, Terminal
 from .linkedin import LinkedInGuest
 
@@ -43,6 +43,8 @@ FORM_ERROR = '.artdeco-inline-feedback--error'
 CONFIRM_TIMEOUT_MS = 10_000
 # what _apply_one says when it clicked Submit and heard nothing back
 UNCONFIRMED_SUBMIT = 'unconfirmed'
+# where LinkedIn sends a browser that is not signed in, or must pass a check
+SIGNED_OUT = ('/login', '/authwall', '/checkpoint/', '/uas/')
 
 
 class LinkedIn(LinkedInGuest):
@@ -64,9 +66,12 @@ class LinkedIn(LinkedInGuest):
         self._browser_session: BrowserSession | None = None
         # the last easy_apply's outcomes, kept as they happen so an interrupt
         # cannot lose them: the urls applied to, and those submitted without
-        # LinkedIn confirming them - possibly sent, so never retried blindly
+        # LinkedIn confirming them - possibly sent, so never retried blindly -
+        # and those that failed before anything was sent (url -> why): not an
+        # outcome, so a later run tries them again
         self.applied: list[str] = []
         self.unconfirmed: list[str] = []
+        self.failed: dict[str, str] = {}
 
     # -- the Applier port -------------------------------------------------
 
@@ -83,9 +88,11 @@ class LinkedIn(LinkedInGuest):
         try:
             applied = self.easy_apply(jobs)
         except KeyboardInterrupt as stop:
-            done = easy_apply_results(jobs, self.applied, self.unconfirmed, tried_only=True)
+            done = easy_apply_results(
+                jobs, self.applied, self.unconfirmed, self.failed, tried_only=True
+            )
             raise Interrupted(done) from stop
-        return easy_apply_results(jobs, set(applied), set(self.unconfirmed))
+        return easy_apply_results(jobs, set(applied), set(self.unconfirmed), self.failed)
 
     # -- browser session --------------------------------------------------
 
@@ -254,7 +261,7 @@ class LinkedIn(LinkedInGuest):
         from. Only single step applications go through; anything asking extra
         questions is left open for you rather than guessed at.
         """
-        self.applied, self.unconfirmed = [], []
+        self.applied, self.unconfirmed, self.failed = [], [], {}
         if isinstance(source, (str, Path)):
             try:
                 with open(source, encoding='utf-8') as file:
@@ -269,11 +276,14 @@ class LinkedIn(LinkedInGuest):
         page = self._start()
 
         applied = self.applied
-        for item in stored:
-            if item.get('source') != 'linkedin' or not item.get('url'):
-                continue
-            if item.get('easy_apply') is False:
-                continue
+        eligible = [
+            item
+            for item in stored
+            if item.get('source') == 'linkedin'
+            and item.get('url')
+            and item.get('easy_apply') is not False
+        ]
+        for index, item in enumerate(eligible):
             # Each application is its own transaction. One that fails part way
             # must not take the ones already submitted with it: those are
             # returned, and so recorded, whatever happens to the rest
@@ -284,12 +294,21 @@ class LinkedIn(LinkedInGuest):
                     self.unconfirmed.append(item['url'])
                 elif outcome:
                     applied.append(item['url'])
+            except Blocked as error:
+                # signed out, or a check to clear: nothing more can be done in
+                # this run, and none of what is left has an outcome yet
+                logger.warning(f'linkedin: stopped applying: {error}')
+                for left in eligible[index:]:
+                    self.failed[left['url']] = str(error)
+                break
             except Exception as error:  # one posting, logged in full, never fatal
                 logger.error(
                     f'linkedin: easy apply failed for {item["url"]}: '
                     f'{type(error).__name__}: {error}'
                 )
                 logger.debug('linkedin: easy apply traceback', exc_info=True)
+                # a timeout or a crashed page is not an outcome: tried again later
+                self.failed[item['url']] = type(error).__name__
 
         logger.info(f'linkedin: easy applied to {len(applied)} job(s)')
         return applied
@@ -299,6 +318,13 @@ class LinkedIn(LinkedInGuest):
         UNCONFIRMED_SUBMIT when Submit was clicked and no confirmation came - it
         may have gone through; False when nothing was submitted."""
         page.goto(item['url'], wait_until='domcontentloaded')
+        # a login wall has no Easy Apply button either - but it is no answer
+        # about this job, and every job after it would read the same
+        if any(wall in page.url for wall in SIGNED_OUT) or looks_blocked(page):
+            raise Blocked(
+                'LinkedIn signed out, or asked for a check, at {} - run `applicant jobs` '
+                '(with --show to clear a check) and apply again'.format(page.url)
+            )
         button = page.locator('button.jobs-apply-button').first
         if not button.count():
             logger.debug(f'linkedin: no easy apply button on {item["url"]}')

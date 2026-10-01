@@ -7,7 +7,7 @@ Only ports the code actually depends on are here. The rest of the plan's list
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -46,11 +46,13 @@ def easy_apply_results(
     jobs: list[Job],
     applied: Collection[str],
     unconfirmed: Collection[str],
+    failed: Mapping[str, str] | None = None,
     *,
     tried_only: bool = False,
 ) -> list[ApplicationResult]:
     """What an Easy Apply run came to, one result per job, from the urls it
-    applied to and the ones it submitted without LinkedIn confirming them.
+    applied to, the ones it submitted without LinkedIn confirming them, and
+    the ones that failed before anything was sent (url -> why).
 
     `tried_only`: leave out the jobs that got neither outcome - after an
     interrupt they were never tried, and with no row a later run offers them.
@@ -61,6 +63,9 @@ def easy_apply_results(
             results.append(ApplicationResult(job, 'applied', 'linkedin easy apply'))
         elif job.url in unconfirmed:
             results.append(ApplicationResult(job, 'needs_manual_apply', UNCONFIRMED))
+        elif failed and job.url is not None and job.url in failed:
+            # provisional: a later run tries it again
+            results.append(ApplicationResult(job, 'failed', failed[job.url]))
         elif not tried_only:
             results.append(ApplicationResult(job, 'needs_manual_apply', NOT_EASY_APPLY))
     return results

@@ -33,6 +33,13 @@ that removes what those phases kept for compatibility.
 | `search --limit` etc. parsed to their defaults | unset search flags parse as `None` and take their defaults after any saved search |
 | log commentary on stdout | on stderr; stdout carries each command's answer |
 | refreshed PPP factors written into the installed package | written to `ppp_factors.json` in the data directory |
+| `applicant apply` drove a signed-out browser, so every LinkedIn job was logged "not easy apply, or a multi step form" | it signs in with the session `applicant jobs` saved (`--cookies`, default `cookies.json`); with none, its LinkedIn rows are `failed`, saying to run `applicant jobs` |
+
+**Upgrading a 0.1.x log:** a `needs_manual_apply` row is now final - the job is
+not offered again. 0.1.x never signed in to apply, so its LinkedIn rows noted "not
+easy apply, or a multi step form" say nothing about the job. Delete those rows from
+`applied_jobs.csv` to have 0.2.0 try them (a hand-edited file wins over
+`applicant.db`).
 
 ### Added
 
@@ -122,6 +129,10 @@ that removes what those phases kept for compatibility.
 - Ctrl-C part way through `apply` no longer loses the run's log: applications
   already sent, and the rows for the other boards, are recorded before it exits
   130. Jobs it never reached get no row, so the next run offers them.
+- A login wall, an expired session or a security check part way through an
+  Easy Apply run stops it, and the jobs left are logged `failed` - tried again
+  later - rather than each settled as "not easy apply". So is a job that timed
+  out or crashed before anything was submitted.
 - Salaries as Indeed's other country sites write them are read correctly:
   `45.000 €` is forty-five thousand, not forty-five; `45 000 €`, `CHF 110'000`,
   `pro Monat`, `par an` and the other local pay periods; `¥`, `CHF`, `AUD`, `CA$`

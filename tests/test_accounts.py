@@ -249,7 +249,10 @@ class ConfirmCommandTest(TempDir):
         self.assertIn('not submitted: 1', out)
 
     def test_yes_submits_without_asking(self):
-        with mock.patch.object(LinkedIn, 'easy_apply', return_value=['https://linkedin.example/1']):
+        with (
+            mock.patch.object(LinkedIn, 'restore_session', return_value=True),
+            mock.patch.object(LinkedIn, 'easy_apply', return_value=['https://linkedin.example/1']),
+        ):
             code, out = self.run_apply('--yes')
         self.assertEqual(code, 0)
         self.assertNotIn('about to submit', out)
@@ -312,6 +315,7 @@ class ConfirmedApplicationTest(unittest.TestCase):
         from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
         from applicant.boards.linkedin_apply import APPLICATION_SENT
+        from applicant.infra.browser import BLOCKED_SELECTORS
 
         page = mock.MagicMock()
         located: dict[str, mock.MagicMock] = {}
@@ -325,6 +329,10 @@ class ConfirmedApplicationTest(unittest.TestCase):
             return located[selector]
 
         page.locator.side_effect = locator
+        # landed on the job itself, signed in, with no bot check
+        page.url = POSTING['url']
+        page.title.return_value = 'ML | LinkedIn'
+        locator(BLOCKED_SELECTORS).count.return_value = 0
         locator('#follow-company-checkbox').count.return_value = 0
         sent_locator = locator(APPLICATION_SENT)
         sent_locator.count.return_value = 1 if sent else 0
@@ -443,6 +451,122 @@ class ConfirmedApplicationTest(unittest.TestCase):
         ):
             client.easy_apply(Path(folder) / 'missing.json')
         self.assertEqual((client.applied, client.unconfirmed), ([], []))
+
+
+class StoppedApplyTest(TempDir):
+    """Nothing that says "no answer about this job" may settle it."""
+
+    def test_a_login_wall_is_blocked_not_no_easy_apply(self):
+        from applicant.boards.linkedin_apply import SIGNED_OUT
+
+        for wall in SIGNED_OUT:
+            with self.subTest(wall=wall):
+                page = ConfirmedApplicationTest.page(self, sent=False)  # type: ignore[arg-type]
+                page.url = f'https://www.linkedin.com{wall}x?session_redirect=jobs'
+                with self.assertRaises(Blocked):
+                    LinkedIn(delay=0)._apply_one(page, POSTING)
+
+    def test_a_bot_check_is_blocked_too(self):
+        from applicant.infra.browser import BLOCKED_SELECTORS
+
+        page = ConfirmedApplicationTest.page(self, sent=False)  # type: ignore[arg-type]
+        page.locator(BLOCKED_SELECTORS).count.return_value = 1
+        with self.assertRaises(Blocked):
+            LinkedIn(delay=0)._apply_one(page, POSTING)
+
+    def run_with(self, *outcomes, path='port'):
+        client = LinkedIn(delay=0)
+        self.addCleanup(client.close)
+        jobs = [posting('linkedin', str(n)) for n in range(len(outcomes) + 1)]
+        jobs.append(posting('indeed', '9'))
+        log = str(self.root / 'applied.csv')
+        applier = client if path == 'port' else EasyApply(lambda: client)
+        with (
+            mock.patch.object(LinkedIn, '_start', return_value=mock.MagicMock()),
+            mock.patch.object(LinkedIn, '_apply_one', side_effect=[*outcomes, False]),
+        ):
+            ApplyToJobs({'linkedin': applier}).run(jobs, log=log, dry_run=False)
+        rows = ApplicationLog(log).rows()
+        return {row['id']: (row['status'], row['note']) for row in rows}, rows
+
+    def test_a_wall_part_way_stops_and_settles_nothing_after_it(self):
+        from applicant.storage import Settled
+
+        for path in ('port', 'service'):
+            with self.subTest(path=path):
+                self.root = Path(tempfile.mkdtemp(dir=self._dir.name))
+                with self.assertLogs('applicant.boards.linkedin_apply', 'WARNING'):
+                    found, rows = self.run_with(True, Blocked('signed out'), path=path)
+                self.assertEqual(found['0'][0], 'applied')
+                self.assertEqual(found['1'], ('failed', 'signed out'))
+                self.assertEqual(found['2'], ('failed', 'signed out'), 'never tried')
+                self.assertFalse(Settled.from_rows(rows).covers(posting('linkedin', '2')))
+
+    def test_a_timeout_is_failed_and_tried_again_later(self):
+        from applicant.storage import Settled
+
+        for path in ('port', 'service'):
+            with self.subTest(path=path):
+                self.root = Path(tempfile.mkdtemp(dir=self._dir.name))
+                with self.assertLogs('applicant.boards.linkedin_apply', 'ERROR'):
+                    found, rows = self.run_with(TimeoutError('goto'), path=path)
+                self.assertEqual(found['0'], ('failed', 'TimeoutError'))
+                self.assertFalse(Settled.from_rows(rows).covers(posting('linkedin', '0')))
+                self.assertEqual(found['1'][0], 'needs_manual_apply', 'a real "no" still settles')
+
+
+class SessionTest(TempDir):
+    """`apply` signs in with the session `applicant jobs` saved."""
+
+    def test_no_session_is_a_failed_row_that_says_what_to_do(self):
+        log = str(self.root / 'applied.csv')
+        with (
+            mock.patch.object(LinkedIn, 'restore_session', return_value=False) as restore,
+            mock.patch.object(LinkedIn, '_apply_one', side_effect=AssertionError('applied')),
+            self.assertLogs('applicant.services.apply', 'WARNING'),
+            Jobs(session=self.root / 'missing.json') as board,
+        ):
+            board.apply([posting('linkedin', '1'), posting('indeed', '2')], log=log, dry_run=False)
+        restore.assert_called_once_with(self.root / 'missing.json')
+        rows = {row['id']: row for row in ApplicationLog(log).rows()}
+        self.assertEqual(rows['1']['status'], 'failed')
+        self.assertIn('applicant jobs', rows['1']['note'])
+        self.assertEqual(rows['2']['status'], 'needs_manual_apply')
+
+    def test_a_restored_session_is_used(self):
+        log = str(self.root / 'applied.csv')
+        with (
+            mock.patch.object(LinkedIn, 'restore_session', return_value=True),
+            mock.patch.object(LinkedIn, '_start', return_value=mock.MagicMock()),
+            mock.patch.object(LinkedIn, '_apply_one', return_value=True),
+            Jobs() as board,
+        ):
+            board.apply([posting('linkedin', '1')], log=log, dry_run=False)
+        self.assertEqual(ApplicationLog(log).rows()[0]['status'], 'applied')
+
+    def test_the_cli_passes_its_cookies_file(self):
+        save_jobs([posting('linkedin', '1')], str(self.root / 'jobs.json'))
+        with (
+            mock.patch('applicant.search.Jobs') as made,
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(io.StringIO()),
+        ):
+            made.return_value.__enter__.return_value = made.return_value
+            code = main(
+                [
+                    '--no-log-file',
+                    'apply',
+                    '-i',
+                    str(self.root / 'jobs.json'),
+                    '--log',
+                    str(self.root / 'log.csv'),
+                    '--cookies',
+                    str(self.root / 'mine.json'),
+                    '--yes',
+                ]
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(made.call_args.kwargs['session'], str(self.root / 'mine.json'))
 
 
 class InterruptedApplyTest(TempDir):

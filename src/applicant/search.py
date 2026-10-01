@@ -16,10 +16,11 @@ search and an apply. The work itself is in `applicant.services.search` and
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .domain.job import Job
-from .errors import SourceError
+from .errors import Blocked, SourceError
 from .filters import JobFilter
 from .infra.store.repositories import Backend
 from .log import get
@@ -44,6 +45,7 @@ class Jobs:
         headless: bool = True,
         linkedin: LinkedIn | None = None,
         backend: Backend = 'files',
+        session: str | Path = 'cookies.json',
     ):
         self.sources = tuple(sources)
         self.headless = headless
@@ -51,17 +53,34 @@ class Jobs:
         # where apply() logs: 'files' is the CSV alone, 'sqlite' the database
         # beside it with the CSV exported (see applicant.infra.store)
         self.backend: Backend = backend
+        # the signed in session `applicant jobs` saved; apply() restores it
+        self.session = session
 
     def linkedin(self) -> LinkedIn:
         """The signed in LinkedIn client, made only when something is submitted.
 
         Loading it loads the account module; a search never does - it reads
-        LinkedIn as a guest (`_client`).
+        LinkedIn as a guest (`_client`). Unless one was passed in, it is signed
+        in from `session`; with no usable session it is `Blocked` - a signed out
+        browser finds no Easy Apply button anywhere, and would settle every job
+        as "not easy apply".
         """
         if self._linkedin is None:
             from .boards.linkedin_apply import LinkedIn
 
-            self._linkedin = LinkedIn(headless=self.headless)
+            client = LinkedIn(headless=self.headless)
+            try:
+                restored = client.restore_session(self.session)
+            except BaseException:
+                close_quietly('linkedin', client)
+                raise
+            if not restored:
+                close_quietly('linkedin', client)
+                raise Blocked(
+                    f'no usable LinkedIn session in {self.session} - '
+                    'run `applicant jobs` to sign in, then apply again'
+                )
+            self._linkedin = client
         return self._linkedin
 
     def close(self) -> None:

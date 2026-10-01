@@ -165,6 +165,11 @@ Reads `job_listing.json`, keeps what matches the same filters as above, and appe
 every one to `applied_jobs.csv`. `--dry-run` records what *would* happen without
 submitting anything - and without opening a browser or signing in.
 
+A real run signs in with the session `applicant jobs` saved (`--cookies`, default
+`cookies.json`), so run `applicant jobs` first. With no usable session - or if
+LinkedIn signs you out or asks for a check part way - the LinkedIn rows are logged
+`failed`, which a later run tries again.
+
 **Nothing is sent in your name without a yes.** Without `--dry-run`, `apply` lists
 every application it is about to submit and waits for you to type `yes`. Any other
 answer submits nothing, and so does running with no terminal to ask on (a cron job,

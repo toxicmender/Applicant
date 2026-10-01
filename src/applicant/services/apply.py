@@ -75,7 +75,11 @@ def easy_apply_with(client: EasyApplier, jobs: list[Job]) -> list[Entry]:
     except KeyboardInterrupt as stop:
         # what was already sent is real: it travels with the interrupt to the log
         done = easy_apply_results(
-            jobs, _urls(client, 'applied'), _urls(client, 'unconfirmed'), tried_only=True
+            jobs,
+            _urls(client, 'applied'),
+            _urls(client, 'unconfirmed'),
+            _failed(client),
+            tried_only=True,
         )
         raise Interrupted(done) from stop
     except SourceError as error:
@@ -90,7 +94,10 @@ def easy_apply_with(client: EasyApplier, jobs: list[Job]) -> list[Entry]:
     # submitted without LinkedIn confirming it: possibly sent, and the note has
     # to say so, or the row reads as "nothing was sent" and invites a second go
     return [
-        result.entry() for result in easy_apply_results(jobs, applied, _urls(client, 'unconfirmed'))
+        result.entry()
+        for result in easy_apply_results(
+            jobs, applied, _urls(client, 'unconfirmed'), _failed(client)
+        )
     ]
 
 
@@ -98,6 +105,12 @@ def _urls(client: object, name: str) -> set[str]:
     """The urls a client kept under `name`, if it keeps any (a LinkedIn does)."""
     found = getattr(client, name, None)
     return set(found) if isinstance(found, (list, tuple, set)) else set()
+
+
+def _failed(client: object) -> dict[str, str]:
+    """The jobs a client failed on before sending anything (url -> why), if it says."""
+    found = getattr(client, 'failed', None)
+    return dict(found) if isinstance(found, dict) else {}
 
 
 class EasyApply:
