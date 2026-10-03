@@ -1,12 +1,14 @@
 # The only job that writes: it formats the branch and pushes the result back.
 #
 # Kept in its own workflow because it needs `contents: write`, which nothing else
-# here does. Everything in ci.yml is read only and reports rather than gates.
+# here does. Everything in ci.yml is read only.
 #
-# Note: a push made with GITHUB_TOKEN does not trigger workflows, so the ci.yml
-# run you see belongs to the commit *before* formatting. That is deliberate - it
-# stops the two workflows pushing each other in a loop - and it costs nothing,
-# because formatting never changes behaviour and ci.yml never gates a merge.
+# A push made with GITHUB_TOKEN does not trigger workflows - which is what stops
+# the two workflows pushing each other in a loop - so ci.yml would never run on
+# the formatted commit. But ci.yml's `status` is the merge gate: a head commit
+# without it waits forever. So after pushing, this dispatches ci.yml for the
+# branch (workflow_dispatch is the one event GITHUB_TOKEN may start), and the
+# formatted commit gets its own run.
 name: format
 
 on:
@@ -15,6 +17,8 @@ on:
 
 permissions:
   contents: write
+  # to dispatch ci.yml for the commit this pushes
+  actions: write
 
 concurrency:
   # a second push while this is committing would race the first one's push
@@ -81,6 +85,12 @@ jobs:
             git pull --rebase origin "${GITHUB_REF_NAME}"
           done
           git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Run CI on the formatted commit
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
 
       - name: Note the commit for git blame
         if: steps.commit.outputs.changed == 'true'

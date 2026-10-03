@@ -1,7 +1,8 @@
-"""The shared vocabulary of the job boards.
+"""A job posting, normalised across every board.
 
-Every board module returns the same `Job` objects and raises the same errors, so
-`applicant.search` and any other caller can mix sources without special casing them.
+Every board returns these same `Job` objects, so everything downstream -
+filtering, dedupe, storage, applying - can mix sources without special casing
+them. Pure: validation and parsing only, no I/O.
 """
 
 from __future__ import annotations
@@ -9,15 +10,6 @@ from __future__ import annotations
 import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-
-
-class JobsError(Exception):
-    """Base class for every failure raised by the job board clients."""
-
-
-class BlockedError(JobsError):
-    """A bot check, captcha or login wall stopped the scrape."""
-
 
 EXPERIENCE = re.compile(
     r'(\d+(?:\.\d+)?)\s*(?:-|to|–)\s*(\d+(?:\.\d+)?)\s*\+?\s*(?:yrs?|years?)'
@@ -106,7 +98,7 @@ class Job(BaseModel):
     remote: bool | None = None
     easy_apply: bool | None = None
     # why a job survived a filter it could not be checked against,
-    # e.g. 'salary-unknown' - see applicant.filters
+    # e.g. 'salary-unknown' - see applicant.domain.flags
     flags: list[str] = Field(default_factory=list)
 
     @field_validator('*', mode='before')

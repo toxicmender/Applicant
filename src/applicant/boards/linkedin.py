@@ -1,48 +1,32 @@
-"""LinkedIn jobs, on Playwright.
+"""LinkedIn's guest job search: read-only, no account, no browser.
 
-Two very different paths live here:
+`LinkedInGuest` reads the job cards LinkedIn serves to logged out clients, and
+the postings behind them. It cannot sign in, and cannot apply to anything.
 
-* `search()` uses LinkedIn's guest endpoint, which serves job cards to logged
-  out clients. No browser and no account needed, so it is the reliable one.
-* `login()` / `scrape_jobs()` / `easy_apply()` drive a real browser against the
-  logged in site, which is the only way to reach recommended jobs and the Easy
-  Apply flow.
-
-Session state is Playwright's storage_state. Cookie files written by the older
-Selenium version are converted on read, so an existing cookies.json keeps working.
+Everything that acts as you - signing in, the recommended jobs page, Easy
+Apply - lives in `applicant.boards.linkedin_apply`, which a search never
+imports (a test checks). Reading public job cards and submitting applications
+on your real account are different risks, and the code that can do the second
+is kept small and on its own.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import re
-import time
 from html import unescape
-from pathlib import Path
-from typing import TYPE_CHECKING
 from urllib.parse import urlencode
 
-import httpx
-
-from ..browser import BROWSER_ARGS, USER_AGENT
-from ..log import get
-from ..models import BlockedError, Job, JobsError
+from ..domain.job import Job
+from ..errors import SourceError
+from ..infra.http import HEADERS, HttpClient
 from . import CAPABILITIES
-
-if TYPE_CHECKING:
-    from playwright.sync_api import Browser as PlaywrightBrowser
-    from playwright.sync_api import BrowserContext, Page, Playwright
 
 logger = logging.getLogger(__name__)
 
 GUEST_SEARCH = 'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search'
 GUEST_POSTING = 'https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{}'
 GUEST_PAGE_SIZE = 10
-
-HEADERS = {'User-Agent': USER_AGENT, 'Accept-Language': 'en-US,en;q=0.9'}
-
-logger = get(__name__)
 
 CARD = re.compile(r'<li>(.*?)</li>', re.DOTALL)
 FIELDS = {
@@ -59,33 +43,33 @@ TAGS = re.compile(r'<[^>]+>')
 def _clean(value):
     if value is None:
         return None
-    return TAGS.sub('', value).replace('&amp;', '&').strip() or None
+    # every entity, not just &amp;: titles carry &#39; and &quot; as often
+    return unescape(TAGS.sub('', value)).strip() or None
 
 
-class LinkedIn:
+class LinkedInGuest:
+    """LinkedIn job search as a logged out visitor sees it."""
+
     capability = CAPABILITIES['linkedin']
 
-    def __init__(
-        self,
-        path=None,
-        headless=True,
-        state='linkedin_state.json',
-        timeout=45000,
-        delay=1.0,
-        client=None,
-    ):
-        # `path` was the chromedriver location under Selenium; Playwright ships its
-        # own browser, so it is accepted only so old call sites keep working
-        self.driver_path = path
+    def __init__(self, headless=True, timeout=45000, delay=1.0, client=None):
+        # headless and timeout are for the signed in subclass's browser; the
+        # guest pages need none
         self.headless = headless
-        self.state = state
         self.timeout = timeout
         self.delay = delay
-        self.client = client or httpx.Client(headers=HEADERS, timeout=30.0, follow_redirects=True)
-        self._playwright: Playwright | None = None
-        self._browser: PlaywrightBrowser | None = None
-        self._context: BrowserContext | None = None
-        self._page: Page | None = None
+        # 429 is deliberately not retried: carrying on through a rate limit is
+        # how a working scrape becomes a blocked one, so it is Blocked at once.
+        # `delay` spaces every guest request, search pages and posting reads alike.
+        self.http = HttpClient(
+            'LinkedIn',
+            client=client,
+            headers=HEADERS,
+            backoff=delay,
+            interval=delay,
+            retry_on=(502, 503, 504),
+        )
+        self.client = self.http.client
 
     # -- guest search (no account needed) ---------------------------------
 
@@ -100,16 +84,10 @@ class LinkedIn:
                 # LinkedIn wants the window in seconds, as r<seconds>
                 query['f_TPR'] = 'r{}'.format(int(posted_within_days) * 86400)
             logger.debug(f'linkedin: guest search page at offset {start}')
-            try:
-                response = self.client.get('{}?{}'.format(GUEST_SEARCH, urlencode(query)))
-            except httpx.TransportError as error:
-                raise JobsError(f'could not reach LinkedIn: {error}') from error
-            if response.status_code == 429:
-                raise BlockedError(
-                    'LinkedIn rate limited the guest search; slow down or retry later'
-                )
+            # an unreachable host or a 429 leaves HttpClient as a SourceError
+            response = self.http.get('{}?{}'.format(GUEST_SEARCH, urlencode(query)))
             if response.is_error:
-                raise JobsError(f'LinkedIn guest search answered HTTP {response.status_code}')
+                raise SourceError(f'LinkedIn guest search answered HTTP {response.status_code}')
 
             cards = CARD.findall(response.text)
             if not cards:
@@ -131,8 +109,6 @@ class LinkedIn:
                 break
 
             start += GUEST_PAGE_SIZE
-            if len(jobs) < limit:
-                time.sleep(self.delay)
 
         logger.info(f'linkedin: {min(len(jobs), limit)} job(s) from the guest search')
         return jobs[:limit]
@@ -169,295 +145,20 @@ class LinkedIn:
         if not job.id:
             return None
 
-        response = self.client.get(GUEST_POSTING.format(job.id))
-        if response.status_code == 429:
-            raise BlockedError('LinkedIn rate limited the guest posting reads; slow down or retry')
+        # a 429 leaves as Blocked, which stops the enrichment rather than this job
+        response = self.http.get(GUEST_POSTING.format(job.id))
         if response.status_code != 200:
             return None
 
         text = unescape(TAGS.sub(' ', response.text))
         return re.sub(r'\s+', ' ', text).strip() or None
 
-    # -- browser session --------------------------------------------------
-
-    def _start(self, storage_state=None) -> Page:
-        if self._page is not None:
-            return self._page
-
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError:
-            raise JobsError(
-                'the LinkedIn browser flows need playwright: '
-                'uv sync && uv run playwright install chromium'
-            ) from None
-
-        self._playwright = sync_playwright().start()
-        self._browser = self._playwright.chromium.launch(headless=self.headless, args=BROWSER_ARGS)
-        self._context = self._browser.new_context(
-            user_agent=USER_AGENT,
-            locale='en-US',
-            viewport={'width': 1366, 'height': 900},
-            storage_state=storage_state,
-        )
-        page = self._context.new_page()
-        page.set_default_timeout(self.timeout)
-        self._page = page
-        return page
-
-    def _session(self) -> BrowserContext:
-        """The live context, started if it is not already."""
-        self._start()
-        if self._context is None:  # pragma: no cover - _start always sets it
-            raise JobsError('the browser session did not start')
-        return self._context
-
-    def login(
-        self,
-        username,
-        password,
-        twoFA=False,
-        filepath: str | Path = 'cookies.json',
-        overwrite=False,
-    ):
-        target = Path(filepath)
-        if target.exists() and not overwrite:
-            logger.warning(
-                '{} already exists. Pass overwrite to log in again, or use '
-                'restore_session() to reuse it.'.format(filepath)
-            )
-            return
-
-        context = self._session()
-        page = self._start()
-        page.goto('https://www.linkedin.com/login', wait_until='domcontentloaded')
-        page.fill('#username', username)
-        page.fill('#password', password)
-        page.click('button[type="submit"]')
-
-        if twoFA:
-            page.wait_for_selector('input[name="pin"], #input__phone_verification_pin')
-            page.fill('input[name="pin"], #input__phone_verification_pin', input('Enter OTP: '))
-            page.click('#two-step-submit-button, button[type="submit"]')
-
-        page.wait_for_load_state('domcontentloaded')
-        # authentication outcomes are logged (ASVS 16.3.1); who and with what
-        # password never are - this is the user's own account on their machine
-        if '/login' in page.url or '/checkpoint/' in page.url:
-            logger.warning(f'linkedin: sign in did not complete (stopped at {page.url})')
-            raise BlockedError(
-                'LinkedIn did not complete the login (still on {}). '
-                'A manual challenge is probably waiting - rerun with '
-                'headless disabled.'.format(page.url)
-            )
-
-        context.storage_state(path=str(target))
-        logger.info('session saved to {}'.format(target))
-        logger.info(f'linkedin: signed in{" with 2FA" if twoFA else ""}; session saved to {target}')
-        print('session saved to {}'.format(target))
-
-    def restore_session(self, filepath: str | Path = 'cookies.json'):
-        state = self._load_state(filepath)
-        if state is None:
-            logger.warning(f'linkedin: no usable session in {filepath}')
-            print('no usable session in {}; call login() first'.format(filepath))
-            return False
-
-        page = self._start(storage_state=state)
-        page.goto('https://www.linkedin.com/feed/', wait_until='domcontentloaded')
-        if '/login' in page.url or '/authwall' in page.url:
-            logger.warning(f'linkedin: the session in {filepath} has expired')
-            print('saved session is no longer valid; call login() again')
-            return False
-        logger.info(f'linkedin: session restored from {filepath}')
-        print('session restored from {}'.format(filepath))
-        return True
-
-    def _load_state(self, filepath: str | Path):
-        """Accepts Playwright storage_state or the old Selenium cookies.json."""
-        try:
-            with open(filepath, encoding='utf-8') as file:
-                payload = json.load(file)
-        except FileNotFoundError:
-            return None
-        except ValueError as error:
-            logger.warning(f'linkedin: {filepath} is not valid JSON ({error})')
-            return None
-
-        if isinstance(payload, dict) and 'cookies' in payload:
-            return payload
-
-        cookies = payload.get('list') if isinstance(payload, dict) else None
-        if not cookies:
-            return None
-
-        converted = []
-        for cookie in cookies:
-            try:
-                if not cookie.get('name'):
-                    continue
-                converted.append(
-                    {
-                        'name': cookie['name'],
-                        'value': cookie.get('value', ''),
-                        'domain': cookie.get('domain', '.linkedin.com'),
-                        'path': cookie.get('path', '/'),
-                        'expires': float(cookie.get('expiry', -1)),
-                        'httpOnly': bool(cookie.get('httpOnly')),
-                        'secure': bool(cookie.get('secure', True)),
-                        'sameSite': 'Lax',
-                    }
-                )
-            except (AttributeError, TypeError, ValueError) as error:
-                # one malformed cookie; its value is a credential, so only the
-                # error type is logged
-                logger.warning(f'linkedin: skipped a malformed cookie ({type(error).__name__})')
-        logger.info(f'linkedin: converted {len(converted)} Selenium cookie(s)')
-        print('converted {} Selenium cookies to a Playwright session'.format(len(converted)))
-        return {'cookies': converted, 'origins': []}
-
-    # -- logged in flows --------------------------------------------------
-
-    def scrape_jobs(self, filepath='job_listing.json'):
-        """Recommended jobs from the signed in Jobs page."""
-        from ..storage import save_jobs
-
-        page = self._start()
-        page.goto(
-            'https://www.linkedin.com/jobs/collections/recommended/', wait_until='domcontentloaded'
-        )
-        if '/authwall' in page.url or '/login' in page.url:
-            raise BlockedError('not signed in - call login() or restore_session() first')
-
-        cards = page.locator('[data-job-id], .job-card-container')
-        seen = 0
-        # the list is virtualised, so keep scrolling until it stops growing
-        for _ in range(30):
-            count = cards.count()
-            if count and count == seen:
-                break
-            seen = count
-            page.mouse.wheel(0, 4000)
-            page.wait_for_timeout(1200)
-
-        jobs = []
-        for index in range(cards.count()):
-            card = cards.nth(index)
-            try:
-                text = [line for line in card.inner_text().split('\n') if line.strip()]
-            except Exception:  # noqa: BLE001 - a virtualised card scrolled out of the DOM
-                continue
-            if not text:
-                continue
-
-            job_id = card.get_attribute('data-job-id')
-            link = card.locator('a[href*="/jobs/view/"]').first
-            url = link.get_attribute('href') if link.count() else None
-            if url and url.startswith('/'):
-                url = 'https://www.linkedin.com' + url
-
-            jobs.append(
-                Job(
-                    source='linkedin',
-                    id=job_id,
-                    title=text[0],
-                    company=text[1] if len(text) > 1 else None,
-                    location=text[2] if len(text) > 2 else None,
-                    url=url.split('?')[0] if url else None,
-                    easy_apply='Easy Apply' in card.inner_text(),
-                )
-            )
-
-        total = save_jobs(jobs, filepath)
-        logger.info('scraped {} recommended jobs ({} in {})'.format(len(jobs), total, filepath))
-        logger.info(f'linkedin: {len(jobs)} recommended job(s) scraped')
-        print('scraped {} recommended jobs ({} in {})'.format(len(jobs), total, filepath))
-        return jobs
-
-    def easy_apply(self, filepath='job_listing.json'):
-        """Applies to the stored jobs that advertise Easy Apply.
-
-        Only single step applications go through; anything asking extra questions
-        is left open for you rather than guessed at.
-        """
-        page = self._start()
-        try:
-            with open(filepath, encoding='utf-8') as file:
-                stored = json.load(file).get('list', [])
-        except (FileNotFoundError, ValueError) as error:
-            logger.warning(f'linkedin: could not read {filepath}: {error}')
-            print('could not read {}: {}'.format(filepath, error))
-            return []
-
-        applied = []
-        for item in stored:
-            if item.get('source') != 'linkedin' or not item.get('url'):
-                continue
-            if item.get('easy_apply') is False:
-                continue
-            # Each application is its own transaction. One that fails part way
-            # must not take the ones already submitted with it: those are
-            # returned, and so recorded, whatever happens to the rest
-            # (OWASP Top 10:2025 A10 - roll back or complete, never lose track).
-            try:
-                if self._apply_one(page, item):
-                    applied.append(item['url'])
-            except Exception as error:  # one posting, logged in full, never fatal
-                logger.error(
-                    f'linkedin: easy apply failed for {item["url"]}: '
-                    f'{type(error).__name__}: {error}'
-                )
-                logger.debug('linkedin: easy apply traceback', exc_info=True)
-                print('failed: {}'.format(item.get('title') or item['url']))
-
-        logger.info(f'linkedin: easy applied to {len(applied)} job(s)')
-        return applied
-
-    def _apply_one(self, page, item) -> bool:
-        """Submit one single-step Easy Apply form. True only once it is sent."""
-        page.goto(item['url'], wait_until='domcontentloaded')
-        button = page.locator('button.jobs-apply-button').first
-        if not button.count():
-            logger.debug(f'linkedin: no easy apply button on {item["url"]}')
-            return False
-        button.click()
-        page.wait_for_timeout(1500)
-
-        follow = page.locator('#follow-company-checkbox')
-        if follow.count() and follow.is_checked():
-            follow.uncheck(force=True)
-
-        submit = page.locator('button[aria-label*="Submit application"]').first
-        if submit.count():
-            submit.click()
-            page.wait_for_timeout(1500)
-            logger.info(f'linkedin: applied to {item["url"]}')
-            print('applied: {}'.format(item.get('title') or item['url']))
-            return True
-
-        # multi step form - close it and leave this one alone
-        page.keyboard.press('Escape')
-        logger.info(f'linkedin: left a multi step form open for review: {item["url"]}')
-        print('skipped (multi step): {}'.format(item.get('title') or item['url']))
-        return False
-
-    # -- teardown ---------------------------------------------------------
-
     def close(self):
-        for handle in ('_context', '_browser'):
-            target = getattr(self, handle, None)
-            if target is not None:
-                try:
-                    target.close()
-                except Exception as error:  # noqa: BLE001 - teardown is best effort
-                    logger.debug(f'linkedin: closing {handle[1:]} failed: {error}')
-                setattr(self, handle, None)
-        if self._playwright is not None:
-            try:
-                self._playwright.stop()
-            except Exception as error:  # noqa: BLE001 - teardown is best effort
-                logger.debug(f'linkedin: stopping playwright failed: {error}')
-            self._playwright = None
+        """Release the HTTP client. Safe to call more than once."""
+        self.http.close()
 
-    def __del__(self):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
         self.close()

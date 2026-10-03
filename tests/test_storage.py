@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from applicant.models import Job
+from applicant.domain.job import Job
 from applicant.storage import (
     APPLIED_COLUMNS,
     ApplicationLog,

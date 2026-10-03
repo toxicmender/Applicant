@@ -6,6 +6,8 @@
 **/.money_cache.json
 **/storage_state.json
 **/company_financials.json
+**/applicant.db
+**/applicant.db-journal
 # unreadable stores moved aside by applicant.files - personal data, like the originals
 **/*.corrupt-*
 .gd_profile/

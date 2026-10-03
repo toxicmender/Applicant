@@ -1,10 +1,16 @@
-# Everything here reports and nothing here gates.
+# Everything here reports; only broken behaviour gates.
 #
-# Each job runs its tool, records the real outcome as a job output, and exits 0.
-# The `status` job collects those outcomes into one summary and one artifact, so
-# a red tool is visible without turning the workflow red.
+# Each job runs its tool and records the real outcome as a job output. `types`
+# and `unit` then fail when their tool did: a type error or a failing test is a
+# broken program, and a red run that reads green is how master stayed broken
+# unnoticed after a bad merge. Lint findings and format drift stay report-only -
+# style never blocks a merge. The `status` job collects every outcome into one
+# summary and one artifact, and fails if either gate did, so it is the single
+# check to mark as required.
 #
-# Formatting is the one thing that writes, and it lives in format.yml.
+# Formatting is the one thing that writes, and it lives in format.yml. Its push
+# starts no workflow of its own, so format.yml dispatches this one for the
+# formatted commit - otherwise that head would never get a `status` check.
 name: ci
 
 on:
@@ -118,6 +124,7 @@ jobs:
           else
             echo 'outcome=fail' >> "$GITHUB_OUTPUT"
             echo "detail=type errors by python - ${details}" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
 
       - uses: actions/upload-artifact@v4
@@ -151,10 +158,16 @@ jobs:
       - name: pytest
         id: pytest
         run: |
+          # any non-zero exit fails the job: 1 is failing tests, and 2-5 are a
+          # session that was interrupted, crashed or collected nothing - all of
+          # which mean the suite did not actually vouch for this commit
           if uv run pytest tests -v --junitxml="junit-${{ matrix.python }}.xml"; then
             echo 'outcome=pass' >> "$GITHUB_OUTPUT"
           else
+            code=$?
             echo 'outcome=fail' >> "$GITHUB_OUTPUT"
+            echo "pytest exited ${code}" >> "$GITHUB_STEP_SUMMARY"
+            exit "$code"
           fi
 
       # proves the suite still runs on the stdlib runner alone, which is what a
@@ -214,3 +227,14 @@ jobs:
           name: ci-status
           path: status.json
           retention-days: 90
+
+      # After the record is written, so a failing run still leaves its summary.
+      # `result` rather than `outputs.outcome` for unit: a matrix job's output is
+      # whichever version finished last, while its result covers all of them.
+      - name: Gate
+        env:
+          TYPES: ${{ needs.types.result }}
+          UNIT: ${{ needs.unit.result }}
+        run: |
+          echo "types: ${TYPES}, unit: ${UNIT}"
+          [ "$TYPES" = success ] && [ "$UNIT" = success ]
