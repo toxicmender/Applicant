@@ -20,7 +20,7 @@ from ..errors import SourceError
 from ..filters import JobFilter, prepared
 from ..infra.store.repositories import Backend, listing
 from .events import BoardSearched, Emit, ignore
-from .fanout import fan_out
+from .fanout import failure, fan_out
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +133,11 @@ class SearchJobs:
             return kept
 
         collected: list[Job] = []
-        for outcome in fan_out(sources, one, emit):
+        outcomes = fan_out(sources, one, emit)
+        stop = failure(outcomes)
+        if stop is not None:
+            raise stop
+        for outcome in outcomes:
             if outcome.result:
                 collected.extend(outcome.result)
         return collected

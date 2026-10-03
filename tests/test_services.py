@@ -154,6 +154,7 @@ class SearchServiceTest(unittest.TestCase):
         with (
             mock.patch.object(Jobs, '_client', lambda self, name: broken),
             self.assertLogs('applicant.services.fanout', 'WARNING'),
+            self.assertRaises(Blocked, msg='the only board failing is the search failing'),
         ):
             facade.search('x', on_error=lambda name, error: heard.append((name, str(error))))
         self.assertEqual(heard, [('indeed', 'bot check')])
@@ -204,11 +205,8 @@ class ReviewsServiceTest(TempDir):
 
     def test_nothing_fetched_writes_nothing(self):
         output = self.root / 'reviews.json'
-        with self.assertLogs('applicant', 'WARNING'):
-            found = fetch_reviews(
-                'tcs', {'glassdoor': self.client(Blocked('cloudflare'))}, str(output)
-            )
-        self.assertIsNone(found.written_to)
+        with self.assertLogs('applicant', 'WARNING'), self.assertRaises(Blocked):
+            fetch_reviews('tcs', {'glassdoor': self.client(Blocked('cloudflare'))}, str(output))
         self.assertFalse(output.exists())
 
 
@@ -340,3 +338,85 @@ class ExitCodeTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class EverySourceFailedTest(TempDir):
+    """One source failing is isolated; all of them failing is the run failing,
+    and the exit code says why rather than "nothing matched"."""
+
+    def search(self, boards) -> int:
+        with (
+            mock.patch.object(Jobs, '_client', lambda self, name: boards[name]),
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(io.StringIO()),
+        ):
+            return main(
+                [
+                    'search',
+                    'python',
+                    '--source',
+                    *boards,
+                    '--data-dir',
+                    str(self.root),
+                    '--no-log-file',
+                ]
+            )
+
+    def failing(self, error) -> FakeBoard:
+        board = FakeBoard([])
+        board.search = mock.Mock(side_effect=error)
+        return board
+
+    def test_a_search_whose_only_board_is_unreachable_exits_7(self):
+        from applicant.errors import Unreachable
+
+        self.assertEqual(self.search({'indeed': self.failing(Unreachable('timed out'))}), 7)
+
+    def test_every_board_blocked_exits_3(self):
+        boards = {
+            'indeed': self.failing(Blocked('bot check')),
+            'naukri': self.failing(Blocked('x')),
+        }
+        self.assertEqual(self.search(boards), 3)
+
+    def test_one_board_failing_is_still_isolated(self):
+        from applicant.errors import Unreachable
+
+        boards = {
+            'indeed': self.failing(Unreachable('timed out')),
+            'naukri': FakeBoard([Job(source='naukri', id='1', title='Python Dev', url='u')]),
+        }
+        self.assertEqual(self.search(boards), 0)
+
+    def test_financials_found_nowhere_raises_not_found(self):
+        missing = mock.Mock()
+        missing.fetch.side_effect = NotFound('no such company')
+        del missing.accepts
+        with self.assertLogs('applicant', 'WARNING'), self.assertRaises(NotFound):
+            financials_service.track_financials(
+                ['zomato'], {'crunchbase': missing}, str(self.root / 'history.json'), pause=0
+            )
+
+    def test_financials_found_for_one_company_is_not_a_failure(self):
+        client = mock.Mock()
+        client.fetch.side_effect = lambda company, max_rounds: (
+            CompanyFinancials(source='crunchbase', company=company)
+            if company == 'zomato'
+            else (_ for _ in ()).throw(NotFound(company))
+        )
+        del client.accepts
+        with self.assertLogs('applicant', 'WARNING'):
+            tracked = financials_service.track_financials(
+                ['zomato', 'nobody'], {'crunchbase': client}, str(self.root / 'h.json'), pause=0
+            )
+        self.assertEqual(tracked.found, 1)
+
+    def test_a_rates_refresh_that_got_nothing_exits_1(self):
+        nothing = rates_service.Refreshed(updated=[], failed=['GBP'], skipped=[], path='x')
+        with (
+            mock.patch('applicant.services.rates.refresh', return_value=nothing),
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(io.StringIO()),
+        ):
+            code = main(['rates', '--refresh', '-c', 'GBP', '--no-log-file'])
+        self.assertEqual(code, 1)

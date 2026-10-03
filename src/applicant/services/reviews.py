@@ -10,7 +10,7 @@ from typing import Any, Protocol
 from ..files import write_document
 from ..infra.store.repositories import Backend
 from .events import Emit, RatingFetched, ignore
-from .fanout import fan_out
+from .fanout import failure, fan_out
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,9 @@ def fetch_reviews(
         return rating
 
     outcomes = fan_out(clients, one, emit)
+    stop = failure(outcomes)
+    if stop is not None:
+        raise stop
     ratings = [outcome.result for outcome in outcomes if outcome.result is not None]
     if not ratings:
         logger.error(f'reviews: no source returned a rating for {company!r}')

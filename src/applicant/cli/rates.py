@@ -63,6 +63,9 @@ def run(args) -> int:
             )
         if done.updated:
             print('written to {}'.format(done.path))
+        elif done.failed:
+            # asked for factors and got none: a script must not read that as done
+            return 1
 
     table = cached()
     print(

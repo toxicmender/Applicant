@@ -8,8 +8,9 @@ works exactly as before.
 Each export is a *collection* here, named by its path relative to the database,
 so two listings side by side stay two listings. The store remembers a digest of
 every file it wrote. When a file no longer matches - edited by hand, replaced,
-deleted, or never seen before - the file wins and is imported afresh. That one
-rule is both the migration (a working directory from before the database is
+deleted, or never seen before - the file wins and is imported afresh. (Not a
+file that cannot be read: that one is moved aside, and the database, the only
+good copy left, writes the file again.) That one rule is both the migration (a working directory from before the database is
 imported on first use) and the guarantee that the file you see is the data the
 next run uses.
 
@@ -203,6 +204,11 @@ class Store:
             (name, _digest(file)),
         )
 
+    def _holds(self, name: str, table: str, column: str) -> bool:
+        """Whether the database has anything for this collection."""
+        found = self.db.execute(f'SELECT 1 FROM {table} WHERE {column} = ? LIMIT 1', (name,))
+        return found.fetchone() is not None
+
     def _stale(self, name: str, file: Path, table: str, column: str) -> bool:
         """Whether the file says something the database does not."""
         digest = _digest(file)
@@ -231,6 +237,20 @@ class Store:
         document = read_document(file, quarantine=quarantine)
         if not quarantine and existed and not document and not _is_empty_object(file):
             return None  # unreadable, kept; read_document has said so
+        if existed and not file.exists() and self._holds(name, 'jobs', 'listing'):
+            # unreadable and moved aside: no one meant that as "these are my
+            # jobs now", and the database still has them - write them back
+            with self._transaction() as db:
+                kept = [
+                    json.loads(payload)
+                    for (payload,) in db.execute(
+                        'SELECT payload FROM jobs WHERE listing = ? ORDER BY seq', (name,)
+                    )
+                ]
+                write_document(file, {'list': kept})
+                self._remember(db, name, file)
+            logger.warning(f'{file}: rewritten from the {len(kept)} job(s) in {self.path}')
+            return name
 
         items: dict[str, dict] = {}
         for item in _listed(document):
@@ -410,7 +430,16 @@ class Store:
         name = self.name(file)
         if not self._stale(name, file, 'financials', 'document'):
             return name
+        existed = file.exists()
         document = read_document(file, quarantine=True)
+        if existed and not file.exists() and self._holds(name, 'financial_documents', 'document'):
+            # unreadable and moved aside, while the database has the history:
+            # the only good copy is not replaced by nothing - it writes the file
+            with self._transaction() as db:
+                write_document(file, self._financials_from_db(name))
+                self._remember(db, name, file)
+            logger.warning(f'{file}: rewritten from the history in {self.path}')
+            return name
         with self._transaction() as db:
             self._replace_financials(db, name, document)
             self._remember(db, name, file)
@@ -421,7 +450,9 @@ class Store:
 
     def financials_document(self, file: str | os.PathLike[str]) -> dict:
         """The history document, rebuilt exactly as the file holds it."""
-        name = self._sync_financials(Path(file))
+        return self._financials_from_db(self._sync_financials(Path(file)))
+
+    def _financials_from_db(self, name: str) -> dict:
         extra = self.db.execute(
             'SELECT extra FROM financial_documents WHERE document = ?', (name,)
         ).fetchone()

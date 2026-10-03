@@ -69,7 +69,10 @@ easy apply, or a multi step form" say nothing about the job. Delete those rows f
   for Glassdoor and LinkedIn's signed-in flow too.
 - Exchange rates are fetched once per batch of jobs, not once per job.
 - A failing source, including one whose client cannot even be built, costs only
-  itself.
+  itself. When every source fails, though, that is the run failing: `search`,
+  `reviews` and `financials` (and `Jobs.search` and the services) raise the
+  source's error, so the exit code says why - 3 blocked, 4 not found, 7
+  unreachable - instead of 1, "nothing matched".
 
 ### Fixed
 
@@ -133,6 +136,11 @@ easy apply, or a multi step form" say nothing about the job. Delete those rows f
   Easy Apply run stops it, and the jobs left are logged `failed` - tried again
   later - rather than each settled as "not easy apply". So is a job that timed
   out or crashed before anything was submitted.
+- With `--store sqlite`, an export that could not be read - `job_listing.json`
+  or `company_financials.json` - is moved aside as before, but no longer wipes
+  the database's copy with it: the file is written again from `applicant.db`.
+- `rates --refresh` that got no factor at all exits 1, not 0; `status --json`
+  writes its file all at once.
 - Salaries as Indeed's other country sites write them are read correctly:
   `45.000 €` is forty-five thousand, not forty-five; `45 000 €`, `CHF 110'000`,
   `pro Monat`, `par an` and the other local pay periods; `¥`, `CHF`, `AUD`, `CA$`

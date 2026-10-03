@@ -72,3 +72,20 @@ def fan_out(
             continue
         outcomes.append(Outcome(source, result=result))
     return outcomes
+
+
+def failure(outcomes: Iterable[Outcome]) -> SourceError | None:
+    """The error to stop on when no source succeeded, or None.
+
+    One source failing is isolated; every source failing is the run failing,
+    and the caller raises this so the exit code says why (blocked, unreachable,
+    not found) rather than "nothing matched". Only when every failure was an
+    expected `SourceError` - an unexpected one is already exit 1 either way.
+    """
+    # a source that succeeded has no error, and so fails the test below too
+    errors = [outcome.error for outcome in outcomes]
+    if errors and all(isinstance(error, SourceError) for error in errors):
+        first = errors[0]
+        assert isinstance(first, SourceError)
+        return first
+    return None

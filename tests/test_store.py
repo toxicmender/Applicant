@@ -28,7 +28,7 @@ from applicant.infra.store import repositories
 from applicant.infra.store.sqlite import DB_NAME, MIGRATIONS, Store
 from applicant.services.apply import ApplyToJobs, easy_apply_with
 from applicant.settings import Settings
-from applicant.storage import ApplicationLog, save_jobs
+from applicant.storage import ApplicationLog, load_jobs, save_jobs
 
 FIXED = datetime(2026, 9, 27, 8, 0, 0, tzinfo=timezone.utc)
 
@@ -38,6 +38,17 @@ class TempDir(unittest.TestCase):
         self._dir = tempfile.TemporaryDirectory()
         self.addCleanup(self._dir.cleanup)
         self.root = Path(self._dir.name)
+
+
+def funded(company: str, total: float):
+    from applicant.financials import CompanyFinancials, Money
+
+    return CompanyFinancials(
+        source='crunchbase',
+        company=company,
+        company_id=company,
+        total_funding=Money(amount=total, currency='USD', amount_usd=total),
+    )
 
 
 def jobs(*specs) -> list[Job]:
@@ -270,11 +281,35 @@ class SyncTest(TempDir):
         self.assertEqual(Path(self.listing).read_text(encoding='utf-8'), '{"list": [')
 
     def test_an_unreadable_file_is_moved_aside_by_a_write(self):
+        """Moved aside - and the jobs the database held are not lost with it."""
         Path(self.listing).write_text('{"list": [', encoding='utf-8')
-        with self.assertLogs('applicant.files', 'WARNING'):
+        with self.assertLogs('applicant', 'WARNING') as logged:
             self.store.save_jobs(SECOND, self.listing)
         self.assertEqual(len([p for p in self.root.iterdir() if '.corrupt-' in p.name]), 1)
-        self.assertEqual(len(self.titles()), 3)
+        self.assertIn('rewritten from the 3 job(s)', '\n'.join(logged.output))
+        self.assertEqual(len(self.titles()), 5, 'the three stored, and two new')
+        self.assertEqual(len(load_jobs(self.listing)), 5, 'the file is whole again')
+
+    def test_an_unreadable_file_with_nothing_stored_starts_afresh(self):
+        other = str(self.root / 'other.json')
+        Path(other).write_text('{"list": [', encoding='utf-8')
+        with self.assertLogs('applicant.files', 'WARNING'):
+            self.store.save_jobs(SECOND, other)
+        self.assertEqual(len(self.store.job_items(other)), 3)
+
+    def test_an_unreadable_financials_file_keeps_the_history(self):
+        from applicant.financials.tracker import FinancialsTracker
+
+        path = str(self.root / 'company_financials.json')
+        self.store.close()
+        tracker = FinancialsTracker(path, backend='sqlite')
+        tracker.record(funded('zomato', 1e9))
+        tracker.record(funded('zomato', 2e9))
+        Path(path).write_text('{"companies": {', encoding='utf-8')
+        with self.assertLogs('applicant', 'WARNING'):
+            again = FinancialsTracker(path, backend='sqlite')
+        self.assertEqual(len(again.history('crunchbase:zomato')), 2)
+        self.assertEqual(len(json.loads(Path(path).read_text())['companies']), 1)
 
     def test_moving_the_directory_keeps_every_collection(self):
         self.store.close()

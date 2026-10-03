@@ -11,7 +11,7 @@ from typing import Any, Protocol
 from ..financials import FinancialsTracker
 from ..infra.store.repositories import Backend, listing
 from .events import Emit, FinancialsTracked, ignore
-from .fanout import fan_out
+from .fanout import failure, fan_out
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +79,7 @@ def track_financials(
     logger.info(f'financials: tracking {len(companies)} company(ies) in {output}')
     tracker = FinancialsTracker(output, backend=backend)
     found = 0
+    outcomes = []
 
     for index, company in enumerate(companies):
         if index:
@@ -93,8 +94,13 @@ def track_financials(
             return financials
 
         wanted = [source for source, client in clients.items() if accepts(client, company)]
-        found += sum(outcome.ok for outcome in fan_out(wanted, one, emit, subject=company))
+        asked = fan_out(wanted, one, emit, subject=company)
+        outcomes.extend(asked)
+        found += sum(outcome.ok for outcome in asked)
 
+    stop = failure(outcomes)
+    if stop is not None:
+        raise stop
     if not found:
         logger.error(f'financials: nothing fetched for {len(companies)} company(ies)')
     return Tracked(len(companies), found, output)
