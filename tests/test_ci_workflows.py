@@ -87,6 +87,12 @@ class GateTest(unittest.TestCase):
             with self.subTest(job=job):
                 self.assertIn('needs.{}.result'.format(job), gate)
 
+    def test_the_browser_tier_runs_in_the_browser_job_and_only_there(self):
+        live = 'tests/test_live_pages.py'
+        body = self.text.split('\n  browser:\n', 1)[1].split('\n  status:\n', 1)[0]
+        self.assertIn('pytest ' + live, body, 'the browser job runs it')
+        self.assertIn('--ignore=' + live, self.text, 'the unit legs leave it to that job')
+
     def test_the_browser_job_may_not_skip(self):
         self.assertIn("APPLICANT_BROWSER_TESTS: '1'", self.text)
 

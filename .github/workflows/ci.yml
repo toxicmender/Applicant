@@ -155,14 +155,17 @@ jobs:
       - name: Install dependencies
         run: uv sync --python ${{ matrix.python }}
 
-      # the suite is unittest.TestCase throughout; pytest is here for the reporting
+      # the suite is unittest.TestCase throughout; pytest is here for the reporting.
+      # The real-browser tier is the browser job's: here it would only skip, and
+      # be counted as skipped once per Python version
       - name: pytest
         id: pytest
         run: |
           # any non-zero exit fails the job: 1 is failing tests, and 2-5 are a
           # session that was interrupted, crashed or collected nothing - all of
           # which mean the suite did not actually vouch for this commit
-          if uv run pytest tests -v --junitxml="junit-${{ matrix.python }}.xml"; then
+          if uv run pytest tests -v --ignore=tests/test_live_pages.py \
+            --junitxml="junit-${{ matrix.python }}.xml"; then
             echo 'outcome=pass' >> "$GITHUB_OUTPUT"
           else
             code=$?

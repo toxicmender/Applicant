@@ -87,6 +87,9 @@ uv run python tools/record_page.py https://www.naukri.com/python-jobs \
 uv run pytest tests/test_live_pages.py
 ```
 
+It opens the page the way the sources do - an installed Chrome before Edge before
+the bundled build, which Naukri and Google refuse. `--profile` reuses a source's
+profile (`.cb_profile`, `.gd_profile`) where Cloudflare was already cleared, and
 `--show` opens a visible browser to clear a bot check or sign in first; `--redact`
 strips anything else personal (email addresses always are). Read the files before
 committing them. A failure after a refresh is the site having moved under the

@@ -52,7 +52,7 @@ show_missing = true
 skip_covered = true
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "tools"]
 pythonVersion = "3.10"
 venvPath = "."
 venv = ".venv"

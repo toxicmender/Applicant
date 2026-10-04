@@ -169,7 +169,9 @@ class LinkedInLiveTest(RealBrowserTest):
         posting = {'url': 'https://www.linkedin.com/jobs/view/42', 'title': 'ML'}
         with self.assertRaisesRegex(Blocked, 'checkpoint'):
             self.client._apply_one(page, posting)
-        self.assertFalse(any('Submit' in url for url in self.requested), 'nothing was submitted')
+        # the job page and nothing after it: no form opened, nothing submitted
+        pages = [url for url in self.requested if not url.endswith('/favicon.ico')]
+        self.assertEqual(pages, [posting['url']])
 
 
 if __name__ == '__main__':
