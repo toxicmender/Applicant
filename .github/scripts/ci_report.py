@@ -191,7 +191,8 @@ def main(argv: list[str] | None = None) -> int:
                 totals['tests'], totals['failed'], totals['skipped']
             ),
             '',
-            'Nothing here gates a merge - this is a report. '
+            'Type errors, failing tests, coverage under the floor and a failing '
+            'browser tier fail this run; lint findings are a report. '
             'Formatting is fixed automatically by the `format` workflow.',
         ]
     )

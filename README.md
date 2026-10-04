@@ -19,6 +19,7 @@ uv sync                       # includes the dev group: ruff, pyright, pytest
 uv run pytest tests           # or: uv run python -m unittest discover -s tests -t .
 uv run ruff check . && uv run ruff format .
 uv run pyright                # CI also runs: uv run pyright --pythonversion 3.12
+uv run --with coverage coverage run -m pytest tests && uv run --with coverage coverage report
 ```
 
 Tests are `unittest.TestCase` subclasses run under pytest, so both runners work and
@@ -27,13 +28,24 @@ injected `httpx` client, the parsers run against fixtures, and currency tests us
 `JobFilter(rates=Rates(offline=True))` so no ECB or World Bank call is ever made.
 Pass `rates=` yourself to keep a real search off the network too.
 
+The sources that drive a browser are tested twice. `tests/fakes.py` has a scripted
+page that their own code runs against - paging, limits, bot checks, sign in - in
+milliseconds. `tests/test_live_pages.py` runs the same flows in a real Chromium
+against saved pages in `tests/fixtures/pages`, every request answered locally, so
+the selectors and the pages' own API calls are checked too. It skips without a
+browser: `uv run playwright install chromium`, or point `APPLICANT_TEST_CHROMIUM`
+at a Chromium binary. Coverage has a floor of 90% (`fail_under` in
+`pyproject.toml`), measured without the browser tier.
+
 CI mirrors this in two workflows. `format` is the only one that writes - it runs
 `ruff format`, pushes the result back to the branch, and starts `ci` for that commit
 (its own push would not). `ci` runs ruff, type checks
 with pyright against both Python 3.10 (the floor) and 3.12, runs the tests across
-Python 3.10-3.13, reports everything to the run summary, and stores a `status.json`
-artifact. A failing test or type error fails the run (its `status` job is the one to
-mark as required); lint findings and format drift are reported, never blocking.
+Python 3.10-3.13, measures coverage, runs the browser tier in a real Chromium,
+reports everything to the run summary, and stores a `status.json` artifact. A
+failing test, a type error, coverage under the floor or a failing browser test fails
+the run (its `status` job is the one to mark as required); lint findings and format
+drift are reported, never blocking.
 
 The steps only a repository admin can take - renaming the default branch from
 `master` to `main`, requiring `status`, tagging a release - are written out in

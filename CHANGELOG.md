@@ -78,7 +78,9 @@ easy apply, or a multi step form" say nothing about the job. Delete those rows f
 
 - `master` was red while every check was green: a merge had dropped the CLI's
   last-resort error handler, and pytest stopped after 124 of 480 tests.
-- CI now fails on a failing test or type error.
+- CI now fails on a failing test or type error - and, since the browser sources
+  are tested at last, on coverage under 90% or a browser source that no longer
+  reads its saved pages in a real Chromium.
 - Glassdoor saved a signed-in session into whatever directory it ran from.
 - The `[files]` table in `applicant.toml` was read but never used: every command
   hard-coded its file names. Each file and profile flag now defaults to it.

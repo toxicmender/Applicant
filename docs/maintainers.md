@@ -51,7 +51,8 @@ there is none) → *Require status checks to pass before merging* → search for
 add **`status`**.
 
 `status` is the one check to require: it is the last job in `ci.yml`, it reads every
-other job's result, and it fails when the type check or any test does. Without this
+other job's result, and it fails when the type check, any test, the coverage floor
+or the real-browser tier does. Without this
 setting a red CI run is advisory, which is how `master` once stayed broken with
 every check green (see `docs/architecture-plan.md`, D1-D3).
 
@@ -73,3 +74,21 @@ git push origin v0.2.0
 Or: Releases → *Draft a new release* → tag `v0.2.0`, target `main`, with the 0.2.0
 section of `CHANGELOG.md` as the notes. If the tag goes on a later day than the
 CHANGELOG entry's date, change that date first.
+
+## Refreshing a saved page
+
+`tests/test_live_pages.py` reads each browser-driven site from a page in
+`tests/fixtures/pages`, written to the markup the code expects. When a site changes,
+save the real page from a machine that can reach it, and run the tier against it:
+
+```
+uv run python tools/record_page.py https://www.naukri.com/python-jobs \
+    tests/fixtures/pages/naukri/search-1.html --capture '/jobapi/v3/search' tests/fixtures/pages/naukri/search-1.json
+uv run pytest tests/test_live_pages.py
+```
+
+`--show` opens a visible browser to clear a bot check or sign in first; `--redact`
+strips anything else personal (email addresses always are). Read the files before
+committing them. A failure after a refresh is the site having moved under the
+selectors - which is what the tier is for. Locally, if the bundled Chromium does not
+match the installed Playwright, set `APPLICANT_TEST_CHROMIUM` to a Chromium binary.

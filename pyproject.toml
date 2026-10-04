@@ -40,6 +40,17 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-ra"
 
+# `uv run --with coverage coverage run -m pytest tests && uv run --with coverage
+# coverage report` - CI's coverage job runs exactly this, and fails under the floor
+[tool.coverage.run]
+branch = true
+source = ["src/applicant"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true
+
 [tool.pyright]
 include = ["src", "tests"]
 pythonVersion = "3.10"
