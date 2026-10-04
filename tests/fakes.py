@@ -13,11 +13,15 @@ what was asked of the session.
 
 from __future__ import annotations
 
+import os
 import re
+import tempfile
+import unittest
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from pathlib import Path
+from typing import Any, ClassVar
 from unittest import mock
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
@@ -282,3 +286,115 @@ class FakeBoard:
 
     def close(self):
         self.closed = True
+
+
+# -- a real browser, against saved pages -----------------------------------
+
+PAGES = Path(__file__).parent / 'fixtures' / 'pages'
+# the live sites declare UTF-8; without it Chromium reads '•' as windows-1252
+HTML = 'text/html; charset=utf-8'
+NOT_FOUND = b'<!doctype html><title>Not Found</title><p>Not Found</p>'
+# why no browser can be launched (None: one can), worked out once per run
+_LAUNCHABLE: dict[str, str | None] = {}
+
+
+def chromium_executable() -> str | None:
+    """The browser to use when the bundled build does not match this Playwright:
+    APPLICANT_TEST_CHROMIUM, if set. None lets Playwright find its own."""
+    return os.environ.get('APPLICANT_TEST_CHROMIUM') or None
+
+
+class RealBrowserTest(unittest.TestCase):
+    """A source's own code in a real Chromium, every request answered from
+    tests/fixtures/pages - nothing reaches the network.
+
+    `routes` maps a url pattern to (status, fixture path or None, extra headers).
+    Skipped when no browser can be launched, unless APPLICANT_BROWSER_TESTS is
+    set (CI's browser job), where that is a failure instead.
+    """
+
+    routes: ClassVar[tuple[tuple[str, tuple[int, str | None, dict[str, str]]], ...]] = ()
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        reason = cls._launchable()
+        if reason is not None:
+            if os.environ.get('APPLICANT_BROWSER_TESTS'):
+                raise RuntimeError(f'APPLICANT_BROWSER_TESTS is set but {reason}')
+            raise unittest.SkipTest(reason)
+
+    @classmethod
+    def _launchable(cls) -> str | None:
+        # asked once per run: a failed launch costs a second, per class
+        if 'launch' not in _LAUNCHABLE:
+            _LAUNCHABLE['launch'] = cls._try_launch()
+        return _LAUNCHABLE['launch']
+
+    @staticmethod
+    def _try_launch() -> str | None:
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            return 'playwright is not installed'
+        try:
+            with sync_playwright() as driver:
+                driver.chromium.launch(executable_path=chromium_executable()).close()
+        except Exception as error:  # noqa: BLE001 - any failure to launch means skip
+            return 'no browser to launch ({}); set APPLICANT_TEST_CHROMIUM or run `uv run playwright install chromium`'.format(
+                str(error).splitlines()[0][:120]
+            )
+        return None
+
+    def setUp(self):
+        super().setUp()
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.folder = Path(folder.name)
+        self.requested: list[str] = []
+        real_launch, real_start = BrowserSession._launch, BrowserSession.start
+        test = self
+
+        def launch(session, driver):
+            # the bundled build only, from APPLICANT_TEST_CHROMIUM when set: an
+            # installed Chrome would make the run depend on the machine
+            session.channels = (None,)
+            executable = chromium_executable()
+            if executable is None:
+                return real_launch(session, driver)
+            chromium = driver.chromium
+            wrapped = mock.Mock(wraps=chromium)
+            wrapped.launch.side_effect = lambda **kw: chromium.launch(
+                executable_path=executable, **kw
+            )
+            wrapped.launch_persistent_context.side_effect = lambda *a, **kw: (
+                chromium.launch_persistent_context(*a, executable_path=executable, **kw)
+            )
+            return real_launch(session, mock.Mock(chromium=wrapped))
+
+        def start(session):
+            fresh = session._page is None
+            page = real_start(session)
+            if fresh:
+                session.context.route('**/*', test._answer)
+            return page
+
+        for patch in (
+            mock.patch.object(BrowserSession, '_launch', launch),
+            mock.patch.object(BrowserSession, 'start', start),
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def _answer(self, route):
+        url = route.request.url
+        self.requested.append(url)
+        for pattern, (status, fixture, headers) in self.routes:
+            if re.search(pattern, url):
+                # an error page has a body, as the live sites' do: Chromium fails
+                # the navigation outright on an empty 4xx/5xx instead of returning it
+                body = (PAGES / fixture).read_bytes() if fixture else NOT_FOUND
+                kind = 'application/json' if fixture and fixture.endswith('.json') else HTML
+                route.fulfill(status=status, body=body, content_type=kind, headers=headers)
+                return
+        route.fulfill(status=404, body=NOT_FOUND, content_type=HTML)

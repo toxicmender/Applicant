@@ -1,0 +1,5 @@
+{"data": {"employer": {"ratingOverall": 4.4, "reviewCount": 12345, "ratingWorkLifeBalance": 4.1},
+ "employerReviews": {"reviews": [
+  {"pros": "Smart colleagues", "cons": "Big company", "summary": "Great place", "ratingOverall": 5, "reviewDateTime": "2026-07-01T10:00:00", "jobTitle": {"text": "SWE"}},
+  {"pros": "Pay", "cons": "Hours", "summary": "Fine", "ratingOverall": 4}
+ ]}}}

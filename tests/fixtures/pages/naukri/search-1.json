@@ -1,0 +1,7 @@
+{"jobDetails": [
+  {"jobId": "101", "title": "Python Developer", "companyName": "Acme", "jdURL": "/job-listings-python-developer-acme-101",
+   "placeholders": [{"type": "location", "label": "Pune"}, {"type": "salary", "label": "10-15 Lacs PA"}, {"type": "experience", "label": "2-5 Yrs"}],
+   "footerPlaceholderLabel": "3 Days Ago"},
+  {"jobId": "102", "title": "Backend Engineer", "companyName": "Beta", "jdURL": "/job-listings-backend-engineer-beta-102",
+   "placeholders": [{"type": "location", "label": "Bengaluru"}]}
+]}
