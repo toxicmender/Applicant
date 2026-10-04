@@ -19,7 +19,6 @@ from unittest import mock
 import httpx
 
 from applicant import log
-from applicant.boards import Capability
 from applicant.boards.linkedin_apply import LinkedIn
 from applicant.cli import main
 from applicant.domain.job import Job
@@ -36,6 +35,7 @@ from applicant.money import refresh_factors
 from applicant.reviews import AmbitionBoxClient, GlassdoorClient
 from applicant.search import Jobs
 from applicant.storage import ApplicationLog, load_jobs, save_jobs
+from tests.fakes import FakeBoard
 
 
 class TempDir(unittest.TestCase):
@@ -113,23 +113,6 @@ class LastResortHandlerTest(TempDir):
 
 
 # -- ASVS 16.5.2: one failing board discarded every board's results -----------
-
-
-class FakeBoard:
-    # what the Board protocol asks of every board: filters nothing, publishes nothing
-    capability = Capability()
-
-    def __init__(self, result):
-        self.result = result
-        self.closed = False
-
-    def search(self, *args, **kwargs):
-        if isinstance(self.result, BaseException):
-            raise self.result
-        return self.result
-
-    def close(self):
-        self.closed = True
 
 
 class BoardIsolationTest(unittest.TestCase):

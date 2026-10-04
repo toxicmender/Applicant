@@ -15,7 +15,6 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from applicant.boards import Capability
 from applicant.cli import main
 from applicant.domain.job import Job
 from applicant.errors import AuthFailed, Blocked, NotFound, QuotaExhausted, Unparseable
@@ -39,6 +38,7 @@ from applicant.services.reviews import fetch_reviews
 from applicant.services.search import SearchJobs
 from applicant.services.status import summarise
 from applicant.storage import ApplicationLog, save_jobs
+from tests.fakes import FakeBoard
 
 PACKAGE = Path(__file__).resolve().parent.parent / 'src' / 'applicant'
 
@@ -104,20 +104,6 @@ class FanOutTest(unittest.TestCase):
 
         with self.assertRaises(KeyboardInterrupt):
             fan_out(['a'], call)
-
-
-class FakeBoard:
-    capability = Capability()
-
-    def __init__(self, jobs):
-        self.jobs = jobs
-        self.closed = False
-
-    def search(self, *args, **kwargs):
-        return self.jobs
-
-    def close(self):
-        self.closed = True
 
 
 class SearchServiceTest(unittest.TestCase):
