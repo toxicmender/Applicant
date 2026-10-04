@@ -9,7 +9,7 @@ import unittest
 
 import httpx
 
-from applicant.errors import AuthFailed, NotFound, SourceError
+from applicant.errors import AuthFailed, NotFound, QuotaExhausted, SourceError
 from applicant.financials import CrunchbaseClient, FinancialsTracker, TracxnClient, parse_money
 from applicant.financials.crunchbase import employee_band, permalink
 from applicant.financials.models import CompanyFinancials, FundingRound, Money
@@ -352,7 +352,9 @@ class Tracxn(unittest.TestCase):
             calls.append(request)
             return httpx.Response(403, json={'errorCode': 900, 'message': 'API out of credits'})
 
-        with self.assertRaisesRegex(AuthFailed, 'out of credits'):
+        # its own kind, not a refusal that happens to quote the message: the CLI
+        # tells a person to renew credits rather than to check the token
+        with self.assertRaisesRegex(QuotaExhausted, 'retrying cannot help'):
             tracxn(handler).fetch(TX_ID)
         self.assertEqual(len(calls), 1)
 
