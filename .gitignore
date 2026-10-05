@@ -340,3 +340,6 @@ tags
 
 # Hypothesis keeps found examples here (the `deep` profile; `ci` uses no database)
 .hypothesis/
+
+# mutmut works here; see docs/mutation-report.md
+mutants/

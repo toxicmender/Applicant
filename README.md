@@ -37,6 +37,16 @@ browser: `uv run playwright install chromium`, or point `APPLICANT_TEST_CHROMIUM
 at a Chromium binary. Coverage has a floor of 90% (`fail_under` in
 `pyproject.toml`), measured without the browser tier.
 
+The parsers that read scraped text - pay, dates, places, money, experience - are
+fuzzed with [Hypothesis](https://hypothesis.readthedocs.io) (`tests/test_fuzz.py`,
+strategies in `tests/strategies.py`). The default `ci` profile tries the same 150
+inputs per property on every run, so it cannot flake;
+`HYPOTHESIS_PROFILE=deep uv run pytest tests/test_fuzz.py` tries 20,000 random ones.
+Now and then - not on every push - a mutation pass checks that the tests would
+notice a change to the domain and services code:
+`uv run --with mutmut mutmut run`, then `mutmut results`
+([`docs/mutation-report.md`](docs/mutation-report.md) has the last one).
+
 CI mirrors this in two workflows. `format` is the only one that writes - it runs
 `ruff format`, pushes the result back to the branch, and starts `ci` for that commit
 (its own push would not). `ci` runs ruff, type checks

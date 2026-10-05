@@ -53,6 +53,15 @@ fail_under = 90
 show_missing = true
 skip_covered = true
 
+# a one-off mutation pass, not run in CI (see docs/mutation-report.md):
+# uv run --with mutmut mutmut run && uv run --with mutmut mutmut results
+[tool.mutmut]
+paths_to_mutate = ["src/applicant/domain/", "src/applicant/services/"]
+tests_dir = ["tests/"]
+also_copy = ["src/applicant/", ".github/", "tools/"]
+# the live tier needs a browser, and the workflow checks git, which mutants/ is not
+pytest_add_cli_args = ["-p", "no:cacheprovider", "--ignore=tests/test_live_pages.py", "--ignore=tests/test_ci_workflows.py", "-x", "-q"]
+
 [tool.pyright]
 include = ["src", "tests", "tools"]
 pythonVersion = "3.10"
