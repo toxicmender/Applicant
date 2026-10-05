@@ -832,7 +832,7 @@ All six phases are done. Measured against §2:
 
 | | Before | After |
 |---|---|---|
-| Tests run to completion | 124 of 480, then abort | 874, plus 629 subtests, all passing, on 3.10 to 3.13, and 9 more in a real Chromium (98% line and branch coverage, with a 90% floor in CI) |
+| Tests run to completion | 124 of 480, then abort | 975, plus 665 subtests, all passing, on 3.10 to 3.13, and 9 more in a real Chromium (98% line and branch coverage, with a 90% floor in CI; the scraped-text parsers fuzzed with Hypothesis; a mutation pass over the domain and services) |
 | CI | reports only | fails on a test or type error; lint stays report-only |
 | Logging modules | two, the weaker one wired in | one: stderr, escaping, masking, `0600` files |
 | Retry loops / browser launch paths | four / three | one / one |
