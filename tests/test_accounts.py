@@ -304,6 +304,22 @@ class ModuleEntryTest(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(done.stdout.strip(), 'applicant {}'.format(__version__))
 
+    def test_the_module_entry_point_exits_with_the_cli_s_code(self):
+        """In-process too, so coverage sees __main__ - the subprocess above it cannot."""
+        import runpy
+
+        from applicant import __version__
+
+        out = io.StringIO()
+        with (
+            mock.patch.object(sys, 'argv', ['applicant', '--version']),
+            redirect_stdout(out),
+            self.assertRaises(SystemExit) as stopped,
+        ):
+            runpy.run_module('applicant', run_name='__main__', alter_sys=True)
+        self.assertEqual(stopped.exception.code, 0)
+        self.assertEqual(out.getvalue().strip(), 'applicant {}'.format(__version__))
+
 
 POSTING = {'source': 'linkedin', 'url': 'https://www.linkedin.com/jobs/view/7', 'title': 'ML'}
 

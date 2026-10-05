@@ -143,6 +143,9 @@ easy apply, or a multi step form" say nothing about the job. Delete those rows f
   the database's copy with it: the file is written again from `applicant.db`.
 - `rates --refresh` that got no factor at all exits 1, not 0; `status --json`
   writes its file all at once.
+- `--log-file` naming a directory, or a place you cannot write, crashed with a
+  traceback on the first log line - the file is only opened then. It is checked
+  up front, and the command exits 2 saying so.
 - Salaries as Indeed's other country sites write them are read correctly:
   `45.000 €` is forty-five thousand, not forty-five; `45 000 €`, `CHF 110'000`,
   `pro Monat`, `par an` and the other local pay periods; `¥`, `CHF`, `AUD`, `CA$`

@@ -30,6 +30,7 @@ wants the commentary.
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import re
@@ -213,7 +214,14 @@ def configure(
         # be written should fail now, while it can still be corrected, rather
         # than halfway through a scrape. Making it also means `logs/` exists
         # without anyone having to create it first.
-        os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
+        folder = os.path.dirname(os.path.abspath(filepath))
+        os.makedirs(folder, exist_ok=True)
+        # ...and the file itself, which `delay` would otherwise first open on
+        # the first record - outside the caller's handling of a bad path
+        if os.path.isdir(filepath):
+            raise IsADirectoryError(errno.EISDIR, 'is a directory', filepath)
+        if not os.access(filepath if os.path.exists(filepath) else folder, os.W_OK):
+            raise PermissionError(errno.EACCES, 'not writable', filepath)
 
         # delay=True so a command that says nothing leaves no file behind: with
         # a file written on every run, an empty one is just litter

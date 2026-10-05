@@ -242,14 +242,6 @@ class ApplicationLog:
     def __init__(self, path: str = 'applied_jobs.csv'):
         self.path = path
 
-    def existing_keys(self) -> set[tuple[str | None, str | None]]:
-        return {(row.get('source'), row.get('id')) for row in self.rows()}
-
-    def existing_fingerprints(self) -> set[str]:
-        """What has been applied to already, whichever board it came from."""
-        found = (fingerprint(row) for row in self.rows())
-        return {value for value in found if value}
-
     def record(self, entries: Iterable[tuple[Job, str, str]]) -> int:
         """entries: iterable of (job, status, note). Returns rows written."""
         rows = [row for row in self.rows() if is_final(row)]
