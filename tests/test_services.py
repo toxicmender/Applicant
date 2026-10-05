@@ -15,6 +15,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+from applicant import log
 from applicant.cli import main
 from applicant.domain.job import Job
 from applicant.errors import AuthFailed, Blocked, NotFound, QuotaExhausted, Unparseable
@@ -327,6 +328,11 @@ if __name__ == '__main__':
 
 
 class EverySourceFailedTest(TempDir):
+    def setUp(self):
+        super().setUp()
+        # main() configures logging for the process; leave it as found
+        self.addCleanup(log.silence)
+
     """One source failing is isolated; all of them failing is the run failing,
     and the exit code says why rather than "nothing matched"."""
 

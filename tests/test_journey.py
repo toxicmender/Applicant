@@ -18,6 +18,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+from applicant import log
 from applicant.cli import main
 from applicant.domain.job import Job
 from applicant.search import Jobs
@@ -61,6 +62,8 @@ class JourneyTest(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         self.root = Path(folder.name)
         self.applier = Applier()
+        # main() configures logging for the process; leave it as found
+        self.addCleanup(log.silence)
         self.boards: dict[str, FakeBoard] = {}
         for patch in (
             mock.patch.object(Jobs, '_client', lambda _, name: self.boards[name]),

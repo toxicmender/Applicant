@@ -12,6 +12,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+from applicant import log
 from applicant.boards.linkedin_apply import LinkedIn
 from applicant.cli import main
 from applicant.domain.rates import RateSnapshot
@@ -24,6 +25,8 @@ from applicant.services.reviews import Reviews, fetch_reviews
 
 class Cli(unittest.TestCase):
     def setUp(self):
+        # main() configures logging for the process; leave it as found
+        self.addCleanup(log.silence)
         folder = tempfile.TemporaryDirectory()
         self.addCleanup(folder.cleanup)
         self.root = Path(folder.name)

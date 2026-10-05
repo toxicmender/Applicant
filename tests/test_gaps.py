@@ -17,7 +17,7 @@ from unittest import mock
 
 import httpx
 
-from applicant import money
+from applicant import log, money
 from applicant.cli import main
 from applicant.cli.render import Renderer
 from applicant.domain.job import Job
@@ -39,6 +39,8 @@ from tests.test_reviews import ld_json_html
 
 class TempDir(unittest.TestCase):
     def setUp(self):
+        # main() configures logging for the process; leave it as found
+        self.addCleanup(log.silence)
         self._dir = tempfile.TemporaryDirectory()
         self.addCleanup(self._dir.cleanup)
         self.root = Path(self._dir.name)
