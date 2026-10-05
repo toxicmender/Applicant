@@ -10,6 +10,8 @@ from __future__ import annotations
 import io
 import logging
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import datetime
@@ -101,8 +103,16 @@ class QuietByDefaultTest(LogTest):
     """A library says nothing until its caller asks it to."""
 
     def test_nothing_is_configured_until_configure_is_called(self):
-        handlers = logging.getLogger(log.ROOT).handlers
-        self.assertTrue(all(isinstance(one, logging.NullHandler) for one in handlers))
+        """As imported, in a fresh interpreter: in this one, any test that ran
+        main() before this one may have configured logging and not undone it."""
+        probe = (
+            'import logging, applicant.cli, applicant.search\n'
+            'print([type(h).__name__ for h in logging.getLogger("applicant").handlers])'
+        )
+        done = subprocess.run(
+            [sys.executable, '-c', probe], capture_output=True, text=True, timeout=60, check=True
+        )
+        self.assertEqual(done.stdout.strip(), "['NullHandler']")
 
     def test_silence_undoes_configure(self):
         log.configure(stream=self.stream)

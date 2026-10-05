@@ -64,7 +64,9 @@ CONTROL = re.compile(r'[\x00-\x08\x0a-\x1f\x7f-\x9f\u2028\u2029]')
 
 _secrets: set[str] = set()
 
-logging.getLogger(ROOT).addHandler(logging.NullHandler())
+# The NullHandler that keeps an unconfigured library quiet is added in
+# applicant/__init__.py, which every import of this module runs first - a
+# second one here only doubled it.
 
 
 # -- what may reach a line ------------------------------------------------
