@@ -1,0 +1,7 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>LinkedIn Login</title>
+<!-- where a signed-out browser lands. Playwright does not route the target of
+     a fulfilled redirect, so the landing is made in-page, before load -->
+<script>history.replaceState(null, '', '/login?session_redirect=feed');</script>
+</head>
+<body><form><input id="username"><input id="password" type="password"></form></body></html>

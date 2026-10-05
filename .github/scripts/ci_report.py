@@ -32,25 +32,30 @@ MAX_LISTED = 50
 
 
 def read_junit(pattern: str) -> list[dict]:
-    """Per-suite totals from JUnit XML, which both pytest and unittest can emit."""
+    """Per-report totals from JUnit XML, which both pytest and unittest can emit.
+
+    A report is summed over every <testsuite> in it: pytest writes one under
+    <testsuites>, unittest's writers one per class. One that cannot be parsed
+    is said on stderr - silently dropped, its tests would vanish from the totals.
+    """
     suites = []
     for path in sorted(glob.glob(pattern)):
         try:
             root = ET.parse(path).getroot()
-        except ET.ParseError:
+        except ET.ParseError as error:
+            print('ci_report: could not read {}: {}'.format(path, error), file=sys.stderr)
             continue
-        # pytest writes <testsuites><testsuite>, some writers only the inner one
-        node = root if root.tag == 'testsuite' else next(iter(root), None)
-        if node is None:
+        nodes = [root] if root.tag == 'testsuite' else root.findall('testsuite')
+        if not nodes:
             continue
         suites.append(
             {
                 'file': os.path.basename(path),
-                'tests': int(node.get('tests', 0)),
-                'failures': int(node.get('failures', 0)),
-                'errors': int(node.get('errors', 0)),
-                'skipped': int(node.get('skipped', 0)),
-                'time': float(node.get('time', 0)),
+                'tests': sum(int(node.get('tests', 0)) for node in nodes),
+                'failures': sum(int(node.get('failures', 0)) for node in nodes),
+                'errors': sum(int(node.get('errors', 0)) for node in nodes),
+                'skipped': sum(int(node.get('skipped', 0)) for node in nodes),
+                'time': sum(float(node.get('time', 0)) for node in nodes),
             }
         )
     return suites
@@ -91,7 +96,9 @@ def pyright_summary(path: str) -> tuple[int, list[str]]:
             os.path.basename(diagnostic.get('file', '?')),
             diagnostic.get('range', {}).get('start', {}).get('line', -1) + 1,
         )
-        lines.append('{} - {}'.format(where, diagnostic.get('message', '').splitlines()[0]))
+        # the first line of the message; pyright can send an empty one
+        first = (diagnostic.get('message') or '').splitlines()[:1]
+        lines.append('{} - {}'.format(where, first[0] if first else ''))
     if len(errors) > MAX_LISTED:
         lines.append('... and {} more'.format(len(errors) - MAX_LISTED))
     lines.append('```')
@@ -191,7 +198,8 @@ def main(argv: list[str] | None = None) -> int:
                 totals['tests'], totals['failed'], totals['skipped']
             ),
             '',
-            'Nothing here gates a merge - this is a report. '
+            'Type errors, failing tests, coverage under the floor and a failing '
+            'browser tier fail this run; lint findings are a report. '
             'Formatting is fixed automatically by the `format` workflow.',
         ]
     )

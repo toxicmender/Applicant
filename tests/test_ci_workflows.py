@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -64,6 +65,48 @@ class WorkflowScriptsTest(unittest.TestCase):
             relative = str(workflow.relative_to(ROOT))
             with self.subTest(workflow=relative):
                 self.assertIn(relative, tracked)
+
+
+class GateTest(unittest.TestCase):
+    """`status` is the one required check, so it must see every job and gate on
+    the ones that mean a broken program."""
+
+    def setUp(self):
+        self.text = (WORKFLOWS / 'ci.yml').read_text(encoding='utf-8')
+
+    def test_status_waits_for_every_other_job(self):
+        body = self.text.split('\njobs:\n', 1)[1]
+        jobs = set(re.findall(r'^  ([a-z][\w-]*):$', body, re.MULTILINE)) - {'status'}
+        found = re.search(r'^    needs: \[(.*)\]$', body, re.MULTILINE)
+        assert found is not None
+        self.assertEqual({name.strip() for name in found.group(1).split(',')}, jobs)
+
+    def test_the_gate_holds_the_tests_types_coverage_and_browser(self):
+        gate = self.text.split('- name: Gate', 1)[1]
+        for job in ('types', 'unit', 'coverage', 'browser'):
+            with self.subTest(job=job):
+                self.assertIn('needs.{}.result'.format(job), gate)
+
+    def test_the_browser_tier_runs_in_the_browser_job_and_only_there(self):
+        live = 'tests/test_live_pages.py'
+        body = self.text.split('\n  browser:\n', 1)[1].split('\n  status:\n', 1)[0]
+        self.assertIn('pytest ' + live, body, 'the browser job runs it')
+        self.assertIn('--ignore=' + live, self.text, 'the unit legs leave it to that job')
+
+    def test_the_browser_job_may_not_skip(self):
+        self.assertIn("APPLICANT_BROWSER_TESTS: '1'", self.text)
+
+    def test_the_coverage_floor_is_set_where_a_local_run_reads_it(self):
+        if sys.version_info >= (3, 11):
+            import tomllib
+        else:
+            import tomli as tomllib  # pyright: ignore[reportMissingImports] - 3.10 only
+
+        config = tomllib.loads((ROOT / 'pyproject.toml').read_text(encoding='utf-8'))['tool'][
+            'coverage'
+        ]
+        self.assertGreaterEqual(config['report']['fail_under'], 90)
+        self.assertTrue(config['run']['branch'])
 
 
 class GitignoreTest(unittest.TestCase):

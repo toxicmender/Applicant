@@ -1,0 +1,4 @@
+{"rounds": [
+  {"fundingRoundCategory": "Series J", "fundingDate": "17/02/2021", "fundingAmount": {"amount": 250000000, "currency": "USD"}},
+  {"fundingRoundCategory": "Series I", "fundingDate": "05/12/2020", "fundingAmount": {"amount": 160000000, "currency": "USD"}}
+]}

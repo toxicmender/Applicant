@@ -1,0 +1,30 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>python jobs in Pune - Google Search</title>
+<style>body { margin: 0 } .card { height: 120px; border-bottom: 1px solid #ccc }</style></head>
+<body>
+<div id="cards"></div>
+<script>
+  // ten cards up front, ten more per scroll - as Google's Jobs tab loads them
+  const companies = ['Acme', 'Beta', 'Gamma', 'Delta', 'Epsilon'];
+  let made = 0;
+  function more() {
+    const cards = document.getElementById('cards');
+    for (let i = 0; i < 10 && made < 25; i++, made++) {
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.setAttribute('jsname', 'y1Aese');
+      card.setAttribute('role', 'button');
+      card.innerHTML =
+        '<div>' + companies[made % 5][0] + '</div>' +
+        '<div>Python Developer ' + made + '</div>' +
+        '<div>' + companies[made % 5] + '</div>' +
+        '<div>Pune, Maharashtra • via LinkedIn</div>' +
+        '<div>' + (made + 1) + ' days ago</div>' +
+        '<div>Full-time</div>';
+      cards.appendChild(card);
+    }
+  }
+  more();
+  window.addEventListener('wheel', () => setTimeout(more, 50));
+</script>
+</body></html>

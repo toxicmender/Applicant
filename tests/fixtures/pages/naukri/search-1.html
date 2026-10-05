@@ -1,0 +1,20 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Python Jobs - Naukri.com</title></head>
+<body>
+<div id="list"></div>
+<script>
+  // as the live page does: its own search API call, then the tuples it renders
+  fetch('/jobapi/v3/search?noOfResults=20&keyword=python&pageNo=1')
+    .then(response => response.json())
+    .then(data => {
+      const list = document.getElementById('list');
+      for (const job of data.jobDetails) {
+        const tuple = document.createElement('div');
+        tuple.className = 'srp-jobtuple-wrapper';
+        tuple.dataset.jobId = job.jobId;
+        tuple.innerHTML = '<a class="title" href="' + job.jdURL + '">' + job.title + '</a>';
+        list.appendChild(tuple);
+      }
+    });
+</script>
+</body></html>

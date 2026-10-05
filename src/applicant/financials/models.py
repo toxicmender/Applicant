@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 SYMBOLS = {'USD': '$', 'INR': '₹', 'EUR': '€', 'GBP': '£', 'JPY': '¥'}
 
@@ -102,6 +102,14 @@ class CompanyFinancials(BaseModel):
     rounds: list[FundingRound] = Field(default_factory=list)
     # which parts could not be had and why, so a gap is never mistaken for a zero
     notes: list[str] = Field(default_factory=list)
+    # whether `rounds` is every round the source has, or was cut at max_rounds -
+    # only a whole list may stand in for a round count the source did not state.
+    # Private: not part of the stored record.
+    _rounds_complete: bool = PrivateAttr(default=True)
+
+    def rounds_cut(self, cut: bool = True) -> None:
+        """Say the round list stops at the number asked for, not at the last round."""
+        self._rounds_complete = not cut
 
     @field_validator('last_funding_date', 'valuation_date', mode='before')
     @classmethod
@@ -123,7 +131,9 @@ class CompanyFinancials(BaseModel):
                         self.valuation = item.post_money_valuation
                         self.valuation_date = item.date
                         break
-        if self.funding_rounds_count is None and self.rounds:
+        # counting a list cut at -n would report 20 rounds for a company with 30,
+        # and a later run with -n 25 as a change that never happened
+        if self.funding_rounds_count is None and self.rounds and self._rounds_complete:
             self.funding_rounds_count = len(self.rounds)
         return self
 

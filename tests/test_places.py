@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import unittest
 
-from applicant.places import COUNTRIES, COUNTRY_OF_PLACE, countries_in, country_for, within
+from applicant.domain.places import COUNTRIES, COUNTRY_OF_PLACE, countries_in, country_for, within
 
 
 class WithinTest(unittest.TestCase):
@@ -48,10 +48,21 @@ class WithinTest(unittest.TestCase):
             with self.subTest(location=location):
                 self.assertIsNone(within('India', location))
 
-    def test_a_missing_location_is_not_a_match(self):
-        """A posting that says nowhere cannot be shown to be somewhere."""
-        self.assertIs(within('India', None), False)
-        self.assertIs(within('India', ''), False)
+    def test_a_missing_location_cannot_be_settled(self):
+        """A posting that says nowhere is unverified, like one silent on pay:
+        kept and flagged by default, dropped under --strict."""
+        self.assertIsNone(within('India', None))
+        self.assertIsNone(within('India', ''))
+        self.assertIsNone(within('Bengaluru', None))
+
+    def test_the_filter_keeps_it_flagged_unless_strict(self):
+        from applicant.domain.filtering import JobFilter
+        from applicant.domain.job import Job
+
+        job = Job(source='googlejobs', title='ML Engineer')
+        self.assertEqual(JobFilter(location='India').matches(job), (True, ['location-unverified']))
+        keep, _ = JobFilter(location='India', keep_unknown=False).matches(job)
+        self.assertFalse(keep)
 
     def test_an_empty_filter_constrains_nothing(self):
         self.assertIs(within('', 'Bengaluru'), True)

@@ -1,5 +1,7 @@
 """Company rating clients for AmbitionBox and Glassdoor.
 
+Their failures are the classes in `applicant.errors` (`SourceError` and its kinds).
+
     from applicant.reviews import AmbitionBoxClient
 
     rating = AmbitionBoxClient().fetch('tcs', max_reviews=40)
@@ -11,17 +13,12 @@ callers never have to branch on the source.
 """
 
 from .ambitionbox import AmbitionBoxClient
-from .errors import ChallengeError, CompanyNotFound, ParseError, ReviewsError
 from .glassdoor import GlassdoorClient
 from .models import CompanyRating, Review
 
 __all__ = [
     'AmbitionBoxClient',
-    'ChallengeError',
-    'CompanyNotFound',
     'CompanyRating',
     'GlassdoorClient',
-    'ParseError',
     'Review',
-    'ReviewsError',
 ]

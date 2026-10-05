@@ -11,15 +11,18 @@ from __future__ import annotations
 import csv
 import logging
 import os
-import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import IO
 
 from pydantic import ValidationError
 
+from .domain.dedupe import fingerprint, key
+from .domain.job import Job
+from .domain.ports import PROVISIONAL, STATUSES  # noqa: F401 - STATUSES re-exported
+from .domain.salary import parse_salary
 from .files import read_document, write_document
-from .models import Job
-from .salary import parse_salary
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +46,44 @@ APPLIED_COLUMNS = [
     'note',
 ]
 
-# what `status` may hold in applied_jobs.csv
-STATUSES = ('applied', 'needs_manual_apply', 'would_apply', 'failed')
+
+def is_final(row: dict) -> bool:
+    return row.get('status') not in PROVISIONAL
+
+
+@dataclass(frozen=True)
+class Settled:
+    """What a log says is done with - an outcome, not a rehearsal or a failure.
+
+    A posting is settled by any final row under its own board id: applied to,
+    or found to need a person (`needs_manual_apply`). Across boards only an
+    application counts: the same job applied to through another board is done,
+    but one merely listed there ("apply on indeed directly") is not - its
+    LinkedIn copy may still take Easy Apply. And two ids on one board are two
+    postings, however alike they look, as in `plan_rows`."""
+
+    keys: set[tuple[str | None, str | None]] = field(default_factory=set)
+    # fingerprint -> the boards it was applied to through
+    boards: dict[str, set[str | None]] = field(default_factory=dict)
+
+    @classmethod
+    def from_rows(cls, rows: Iterable[dict]) -> Settled:
+        settled = cls()
+        for row in rows:
+            if not row.get('status') or not is_final(row):
+                continue
+            settled.keys.add((row.get('source'), row.get('id')))
+            mark = fingerprint(row)
+            if mark and row.get('status') == 'applied':
+                settled.boards.setdefault(mark, set()).add(row.get('source'))
+        return settled
+
+    def covers(self, job: Job) -> bool:
+        if (job.source, job.id) in self.keys:
+            return True
+        mark = fingerprint(job.to_dict())
+        return bool(mark and self.boards.get(mark, set()) - {job.source})
+
 
 # A spreadsheet runs any cell starting with one of these as a formula, and the
 # log is full of text scraped from job boards: a posting titled
@@ -55,58 +94,28 @@ FORMULA_START = ('=', '+', '-', '@', '\t', '\r', '\n', '＝', '＋', '－', '＠
 ESCAPE = "'"
 
 
+def _escaped(value: str) -> bool:
+    """Whether neutralise() quotes this: a formula start - or a quote before
+    one, so restore() never strips a quote that was really there."""
+    return value.startswith(FORMULA_START) or (
+        value.startswith(ESCAPE) and value[1:].startswith(FORMULA_START)
+    )
+
+
 def neutralise(value):
     """'=1+2' -> "'=1+2": read as text, not run as a formula. Other values pass
-    through - including numbers, so a negative figure stays a number."""
-    if isinstance(value, str) and value.startswith(FORMULA_START):
+    through - including numbers, so a negative figure stays a number. "'=1"
+    becomes "''=1", which reads back - and shows in a spreadsheet - as "'=1"."""
+    if isinstance(value, str) and _escaped(value):
         return ESCAPE + value
     return value
 
 
 def restore(value):
     """Undo neutralise(), so the log reads back as the data that went in."""
-    if isinstance(value, str) and value.startswith(ESCAPE) and value[1:].startswith(FORMULA_START):
+    if isinstance(value, str) and value.startswith(ESCAPE) and _escaped(value[1:]):
         return value[1:]
     return value
-
-
-def _key(item: dict) -> tuple:
-    """Identity for deduping.
-
-    Boards that hand out an id are keyed on it; aggregators that do not (Google
-    Jobs) fall back to the posting itself, otherwise every one of their rows
-    would collapse into a single (source, None) entry.
-    """
-    if item.get('id'):
-        return item.get('source'), item['id']
-    return item.get('source'), item.get('title'), item.get('company'), item.get('location')
-
-
-_PUNCTUATION = re.compile(r'[^a-z0-9]+')
-
-
-def _flatten(value: str | None) -> str:
-    return _PUNCTUATION.sub(' ', (value or '').lower()).strip()
-
-
-def fingerprint(item: dict) -> str | None:
-    """Identity *across* boards: one job, however many boards carried it.
-
-    `_key` is per source by design - each board's copy of a posting is worth
-    storing, since they carry different fields and only some carry a url. But
-    they are still one job, and applying to it three times is three emails to
-    the same employer.
-
-    The city alone, not the whole location string: boards write "Bengaluru",
-    "Bengaluru, Karnataka" and "Bengaluru, India" for the same office. Returns
-    None when company or title is missing, because a fingerprint that is not
-    sure is worse than none.
-    """
-    company, title = _flatten(item.get('company')), _flatten(item.get('title'))
-    if not company or not title:
-        return None
-    city = _flatten((item.get('location') or '').split(',')[0])
-    return '|'.join((company, title, city))
 
 
 def _stored(document: dict) -> list[dict]:
@@ -120,18 +129,7 @@ def load_jobs(filepath: str) -> list[Job]:
     A single record that no longer validates is skipped with a warning rather
     than failing the whole file.
     """
-    jobs = []
-    skipped = 0
-    for item in _stored(read_document(filepath)):
-        try:
-            jobs.append(Job.from_dict(item))
-        except ValidationError as error:
-            skipped += 1
-            logger.debug(f'{filepath}: invalid record skipped: {error.error_count()} error(s)')
-    if skipped:
-        logger.warning(f'{filepath}: skipped {skipped} record(s) that no longer validate')
-    logger.debug(f'{filepath}: loaded {len(jobs)} job(s)')
-    return jobs
+    return jobs_from(_stored(read_document(filepath)), filepath)
 
 
 def save_jobs(jobs: Iterable[Job], filepath: str) -> int:
@@ -142,16 +140,101 @@ def save_jobs(jobs: Iterable[Job], filepath: str) -> int:
     """
     merged = {}
     for item in _stored(read_document(filepath, quarantine=True)):
-        merged[_key(item)] = item
+        merged[key(item)] = item
 
     before = len(merged)
     for job in jobs:
         item = job.to_dict()
-        merged[_key(item)] = item
+        merged[key(item)] = item
 
     write_document(filepath, {'list': list(merged.values())})
     logger.info(f'{filepath}: {len(merged) - before} new job(s), {len(merged)} stored')
     return len(merged)
+
+
+def application_row(job: Job, status: str, note: str) -> dict:
+    """One row of the application log, in APPLIED_COLUMNS order."""
+    salary = parse_salary(job.salary)
+    return {
+        'applied_at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        'status': status,
+        'source': job.source,
+        'id': job.id,
+        'title': job.title,
+        'company': job.company,
+        'location': job.location,
+        'salary': job.salary,
+        'salary_annual_low': salary.annual_low if salary else None,
+        'salary_annual_high': salary.annual_high if salary else None,
+        'currency': salary.currency if salary else None,
+        'experience_min': job.experience_min,
+        'experience_max': job.experience_max,
+        'posted': job.posted,
+        'url': job.url,
+        'flags': ' '.join(job.flags),
+        'note': note,
+    }
+
+
+def plan_rows(
+    entries: Iterable[tuple[Job, str, str]],
+    seen: Callable[[str | None, str | None], bool],
+    boards_for: Callable[[str], set[str | None]],
+) -> list[dict]:
+    """The rows `entries` add to a log, given what the log already holds.
+
+    One set of rules for every backend: the CSV answers `seen` and `boards_for`
+    by reading itself, the SQLite store from its indexes. A posting already
+    logged under its board's id is skipped; so is the same job logged from
+    another board. Two ids on the *same* board are two postings: there the id is
+    authoritative, and collapsing them would throw away a posting the board
+    thinks is real. Only rows with a final status count: a `would_apply` or
+    `failed` row does not stop the real outcome being recorded later.
+    """
+    batch_seen: set[tuple[str | None, str | None]] = set()
+    batch_boards: dict[str, set[str | None]] = {}
+    fresh = []
+    for job, status, note in entries:
+        if (job.source, job.id) in batch_seen or seen(job.source, job.id):
+            continue
+        mark = fingerprint(job.to_dict())
+        if mark and (boards_for(mark) | batch_boards.get(mark, set())) - {job.source}:
+            continue
+        batch_seen.add((job.source, job.id))
+        if mark:
+            batch_boards.setdefault(mark, set()).add(job.source)
+        fresh.append(application_row(job, status, note))
+    return fresh
+
+
+def write_rows(handle: IO[str], rows: Iterable[dict], header: bool) -> None:
+    """Rows as the application log writes them: every cell quoted, formula
+    starts neutralised, columns in their fixed order."""
+    # QUOTE_ALL: a separator or quote inside scraped text cannot open a new
+    # cell and put a formula at its start
+    writer = csv.DictWriter(
+        handle, fieldnames=APPLIED_COLUMNS, quoting=csv.QUOTE_ALL, extrasaction='ignore'
+    )
+    if header:
+        writer.writeheader()
+    writer.writerows({column: neutralise(value) for column, value in row.items()} for row in rows)
+
+
+def jobs_from(items: Iterable[dict], origin: str) -> list[Job]:
+    """Jobs from stored records; one that no longer validates is skipped with a
+    warning rather than failing the whole listing."""
+    jobs = []
+    skipped = 0
+    for item in items:
+        try:
+            jobs.append(Job.from_dict(item))
+        except ValidationError as error:
+            skipped += 1
+            logger.debug(f'{origin}: invalid record skipped: {error.error_count()} error(s)')
+    if skipped:
+        logger.warning(f'{origin}: skipped {skipped} record(s) that no longer validate')
+    logger.debug(f'{origin}: loaded {len(jobs)} job(s)')
+    return jobs
 
 
 class ApplicationLog:
@@ -168,77 +251,38 @@ class ApplicationLog:
     def __init__(self, path: str = 'applied_jobs.csv'):
         self.path = path
 
-    def existing_keys(self) -> set[tuple[str | None, str | None]]:
-        return {(row.get('source'), row.get('id')) for row in self.rows()}
-
-    def existing_fingerprints(self) -> set[str]:
-        """What has been applied to already, whichever board it came from."""
-        found = (fingerprint(row) for row in self.rows())
-        return {value for value in found if value}
-
     def record(self, entries: Iterable[tuple[Job, str, str]]) -> int:
         """entries: iterable of (job, status, note). Returns rows written."""
-        rows = self.rows()
+        rows = [row for row in self.rows() if is_final(row)]
         seen = {(row.get('source'), row.get('id')) for row in rows}
         boards_of: dict[str, set[str | None]] = {}
         for row in rows:
             mark = fingerprint(row)
             if mark:
                 boards_of.setdefault(mark, set()).add(row.get('source'))
-        fresh = []
 
-        for job, status, note in entries:
-            if (job.source, job.id) in seen:
-                continue
-            # The same posting under another board's id is still one job. Two ids
-            # on the *same* board are not: there the id is authoritative, and
-            # collapsing them would throw away a posting the board thinks is real.
-            mark = fingerprint(job.to_dict())
-            if mark and boards_of.get(mark, set()) - {job.source}:
-                continue
-            seen.add((job.source, job.id))
-            if mark:
-                boards_of.setdefault(mark, set()).add(job.source)
-            salary = parse_salary(job.salary)
-            fresh.append(
-                {
-                    'applied_at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-                    'status': status,
-                    'source': job.source,
-                    'id': job.id,
-                    'title': job.title,
-                    'company': job.company,
-                    'location': job.location,
-                    'salary': job.salary,
-                    'salary_annual_low': salary.annual_low if salary else None,
-                    'salary_annual_high': salary.annual_high if salary else None,
-                    'currency': salary.currency if salary else None,
-                    'experience_min': job.experience_min,
-                    'experience_max': job.experience_max,
-                    'posted': job.posted,
-                    'url': job.url,
-                    'flags': ' '.join(job.flags),
-                    'note': note,
-                }
-            )
-
+        fresh = plan_rows(
+            entries,
+            seen=lambda source, job_id: (source, job_id) in seen,
+            boards_for=lambda mark: boards_of.get(mark, set()),
+        )
         if not fresh:
             logger.debug(f'{self.path}: nothing new to record')
             return 0
 
         is_new = not os.path.exists(self.path) or os.path.getsize(self.path) == 0
+        os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
+        # created owner-only, like every file applicant writes; an existing
+        # file keeps the mode it has
+        descriptor = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         # utf-8-sig so Sheets and Excel both read the currency symbols correctly
-        with open(self.path, 'a', encoding='utf-8-sig', newline='') as handle:
-            # QUOTE_ALL: a separator or quote inside scraped text cannot open a
-            # new cell and put a formula at its start
-            writer = csv.DictWriter(handle, fieldnames=APPLIED_COLUMNS, quoting=csv.QUOTE_ALL)
-            if is_new:
-                writer.writeheader()
-            writer.writerows(
-                {column: neutralise(value) for column, value in row.items()} for row in fresh
-            )
+        with os.fdopen(descriptor, 'a', encoding='utf-8-sig', newline='') as handle:
+            write_rows(handle, fresh, header=is_new)
         logger.info(f'{self.path}: recorded {len(fresh)} application(s)')
         return len(fresh)
+
+    def settled(self) -> Settled:
+        return Settled.from_rows(self.rows())
 
     def rows(self) -> list[dict[str, str]]:
         """Everything recorded so far, in the order it was written."""

@@ -11,15 +11,15 @@ from __future__ import annotations
 import json
 import logging
 import re
-import time
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
-import httpx
-
-from ..browser import USER_AGENT, browser, looks_blocked
-from ..dates import epoch_to_iso
-from ..models import BlockedError, Job
-from ..places import country_for
+from ..domain.dates import epoch_to_iso
+from ..domain.job import Job
+from ..domain.places import country_for
+from ..domain.salary import parse_salary
+from ..errors import Blocked, SourceError, Unparseable
+from ..infra.browser import browser, looks_blocked
+from ..infra.http import USER_AGENT, HttpClient
 from . import CAPABILITIES
 
 logger = logging.getLogger(__name__)
@@ -73,6 +73,10 @@ def host_for(location):
     return 'https://{}.indeed.com'.format(code) if code else BASE
 
 
+# the country sites where a bare '$' is not the US dollar
+DOLLAR_OF_HOST = {'ca': 'CAD', 'au': 'AUD', 'sg': 'SGD', 'nz': 'NZD', 'mx': 'MXN'}
+US_DOLLAR = re.compile(r'US\$|\bUSD\b')
+
 HEADERS = {
     'User-Agent': USER_AGENT,
     'Accept-Language': 'en-US,en;q=0.9',
@@ -94,9 +98,18 @@ class Indeed:
         self.host = self.domain or BASE  # re-resolved per search from the location
         self.delay = delay
         self.headless = headless
-        self.client = client or httpx.Client(
-            headers=HEADERS, timeout=timeout, follow_redirects=True
+        # `delay` spaces the result pages. A 429 is not retried here: any
+        # refusal of the plain request sends it to the browser instead
+        self.http = HttpClient(
+            'Indeed',
+            client=client,
+            headers=HEADERS,
+            timeout=timeout,
+            backoff=delay,
+            interval=delay,
+            retry_on=(502, 503, 504),
         )
+        self.client = self.http.client
 
     def search(self, keywords, location='', limit=25, posted_within_days=None):
         self.host = self.domain or host_for(location)
@@ -107,14 +120,25 @@ class Indeed:
         while len(jobs) < limit:
             url = self._url(keywords, location, start, posted_within_days)
             html = self._html(url)
-            results = self._results(html)
+            try:
+                results = self._results(html)
+            except Unparseable as error:
+                if not start:
+                    raise
+                # a later page that did not read is not a reason to lose the
+                # ones that did
+                logger.warning(
+                    f'indeed: page at offset {start} unreadable ({error}); '
+                    f'keeping the {len(jobs)} job(s) already read'
+                )
+                break
             if not results:
                 break
 
             before = len(jobs)
             for item in results:
                 job = self._to_job(item)
-                if job.id in seen:
+                if job is None or job.id in seen:
                     continue
                 seen.add(job.id)
                 jobs.append(job)
@@ -127,15 +151,13 @@ class Indeed:
                 break
 
             start += PAGE_SIZE
-            if len(jobs) < limit:
-                time.sleep(self.delay)
 
         logger.info(f'indeed: {min(len(jobs), limit)} job(s)')
         return jobs[:limit]
 
     def close(self):
         """Release the HTTP client. Safe to call more than once."""
-        self.client.close()
+        self.http.close()
 
     def _url(self, keywords, location, start, posted_within_days=None):
         query = {'q': keywords, 'l': location}
@@ -147,14 +169,15 @@ class Indeed:
 
     def _html(self, url):
         try:
-            response = self.client.get(url)
+            response = self.http.get(url)
             if response.status_code == 200 and MOSAIC.search(response.text):
                 return response.text
             logger.info(
                 f'indeed: plain request got HTTP {response.status_code} without job cards; '
                 'retrying in a browser'
             )
-        except httpx.TransportError as error:
+        # unreachable after the retries, or rate limited
+        except SourceError as error:
             logger.info(f'indeed: plain request failed ({error}); retrying in a browser')
         # Indeed challenged or reshaped the plain request - try it in a browser
         return self._html_via_browser(url)
@@ -163,28 +186,34 @@ class Indeed:
         with browser(headless=self.headless) as page:
             page.goto(url, wait_until='domcontentloaded')
             if looks_blocked(page):
-                raise BlockedError(
+                raise Blocked(
                     'Indeed served a bot check instead of results. Retry later, or run '
                     'with --show to solve it in a visible window.'
                 )
             return page.content()
 
     def _results(self, html):
+        # a bot check has been ruled out by now (_html_via_browser raises
+        # Blocked for one), so a page without the payload is a page that changed
         match = MOSAIC.search(html)
         if not match:
-            raise BlockedError('no job cards found in the Indeed response')
+            raise Unparseable('no job cards found in the Indeed response')
         try:
             payload = json.loads(match.group(1))
         except ValueError:
-            raise BlockedError('Indeed job card payload was not valid JSON') from None
+            raise Unparseable('Indeed job card payload was not valid JSON') from None
         model = (payload.get('metaData') or {}).get('mosaicProviderJobCardsModel') or {}
         return model.get('results') or []
 
     def _to_job(self, item):
+        # a card without a title (sponsored, or half rendered) is skipped, as
+        # every other board does, rather than failing the whole search
+        if not (item.get('title') or '').strip():
+            return None
         link = item.get('link') or ''
         if link.startswith('/'):
             link = self.host + link
-        salary = (item.get('salarySnippet') or {}).get('text')
+        salary = self._local_dollar((item.get('salarySnippet') or {}).get('text'))
 
         return Job(
             source='indeed',
@@ -199,6 +228,18 @@ class Indeed:
             salary=salary or None,
             remote=bool(item.get('remoteLocation')) or None,
         )
+
+    def _local_dollar(self, salary):
+        """'$80,000 a year' on ca.indeed.com is Canadian: say so in the text, the
+        way the posting would to anyone reading it there, so pay is not compared
+        as if it were US dollars."""
+        code = DOLLAR_OF_HOST.get(urlsplit(self.host).netloc.split('.')[0])
+        if not salary or code is None or US_DOLLAR.search(salary):
+            return salary
+        parsed = parse_salary(salary)
+        if parsed is None or parsed.currency != 'USD':
+            return salary  # already says which dollar, or none at all
+        return '{} {}'.format(code, salary)
 
     def _employment_type(self, item):
         for attribute in item.get('jobTypes') or []:

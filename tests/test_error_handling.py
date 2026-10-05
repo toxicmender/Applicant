@@ -18,24 +18,24 @@ from unittest import mock
 
 import httpx
 
-from applicant import logs
-from applicant.boards.linkedin import LinkedIn
+from applicant import log
+from applicant.boards.linkedin_apply import LinkedIn
 from applicant.cli import main
+from applicant.domain.job import Job
+from applicant.errors import SourceError, Unparseable
 from applicant.files import read_document, write_document
 from applicant.financials import (
     CompanyFinancials,
     CrunchbaseClient,
-    FinancialsError,
     FinancialsTracker,
     Money,
-    ParseError,
     TracxnClient,
 )
-from applicant.models import Job, JobsError
 from applicant.money import refresh_factors
-from applicant.reviews import AmbitionBoxClient, GlassdoorClient, ReviewsError
+from applicant.reviews import AmbitionBoxClient, GlassdoorClient
 from applicant.search import Jobs
 from applicant.storage import ApplicationLog, load_jobs, save_jobs
+from tests.fakes import FakeBoard
 
 
 class TempDir(unittest.TestCase):
@@ -44,7 +44,7 @@ class TempDir(unittest.TestCase):
         self.addCleanup(self._dir.cleanup)
         self.root = Path(self._dir.name)
         # keep the tests' own stderr quiet; main() reconfigures logging per run
-        self.addCleanup(logs.setup)
+        self.addCleanup(log.silence)
 
     def leftovers(self, name: str) -> list[str]:
         return sorted(path.name for path in self.root.iterdir() if path.name != name)
@@ -69,7 +69,8 @@ class LastResortHandlerTest(TempDir):
             redirect_stdout(out),
             redirect_stderr(err),
         ):
-            code = main(['status'])
+            # the log is not what these check; keep it out of the working directory
+            code = main(['status', '--no-log-file'])
         return code, out.getvalue(), err.getvalue()
 
     def test_an_unexpected_error_is_one_line_not_a_traceback(self):
@@ -78,6 +79,22 @@ class LastResortHandlerTest(TempDir):
         self.assertEqual(code, 1)
         self.assertIn('status failed unexpectedly: RuntimeError: disk on fire', err)
         self.assertNotIn('Traceback', err)
+
+    def test_a_store_error_is_reported_as_itself_not_as_a_crash(self):
+        from applicant.errors import StoreError
+
+        code, _, err = self.run_main(StoreError('could not open applicant.db: read-only'))
+        self.assertEqual(code, 1)
+        self.assertIn('status: could not open applicant.db: read-only', err)
+        self.assertNotIn('unexpectedly', err)
+        self.assertEqual(len(err.strip().splitlines()), 1)
+
+    def test_a_network_that_never_answered_exits_7(self):
+        from applicant.errors import Unreachable
+
+        code, _, err = self.run_main(Unreachable('could not reach Indeed: timed out'))
+        self.assertEqual(code, 7)
+        self.assertNotIn('unexpectedly', err)
 
     def test_the_traceback_still_reaches_the_debug_log(self):
         path = str(self.root / 'run.log')
@@ -96,20 +113,6 @@ class LastResortHandlerTest(TempDir):
 
 
 # -- ASVS 16.5.2: one failing board discarded every board's results -----------
-
-
-class FakeBoard:
-    def __init__(self, result):
-        self.result = result
-        self.closed = False
-
-    def search(self, *args, **kwargs):
-        if isinstance(self.result, BaseException):
-            raise self.result
-        return self.result
-
-    def close(self):
-        self.closed = True
 
 
 class BoardIsolationTest(unittest.TestCase):
@@ -167,10 +170,9 @@ class EasyApplyTest(TempDir):
             Job(source='indeed', id='2', title='Dev', url='https://indeed.example/2'),
         ]
         with (
-            mock.patch('applicant.search.EASY_APPLY_LISTING', str(self.root / 'stage.json')),
             redirect_stdout(io.StringIO()),
         ):
-            Jobs(linkedin=linkedin).apply(jobs, log=log)
+            Jobs(linkedin=linkedin).apply(jobs, log=log, dry_run=False)
 
         statuses = {row['id']: row['status'] for row in ApplicationLog(log).rows()}
         self.assertEqual(statuses, {'1': 'failed', '2': 'needs_manual_apply'})
@@ -186,11 +188,11 @@ class LinkedInGuestSearchErrorTest(unittest.TestCase):
         return instance
 
     def test_a_server_error_is_a_jobs_error(self):
-        with self.assertRaisesRegex(JobsError, 'HTTP 500'):
+        with self.assertRaisesRegex(SourceError, 'HTTP 500'):
             self.client(lambda request: httpx.Response(500)).search('python')
 
     def test_an_unreachable_host_is_a_jobs_error(self):
-        with self.assertRaisesRegex(JobsError, 'could not reach LinkedIn'):
+        with self.assertRaisesRegex(SourceError, 'could not reach LinkedIn'):
             self.client(offline).search('python')
 
 
@@ -199,34 +201,37 @@ class ReviewsErrorTest(unittest.TestCase):
         return AmbitionBoxClient(delay=0, retries=1, client=mock_client(handler))
 
     def test_ambitionbox_offline_is_a_reviews_error(self):
-        with self.assertRaisesRegex(ReviewsError, 'could not reach AmbitionBox'):
+        with self.assertRaisesRegex(SourceError, 'could not reach AmbitionBox'):
             self.ambitionbox(offline).fetch('tcs')
 
     def test_ambitionbox_server_error_is_a_reviews_error(self):
-        with self.assertRaisesRegex(ReviewsError, 'HTTP 500'):
+        with self.assertRaisesRegex(SourceError, 'HTTP 500'):
             self.ambitionbox(lambda request: httpx.Response(500)).fetch('tcs')
 
     def test_a_glassdoor_browser_failure_is_a_reviews_error(self):
         with (
             mock.patch.object(GlassdoorClient, '_fetch', side_effect=RuntimeError('no chrome')),
-            self.assertRaisesRegex(ReviewsError, 'browser session failed: RuntimeError'),
+            self.assertRaisesRegex(SourceError, 'browser session failed: RuntimeError'),
         ):
             GlassdoorClient().fetch('Google-E9079')
 
     def test_one_failing_source_no_longer_ends_the_reviews_run(self):
-        out = io.StringIO()
+        err = io.StringIO()
         with (
             mock.patch.object(GlassdoorClient, '_fetch', side_effect=RuntimeError('no chrome')),
             mock.patch.object(
                 AmbitionBoxClient, '_fetch', side_effect=httpx.ConnectError('offline')
             ),
-            redirect_stdout(out),
-            redirect_stderr(io.StringIO()),
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(err),
         ):
-            code = main(['reviews', 'Google-E9079', '-s', 'both', '-o', os.devnull])
+            code = main(
+                ['reviews', 'Google-E9079', '-s', 'both', '-o', os.devnull, '--no-log-file']
+            )
         self.assertEqual(code, 1)  # nothing fetched, but reported rather than raised
-        self.assertIn('ambitionbox: could not reach AmbitionBox', out.getvalue())
-        self.assertIn('glassdoor: the Glassdoor browser session failed', out.getvalue())
+        # a failed source is commentary, so it is reported on stderr
+        self.assertIn('ambitionbox: could not reach AmbitionBox', err.getvalue())
+        self.assertIn('glassdoor: the Glassdoor browser session failed', err.getvalue())
 
 
 class FinancialsErrorTest(unittest.TestCase):
@@ -234,27 +239,27 @@ class FinancialsErrorTest(unittest.TestCase):
         client = CrunchbaseClient(
             api_key='k', delay=0, client=mock_client(lambda request: httpx.Response(500))
         )
-        with self.assertRaisesRegex(FinancialsError, 'HTTP 500'):
+        with self.assertRaisesRegex(SourceError, 'HTTP 500'):
             client.fetch('zomato')
 
     def test_a_crunchbase_body_that_is_not_json_is_a_parse_error(self):
         client = CrunchbaseClient(
             api_key='k', delay=0, client=mock_client(lambda request: httpx.Response(200, text='<'))
         )
-        with self.assertRaises(ParseError):
+        with self.assertRaises(Unparseable):
             client.fetch('zomato')
 
     def test_a_tracxn_server_error_is_a_financials_error(self):
         client = TracxnClient(
             api_key='t', delay=0, client=mock_client(lambda request: httpx.Response(500))
         )
-        with self.assertRaisesRegex(FinancialsError, 'HTTP 500'):
+        with self.assertRaisesRegex(SourceError, 'HTTP 500'):
             client.fetch('5c1c697b8f088f5b6f55226c')
 
     def test_constructing_a_client_registers_its_key_for_masking(self):
-        self.addCleanup(logs._secrets.clear)
+        self.addCleanup(log._secrets.clear)
         CrunchbaseClient(api_key='crunchbase-key-xyz')
-        self.assertIn('crunchbase-key-xyz', logs._secrets)
+        self.assertIn('crunchbase-key-xyz', log._secrets)
 
 
 # -- CWE-390 / CWE-636: an unreadable store was read as empty, then overwritten

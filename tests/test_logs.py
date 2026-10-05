@@ -1,4 +1,4 @@
-"""applicant.logs: what reaches a log line, and what never does."""
+"""applicant.log: what reaches a log line, and what never does."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
-from applicant import logs
+from applicant import log
 from applicant.cli import main
 
 
@@ -22,8 +22,8 @@ def record(message: str, level: int = logging.INFO) -> logging.LogRecord:
 
 class FormatterTest(unittest.TestCase):
     def setUp(self):
-        self.formatter = logs.SafeFormatter()
-        self.addCleanup(logs._secrets.clear)
+        self.formatter = log.SafeFormatter()
+        self.addCleanup(log._secrets.clear)
 
     def test_a_newline_cannot_forge_a_second_entry(self):
         """ASVS 16.4.1 / CWE-117: a scraped company name is attacker controlled."""
@@ -46,13 +46,13 @@ class FormatterTest(unittest.TestCase):
 
     def test_a_registered_secret_is_masked(self):
         """ASVS 16.2.5."""
-        logs.register_secret('cb-key-0123456789')
+        log.register_secret('cb-key-0123456789')
         line = self.formatter.format(record('GET ?user_key=cb-key-0123456789 failed'))
         self.assertNotIn('cb-key-0123456789', line)
         self.assertIn('user_key=***', line)
 
     def test_a_secret_inside_a_traceback_is_masked(self):
-        logs.register_secret('tx-token-abcdefgh')
+        log.register_secret('tx-token-abcdefgh')
         try:
             raise ValueError('token tx-token-abcdefgh rejected')
         except ValueError:
@@ -61,7 +61,7 @@ class FormatterTest(unittest.TestCase):
         self.assertNotIn('tx-token-abcdefgh', self.formatter.format(entry))
 
     def test_short_values_are_not_treated_as_secrets(self):
-        logs.register_secret('abc')
+        log.register_secret('abc')
         self.assertIn('abc', self.formatter.format(record('abc')))
 
 
@@ -69,42 +69,76 @@ class SetupTest(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()
         self.addCleanup(self._dir.cleanup)
-        self.addCleanup(logs.setup)  # leave a plain console handler behind
+        self.addCleanup(log.silence)
         self.path = str(Path(self._dir.name) / 'run.log')
 
     def test_the_log_file_is_readable_by_its_owner_only(self):
         """ASVS 16.4.2."""
-        logs.setup(log_file=self.path)
+        with redirect_stderr(io.StringIO()):
+            log.configure(filepath=self.path)
+            logging.getLogger('applicant.test').info('recorded')
         self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
 
     def test_the_file_gets_debug_detail_the_console_does_not(self):
         stderr = io.StringIO()
         with redirect_stderr(stderr):
-            logs.setup(log_file=self.path)
+            log.configure(filepath=self.path)
             logging.getLogger('applicant.test').debug('detail')
         for handler in logging.getLogger('applicant').handlers:
             handler.flush()
         self.assertIn('detail', Path(self.path).read_text(encoding='utf-8'))
         self.assertNotIn('detail', stderr.getvalue())
 
+    def test_the_console_is_stderr_so_a_pipe_gets_only_the_answer(self):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            log.configure()
+            logging.getLogger('applicant.test').warning('naukri: served a bot check')
+        self.assertEqual(stdout.getvalue(), '')
+        self.assertIn('naukri: served a bot check', stderr.getvalue())
+
+    def test_the_plain_console_is_escaped_and_masked_too(self):
+        self.addCleanup(log._secrets.clear)
+        log.register_secret('tx-token-abcdefgh')
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            log.configure()
+            logging.getLogger('applicant.test').warning('Acme\nforged tx-token-abcdefgh')
+        self.assertEqual(stderr.getvalue(), 'Acme\\x0aforged ***\n')
+
     def test_repeated_setup_does_not_stack_handlers(self):
         for _ in range(3):
-            logs.setup()
-        self.assertEqual(len(logging.getLogger('applicant').handlers), 1)
+            log.configure()
+        # the handlers configure() put there: a test runner's own capturing
+        # handlers, or one an earlier test left, are not what this is about
+        ours = [
+            handler
+            for handler in logging.getLogger('applicant').handlers
+            if getattr(handler, log.OURS, False)
+        ]
+        self.assertEqual(len(ours), 1)
 
-    def test_verbosity_levels(self):
-        for verbosity, level in ((-1, logging.ERROR), (0, logging.WARNING), (2, logging.DEBUG)):
+    def test_httpx_requests_only_at_the_most_verbose(self):
+        for verbosity, level in ((-1, logging.WARNING), (1, logging.WARNING), (2, logging.DEBUG)):
             with self.subTest(verbosity=verbosity):
-                logs.setup(verbosity)
-                self.assertEqual(logging.getLogger('applicant').handlers[0].level, level)
+                log.configure(verbosity)
+                self.assertEqual(logging.getLogger('httpx').level, level)
+
+    def test_silence_leaves_other_handlers_on_httpx_alone(self):
+        theirs = logging.NullHandler()
+        logging.getLogger('httpx').addHandler(theirs)
+        self.addCleanup(logging.getLogger('httpx').removeHandler, theirs)
+        log.configure()
+        log.silence()
+        self.assertIn(theirs, logging.getLogger('httpx').handlers)
 
 
 class CliLoggingTest(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()
         self.addCleanup(self._dir.cleanup)
-        self.addCleanup(logs.setup)
-        self.addCleanup(logs._secrets.clear)
+        self.addCleanup(log.silence)
+        self.addCleanup(log._secrets.clear)
         self.root = Path(self._dir.name)
 
     def test_every_subcommand_takes_the_logging_flags(self):
