@@ -215,6 +215,18 @@ class ApplicationLogTest(TempDirTest):
         self.assertEqual(ApplicationLog(self.path('nope.csv')).counts(), {})
 
 
+class FoundByFuzzingTest(unittest.TestCase):
+    """Inputs Hypothesis found (tests/test_fuzz.py), pinned by name."""
+
+    def test_a_value_that_already_looks_escaped_reads_back_as_written(self):
+        from applicant.storage import neutralise, restore
+
+        for value in ("'=1+2", "'+44 20 7946 0000", "'@handle"):
+            with self.subTest(value=value):
+                self.assertEqual(neutralise(value), "'" + value)
+                self.assertEqual(restore(neutralise(value)), value)
+
+
 if __name__ == '__main__':
     unittest.main()
 

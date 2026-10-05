@@ -27,7 +27,11 @@ def relative_to_iso(text: str | None, now: datetime | None = None) -> str | None
         # "a day ago" is one; "few hours ago" is still today, one unit is enough
         number = int(count) if count.isdigit() else 1
         days = number * UNITS[match.group(2).lower()]
-        return (now - timedelta(days=days)).date().isoformat()
+        try:
+            return (now - timedelta(days=days)).date().isoformat()
+        except OverflowError:
+            # '99999999999999 days ago' is no date a posting could have
+            return None
     word = TODAY.search(text)
     if word:
         days = 1 if word.group(1).lower() == 'yesterday' else 0

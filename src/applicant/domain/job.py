@@ -46,7 +46,9 @@ def parse_experience(text: str | None) -> tuple[float | None, float | None]:
         return None, None
     low_high, high, plus, minimum, exact = match.groups()
     if low_high is not None:
-        return float(low_high), float(high)
+        # '10-2 years' is the range 2 to 10, however it was typed
+        low, top = sorted((float(low_high), float(high)))
+        return low, top
     if plus is not None:
         return float(plus), None
     if minimum is not None:

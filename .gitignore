@@ -337,3 +337,6 @@ Sessionx.vim
 tags
 # Persistent undo
 [._]*.un~
+
+# Hypothesis keeps found examples here (the `deep` profile; `ci` uses no database)
+.hypothesis/

@@ -29,6 +29,8 @@ packages = ["src/applicant"]
 [dependency-groups]
 # local parity with the pinned versions CI runs through uvx
 dev = [
+    # property-based fuzzing of the parsers that read scraped text
+    "hypothesis>=6.168",
     "pytest>=8.3",
     "pyright>=1.1.400",
     "ruff>=0.12",

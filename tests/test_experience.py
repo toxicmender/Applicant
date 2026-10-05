@@ -140,5 +140,12 @@ class ExperienceFilterTest(unittest.TestCase):
         self.assertEqual(flags, [])
 
 
+class FoundByFuzzingTest(unittest.TestCase):
+    """Inputs Hypothesis found (tests/test_fuzz.py), pinned by name."""
+
+    def test_a_range_typed_backwards_is_still_low_to_high(self):
+        self.assertEqual(parse_experience('10-2 years'), (2.0, 10.0))
+
+
 if __name__ == '__main__':
     unittest.main()

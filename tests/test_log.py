@@ -219,5 +219,14 @@ class DefaultFileTest(LogTest):
         self.assertEqual(name, os.path.join('elsewhere', 'run_20260812-143502.log'))
 
 
+class FoundByFuzzingTest(unittest.TestCase):
+    """Inputs Hypothesis found (tests/test_fuzz.py), pinned by name."""
+
+    def test_unicode_line_separators_cannot_split_an_entry(self):
+        from applicant.log import escape
+
+        self.assertEqual(escape('a\u2028b\u2029c'), 'a\\x2028b\\x2029c')
+
+
 if __name__ == '__main__':
     unittest.main()

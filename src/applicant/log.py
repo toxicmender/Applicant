@@ -58,7 +58,9 @@ THIRD_PARTY = ('httpx', 'httpcore')
 
 # C0 controls, DEL and the C1 controls, minus tab: newlines are what forge a
 # log line, and ESC or the 8-bit CSI (\x9b) what rewrites a terminal
-CONTROL = re.compile(r'[\x00-\x08\x0a-\x1f\x7f-\x9f]')
+# - and the Unicode line and paragraph separators, which split a line for
+# anything reading the file with str.splitlines() as surely as a newline
+CONTROL = re.compile(r'[\x00-\x08\x0a-\x1f\x7f-\x9f\u2028\u2029]')
 
 _secrets: set[str] = set()
 

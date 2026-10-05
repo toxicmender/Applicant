@@ -75,5 +75,13 @@ class EpochToIsoTest(unittest.TestCase):
         self.assertIsNone(epoch_to_iso(10**20))
 
 
+class FoundByFuzzingTest(unittest.TestCase):
+    """Inputs Hypothesis found (tests/test_fuzz.py), pinned by name."""
+
+    def test_an_age_too_large_for_a_calendar_is_no_date(self):
+        now = datetime(2026, 10, 5, tzinfo=timezone.utc)
+        self.assertIsNone(relative_to_iso('99999999999999 days ago', now=now))
+
+
 if __name__ == '__main__':
     unittest.main()

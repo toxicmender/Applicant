@@ -146,6 +146,11 @@ easy apply, or a multi step form" say nothing about the job. Delete those rows f
 - `--log-file` naming a directory, or a place you cannot write, crashed with a
   traceback on the first log line - the file is only opened then. It is checked
   up front, and the command exits 2 saying so.
+- Found by fuzzing the parsers (Hypothesis, `tests/test_fuzz.py`): a posting
+  "99999999999999 days ago" crashed the date parser; "10-2 years" became a
+  range from 10 to 2; a scraped value already starting `'=` lost its quote when
+  the log was read back; and a Unicode line separator (U+2028/U+2029) could
+  split one log entry into two.
 - Salaries as Indeed's other country sites write them are read correctly:
   `45.000 €` is forty-five thousand, not forty-five; `45 000 €`, `CHF 110'000`,
   `pro Monat`, `par an` and the other local pay periods; `¥`, `CHF`, `AUD`, `CA$`

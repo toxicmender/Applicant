@@ -94,17 +94,26 @@ FORMULA_START = ('=', '+', '-', '@', '\t', '\r', '\n', '＝', '＋', '－', '＠
 ESCAPE = "'"
 
 
+def _escaped(value: str) -> bool:
+    """Whether neutralise() quotes this: a formula start - or a quote before
+    one, so restore() never strips a quote that was really there."""
+    return value.startswith(FORMULA_START) or (
+        value.startswith(ESCAPE) and value[1:].startswith(FORMULA_START)
+    )
+
+
 def neutralise(value):
     """'=1+2' -> "'=1+2": read as text, not run as a formula. Other values pass
-    through - including numbers, so a negative figure stays a number."""
-    if isinstance(value, str) and value.startswith(FORMULA_START):
+    through - including numbers, so a negative figure stays a number. "'=1"
+    becomes "''=1", which reads back - and shows in a spreadsheet - as "'=1"."""
+    if isinstance(value, str) and _escaped(value):
         return ESCAPE + value
     return value
 
 
 def restore(value):
     """Undo neutralise(), so the log reads back as the data that went in."""
-    if isinstance(value, str) and value.startswith(ESCAPE) and value[1:].startswith(FORMULA_START):
+    if isinstance(value, str) and value.startswith(ESCAPE) and _escaped(value[1:]):
         return value[1:]
     return value
 
