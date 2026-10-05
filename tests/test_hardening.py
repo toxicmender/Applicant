@@ -20,9 +20,9 @@ from applicant.domain import dedupe, flags
 from applicant.domain.capability import Capability, Field
 from applicant.domain.dates import epoch_to_iso
 from applicant.domain.filtering import JobFilter as PureFilter
-from applicant.domain.job import Job
+from applicant.domain.job import Job, experience_from
 from applicant.domain.places import _pattern
-from applicant.domain.ports import ApplicationResult
+from applicant.domain.ports import ApplicationResult, Interrupted
 from applicant.domain.rates import RateSnapshot
 from applicant.domain.salary import number, parse_salary
 from applicant.errors import Blocked
@@ -86,6 +86,21 @@ class SalaryEdgesTest(unittest.TestCase):
         self.assertEqual(number('1,234.56'), 1234.56)
         self.assertEqual(number('1.234,56'), 1234.56)
         self.assertEqual(number('1.234.567,8'), 1234567.8)
+
+    def test_each_end_of_a_range_keeps_its_own_unit(self):
+        salary = parse_salary('80k - 1.2L')
+        assert salary is not None
+        self.assertEqual((salary.low, salary.high), (80000.0, 120000.0))
+
+
+# -- domain/job -------------------------------------------------------------
+
+
+class ExperienceEdgesTest(unittest.TestCase):
+    def test_a_minimum_beyond_a_working_life_is_not_believed(self):
+        self.assertIsNone(experience_from('99+ years of experience'))
+        self.assertIsNone(experience_from('2-99 years'))
+        self.assertEqual(experience_from('5+ years'), ('5+ years', 5.0, None))
 
 
 # -- domain/filtering -------------------------------------------------------
@@ -181,14 +196,19 @@ class PlacesAndDatesTest(unittest.TestCase):
             _pattern(['delhi', 'new delhi']).findall('jobs in new delhi'), ['new delhi']
         )
         self.assertEqual(_pattern(['york', 'new york']).findall('new york'), ['new york'])
+        # a prefix sorts first alphabetically: the order must not be the reason
+        self.assertEqual(_pattern(['new', 'new york']).findall('new york'), ['new york'])
 
     @unittest.skipUnless(hasattr(time, 'tzset'), 'needs a POSIX tzset')
     def test_an_epoch_is_read_in_utc_whatever_the_machine_s_zone(self):
-        """23:00 UTC is already tomorrow at UTC+14."""
+        """23:00 UTC on 4 October 2026 is already the 5th at UTC+14.
+
+        (Not a 1970 instant: Kiritimati was then UTC-10:40, the same day.)
+        """
         with mock.patch.dict(os.environ, {'TZ': 'Pacific/Kiritimati'}):
             time.tzset()
             try:
-                self.assertEqual(epoch_to_iso(82_800_000), '1970-01-01')
+                self.assertEqual(epoch_to_iso(1_791_154_800_000), '2026-10-04')
             finally:
                 os.environ.pop('TZ', None)
         time.tzset()
@@ -210,6 +230,19 @@ class ApplyServiceEdgesTest(Folder):
         client.failed = {'https://linkedin.example/1': 'TimeoutError'}
         (entry,) = easy_apply_with(client, [job('linkedin', 1)])
         self.assertEqual(entry[1:], ('failed', 'TimeoutError'))
+
+    def test_an_interrupt_carries_what_the_client_sent_and_what_failed(self):
+        client = mock.Mock(spec=['easy_apply', 'applied', 'unconfirmed', 'failed'])
+        client.easy_apply.side_effect = KeyboardInterrupt
+        client.applied = ['https://linkedin.example/1']
+        client.unconfirmed = []
+        client.failed = {'https://linkedin.example/2': 'TimeoutError'}
+        with self.assertRaises(Interrupted) as stopped:
+            easy_apply_with(client, [job('linkedin', 1), job('linkedin', 2), job('linkedin', 3)])
+        self.assertEqual(
+            [(result.job.id, result.status) for result in stopped.exception.results],
+            [('linkedin-1', 'applied'), ('linkedin-2', 'failed')],
+        )
 
     def test_a_crashing_client_names_its_error(self):
         client = mock.Mock(spec=['easy_apply'])
@@ -293,6 +326,13 @@ class FinancialsServiceEdgesTest(Folder):
         names = financials_service.companies_to_track(['Zomato'], str(listing))
         self.assertEqual(names, ['Zomato', 'Swiggy'])
 
+    def test_a_listing_spelling_a_company_two_ways_tracks_it_once(self):
+        listing = self.root / 'jobs.json'
+        from applicant.storage import save_jobs
+
+        save_jobs([job(company='Swiggy'), job(n=2, company='SWIGGY')], str(listing))
+        self.assertEqual(financials_service.companies_to_track([], str(listing)), ['Swiggy'])
+
     def test_the_round_limit_reaches_the_client_and_the_record_is_kept(self):
         from applicant.financials import CompanyFinancials
 
@@ -349,6 +389,26 @@ class ReviewsServiceEdgesTest(Folder):
         self.assertEqual(events, [RatingFetched('ambitionbox', rating)])
         self.assertEqual((found.ratings, found.written_to), ([rating], output))
 
+    def test_a_failing_site_is_reported_through_emit(self):
+        from applicant.reviews.models import CompanyRating
+
+        rating = CompanyRating(source='ambitionbox', company='TCS', url='u', overall_rating=3.8)
+        working = mock.Mock(spec=['fetch'])
+        working.fetch.return_value = rating
+        refusing = mock.Mock(spec=['fetch'])
+        refusing.fetch.side_effect = Blocked('bot check')
+        events = []
+        with self.assertLogs('applicant', 'WARNING'):
+            fetch_reviews(
+                'tcs',
+                {'ambitionbox': working, 'glassdoor': refusing},
+                str(self.root / 'r.json'),
+                emit=events.append,
+            )
+        self.assertEqual(
+            [event.source for event in events if isinstance(event, SourceFailed)], ['glassdoor']
+        )
+
 
 class SearchServiceEdgesTest(Folder):
     def test_store_reports_where_and_how_many_and_uses_the_store_asked_for(self):
@@ -396,8 +456,25 @@ class SearchServiceEdgesTest(Folder):
                 ['indeed'], 'dev', JobFilter(title='python'), limit=5, want=1, max_rounds=2
             )
         self.assertEqual(
-            sum('reading 10' in line for line in logged.output), 1, 'one growth for two rounds'
+            sum('reading' in line for line in logged.output), 1, 'one growth for two rounds'
         )
+
+    def test_enough_survivors_in_the_first_round_end_the_search(self):
+        client = self.board([[job(n=n, title='Python Dev' if n < 2 else 'Chef') for n in range(5)]])
+        found = SearchJobs(lambda name: client).run(
+            ['indeed'], 'dev', JobFilter(title='python'), limit=5, want=2, max_rounds=3
+        )
+        self.assertEqual(len(found), 2)
+        self.assertEqual(client.search.call_count, 1)
+
+    def test_a_salary_floor_fetches_the_rates_each_page_needs(self):
+        table = mock.Mock()
+        table.snapshot.return_value = RateSnapshot(market={'USD': 1.0, 'INR': 80.0})
+        rule = JobFilter(min_salary=1_000_000, currency='INR', rates=table, salary_basis='market')
+        client = self.board([[job(salary='$20,000 a year')]])
+        found = SearchJobs(lambda name: client).run(['indeed'], 'dev', rule)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(table.snapshot.call_args.args[0], {'INR', 'USD'})
 
     def test_a_board_that_filters_dates_itself_is_asked_to(self):
         client = self.board([[job()]], native={Field.POSTED})
@@ -417,6 +494,45 @@ class SearchServiceEdgesTest(Folder):
         self.assertTrue(plan.stopped)
         self.assertEqual(plan.budget, 4)
         self.assertEqual((unknown[0].experience_min, unknown[0].experience_max), (3.0, 5.0))
+
+    def test_enrichment_goes_on_past_a_page_that_says_nothing(self):
+        jobs = [job(n=1), job(n=2)]
+        client = mock.Mock()
+        client.describe.side_effect = ['a great team', '2-4 years']
+        SearchJobs(lambda name: client)._enrich(client, jobs, Enrichment(budget=5))
+        self.assertEqual((jobs[1].experience_min, jobs[1].experience_max), (2.0, 4.0))
+
+    def test_a_page_already_read_is_used_once_the_budget_is_spent(self):
+        jobs = [job(n=1), job(n=2), job(n=3)]
+        plan = Enrichment(budget=1, described={('indeed', 'indeed-3'): '1-2 years'})
+        client = mock.Mock()
+        client.describe.return_value = 'nothing useful'
+        SearchJobs(lambda name: client)._enrich(client, jobs, plan)
+        self.assertEqual(client.describe.call_count, 1)
+        self.assertEqual(jobs[2].experience_max, 2.0)
+
+    def test_a_page_already_read_is_used_after_a_refusal(self):
+        jobs = [job(n=1), job(n=2)]
+        plan = Enrichment(budget=5, described={('indeed', 'indeed-2'): '1-2 years'})
+        client = mock.Mock()
+        client.describe.side_effect = Blocked('slow down')
+        with self.assertLogs('applicant.services.search', 'WARNING'):
+            SearchJobs(lambda name: client)._enrich(client, jobs, plan)
+        self.assertTrue(plan.stopped)
+        self.assertEqual(jobs[1].experience_max, 2.0)
+
+    def test_the_held_back_experience_check_keeps_the_filter_s_policy(self):
+        client = mock.Mock(spec=['search', 'close', 'capability', 'describe'])
+        client.capability = Capability(filters=frozenset())
+        client.search.return_value = [job()]
+        client.describe.return_value = 'a great team'
+        strict = JobFilter(experience=2, keep_unknown=False)
+        found = SearchJobs(lambda name: client).run(['indeed'], 'dev', strict, enrich=True)
+        self.assertEqual(found, [], 'still unknown after reading: dropped')
+        found = SearchJobs(lambda name: client).run(
+            ['indeed'], 'dev', JobFilter(experience=2), enrich=True
+        )
+        self.assertEqual(len(found), 1, 'kept, flagged, by default')
 
     def test_a_card_with_one_bound_is_not_read_again(self):
         client = mock.Mock()

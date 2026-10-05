@@ -40,9 +40,9 @@ def companies_to_track(
     # the same company in another case is the same company - fetched once
     seen = {name.strip().lower() for name in companies}
     if from_jobs:
+        # companies_from_jobs already gives each company once
         for name in companies_from_jobs(from_jobs, backend):
             if name.lower() not in seen:
-                seen.add(name.lower())
                 companies.append(name)
     return companies
 

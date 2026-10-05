@@ -95,3 +95,22 @@ strips anything else personal (email addresses always are). Read the files befor
 committing them. A failure after a refresh is the site having moved under the
 selectors - which is what the tier is for. Locally, if the bundled Chromium does not
 match the installed Playwright, set `APPLICANT_TEST_CHROMIUM` to a Chromium binary.
+
+## A mutation pass
+
+Now and then, after a large change to `domain/` or `services/` and not on every
+push, check that the tests would notice a broken line there. It is not in CI: it
+takes several minutes and its answers need reading.
+
+```
+rm -rf mutants
+uv run --with 'mutmut>=3.8' mutmut run --max-children 4
+uv run --with 'mutmut>=3.8' mutmut results
+uv run --with 'mutmut>=3.8' mutmut show <name>
+```
+
+`[tool.mutmut]` in `pyproject.toml` sets the scope, and leaves out the browser
+tier and the workflow tests, which need a browser or a git checkout. Each new
+survivor gets a test that kills it or a line in
+[`mutation-report.md`](mutation-report.md) saying why it cannot change
+behaviour; that file records the last pass.
