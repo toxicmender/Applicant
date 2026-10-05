@@ -109,10 +109,12 @@ class SetupTest(unittest.TestCase):
     def test_repeated_setup_does_not_stack_handlers(self):
         for _ in range(3):
             log.configure()
+        # the handlers configure() put there: a test runner's own capturing
+        # handlers, or one an earlier test left, are not what this is about
         ours = [
             handler
             for handler in logging.getLogger('applicant').handlers
-            if not isinstance(handler, logging.NullHandler)
+            if getattr(handler, log.OURS, False)
         ]
         self.assertEqual(len(ours), 1)
 
