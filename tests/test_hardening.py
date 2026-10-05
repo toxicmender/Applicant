@@ -11,14 +11,14 @@ import tempfile
 import time
 import unittest
 from contextlib import redirect_stderr
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
 from applicant.domain import dedupe, flags
 from applicant.domain.capability import Capability, Field
-from applicant.domain.dates import epoch_to_iso
+from applicant.domain.dates import epoch_to_iso, relative_to_iso
 from applicant.domain.filtering import JobFilter as PureFilter
 from applicant.domain.job import Job, experience_from
 from applicant.domain.places import _pattern
@@ -87,6 +87,11 @@ class SalaryEdgesTest(unittest.TestCase):
         self.assertEqual(number('1.234,56'), 1234.56)
         self.assertEqual(number('1.234.567,8'), 1234567.8)
 
+    def test_spaces_and_apostrophes_that_group_digits(self):
+        for text in ('45\u00a0000', '45\u202f000', '45’000', "45'000", '45 000'):
+            with self.subTest(text=text):
+                self.assertEqual(number(text), 45000.0)
+
     def test_each_end_of_a_range_keeps_its_own_unit(self):
         salary = parse_salary('80k - 1.2L')
         assert salary is not None
@@ -139,6 +144,10 @@ class FilterEdgesTest(unittest.TestCase):
         keep, found = rule.matches(job(posted='2026-10-04T09:30:00Z'), today=TODAY)
         self.assertTrue(keep)
         self.assertEqual(found, [])
+
+    def test_a_posting_that_names_no_company_matches_no_company_filter(self):
+        keep, _ = PureFilter(company='x').matches(job(company=None), today=TODAY)
+        self.assertFalse(keep)
 
     def test_a_currency_only_matters_with_a_minimum(self):
         self.assertEqual(JobFilter(currency='usd').currencies(), set())
@@ -212,6 +221,22 @@ class PlacesAndDatesTest(unittest.TestCase):
             finally:
                 os.environ.pop('TZ', None)
         time.tzset()
+
+    def test_today_is_the_utc_date_not_the_machine_s(self):
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                # 23:00 UTC on the 4th, while the machine (UTC+14) reads the 5th
+                if tz is None:
+                    return datetime(2026, 10, 5, 13, 0)
+                return datetime(2026, 10, 4, 23, 0, tzinfo=timezone.utc)
+
+        with (
+            mock.patch('applicant.domain.dates.datetime', Clock),
+            mock.patch('applicant.domain.filtering.datetime', Clock),
+        ):
+            self.assertEqual(relative_to_iso('Posted today'), '2026-10-04')
+            self.assertEqual(PureFilter().context().today, date(2026, 10, 4))
 
 
 # -- services ---------------------------------------------------------------
@@ -332,6 +357,13 @@ class FinancialsServiceEdgesTest(Folder):
 
         save_jobs([job(company='Swiggy'), job(n=2, company='SWIGGY')], str(listing))
         self.assertEqual(financials_service.companies_to_track([], str(listing)), ['Swiggy'])
+
+    def test_a_posting_with_no_company_adds_none(self):
+        listing = self.root / 'jobs.json'
+        from applicant.storage import save_jobs
+
+        save_jobs([job(company=None), job(n=2, company='  ')], str(listing))
+        self.assertEqual(financials_service.companies_to_track([], str(listing)), [])
 
     def test_the_round_limit_reaches_the_client_and_the_record_is_kept(self):
         from applicant.financials import CompanyFinancials
@@ -548,6 +580,16 @@ class StatusEdgesTest(Folder):
         with redirect_stderr(io.StringIO()), self.assertLogs('applicant', 'INFO'):
             status = summarise(listing, log)
         self.assertEqual((status.input, status.log), (listing, log))
+        # the shape `status --json` writes
+        self.assertEqual(
+            status.to_dict(),
+            {
+                'input': listing,
+                'log': log,
+                'jobs': {'total': 0, 'by_source': {}},
+                'applications': {'total': 0, 'by_status': {}},
+            },
+        )
 
 
 if __name__ == '__main__':

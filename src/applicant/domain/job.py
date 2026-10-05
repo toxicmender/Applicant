@@ -70,9 +70,8 @@ def experience_from(text: str | None) -> tuple[str, float | None, float | None] 
         return None
 
     phrase = match.group(0).strip()
+    # the phrase is what one of those patterns matched, so it always has a number
     low, high = parse_experience(phrase)
-    if low is None and high is None:
-        return None
     if not _in_range(low) or not _in_range(high):
         return None
     return phrase, low, high
