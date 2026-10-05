@@ -95,7 +95,9 @@ class JourneyTest(unittest.TestCase):
         self.assertEqual(self.search([posting('linkedin', 2), posting('linkedin', 3)], []), 0)
         listing = load_jobs(str(self.root / 'job_listing.json'))
         self.assertEqual(
-            sorted(job.id for job in listing), ['i1', 'l1', 'l2', 'l3'], 'merged, no duplicates'
+            sorted(str(job.id) for job in listing),
+            ['i1', 'l1', 'l2', 'l3'],
+            'merged, no duplicates',
         )
 
         # a rehearsal: logged, and nothing sent
