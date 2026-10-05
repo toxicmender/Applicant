@@ -24,7 +24,9 @@ settings.register_profile(
     derandomize=True,
     deadline=None,
     database=None,
-    suppress_health_check=[HealthCheck.too_slow],
+    # differing_executors: a mutation runner calls the same test from more than one
+    # executor, which is not the mistake that check is there to catch
+    suppress_health_check=[HealthCheck.too_slow, HealthCheck.differing_executors],
 )
 settings.register_profile('deep', max_examples=20_000, deadline=None)
 settings.load_profile(os.environ.get('HYPOTHESIS_PROFILE', 'ci'))
