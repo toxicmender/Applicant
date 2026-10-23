@@ -10,35 +10,78 @@ import io
 import json
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from applicant.cli import build_parser, main, normalise
-from applicant.financials import CompanyFinancials, FinancialsError, Money
-from applicant.models import Job
+from applicant.cli import build_parser, main
+from applicant.domain.job import Job
+from applicant.errors import SourceError
+from applicant.financials import CompanyFinancials, Money
 from applicant.storage import ApplicationLog, save_jobs
 
 
-class NormaliseTest(unittest.TestCase):
-    """Bare-flag invocations the README documented before subcommands existed."""
+class NoCommandTest(unittest.TestCase):
+    """Since 0.2.0 a command is required: `applicant` alone no longer means `jobs`."""
 
-    def test_no_arguments_means_the_linkedin_job_run(self):
-        self.assertEqual(normalise([]), ['jobs'])
+    def test_no_command_is_a_usage_error_with_help(self):
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            code = main([])
+        self.assertEqual(code, 2)
+        self.assertIn('usage: applicant', err.getvalue())
 
-    def test_a_leading_flag_means_the_linkedin_job_run(self):
-        self.assertEqual(normalise(['-c', 'cookies.json']), ['jobs', '-c', 'cookies.json'])
+    def test_the_old_bare_flag_spelling_is_rejected(self):
+        with self.assertRaises(SystemExit) as raised, redirect_stderr(io.StringIO()):
+            main(['-c', 'cookies.json'])
+        self.assertEqual(raised.exception.code, 2)
 
-    def test_a_long_leading_flag_too(self):
-        self.assertEqual(normalise(['--overwrite']), ['jobs', '--overwrite'])
 
-    def test_help_is_left_alone(self):
-        self.assertEqual(normalise(['-h']), ['-h'])
-        self.assertEqual(normalise(['--help']), ['--help'])
+class VersionTest(unittest.TestCase):
+    def test_version_prints_and_exits_zero(self):
+        from applicant import __version__
 
-    def test_a_named_subcommand_is_left_alone(self):
-        self.assertEqual(normalise(['search', 'python']), ['search', 'python'])
-        self.assertEqual(normalise(['reviews', 'tcs']), ['reviews', 'tcs'])
+        out = io.StringIO()
+        with self.assertRaises(SystemExit) as raised, redirect_stdout(out):
+            main(['--version'])
+        self.assertEqual(raised.exception.code, 0)
+        self.assertEqual(out.getvalue().strip(), f'applicant {__version__}')
+
+    def test_the_version_has_one_source(self):
+        """pyproject.toml reads it from __version__, so the installed metadata agrees."""
+        import importlib.metadata
+
+        from applicant import __version__
+
+        self.assertEqual(importlib.metadata.version('applicant'), __version__)
+
+
+class SharedFlagsTest(unittest.TestCase):
+    """Logging and settings flags go before or after the command."""
+
+    def setUp(self):
+        self.parser = build_parser()
+
+    def test_before_the_command(self):
+        args = self.parser.parse_args(['-v', '--data-dir', 'here', '--no-log-file', 'status'])
+        self.assertEqual((args.verbose, args.data_dir, args.no_log_file), (1, 'here', True))
+
+    def test_after_the_command(self):
+        args = self.parser.parse_args(['status', '-vv', '--store', 'files'])
+        self.assertEqual((args.verbose, args.store), (2, 'files'))
+
+    def test_a_flag_before_is_not_undone_by_the_commands_defaults(self):
+        args = self.parser.parse_args(['--data-dir', 'here', 'status', '-q'])
+        self.assertEqual((args.data_dir, args.quiet), ('here', True))
+
+    def test_every_command_has_them_with_their_defaults(self):
+        for command in (['jobs'], ['search', 'x'], ['apply'], ['reviews', 'tcs'], ['status']):
+            with self.subTest(command=command[0]):
+                args = self.parser.parse_args(command)
+                self.assertEqual(
+                    (args.verbose, args.quiet, args.log_file, args.data_dir, args.store),
+                    (0, False, None, None, None),
+                )
 
 
 class ParserTest(unittest.TestCase):
@@ -58,12 +101,19 @@ class ParserTest(unittest.TestCase):
                 self.assertTrue(callable(self.parser.parse_args(argv).handler))
 
     def test_search_defaults(self):
+        """Unset flags parse as None - so a saved search can fill them - and
+        take their defaults when the search is resolved."""
+        from applicant.cli.search import resolve
+
         args = self.parser.parse_args(['search', 'python developer'])
-        self.assertEqual(args.keywords, 'python developer')
-        self.assertEqual(args.source, ['all'])
-        self.assertEqual(args.limit, 25)
-        self.assertEqual(args.output, 'job_listing.json')
-        self.assertFalse(args.show)
+        self.assertIsNone(args.limit)
+        resolved = resolve(args, {})
+        self.assertEqual(resolved.keywords, 'python developer')
+        self.assertEqual(resolved.source, ['all'])
+        self.assertEqual(resolved.limit, 25)
+        # left to [files] listing in applicant.toml, job_listing.json by default
+        self.assertIsNone(resolved.output)
+        self.assertFalse(resolved.show)
 
     def test_search_accepts_several_sources(self):
         args = self.parser.parse_args(['search', 'python', '-s', 'linkedin', 'indeed'])
@@ -104,15 +154,17 @@ class ParserTest(unittest.TestCase):
     def test_reviews_accepts_both(self):
         self.assertEqual(self.parser.parse_args(['reviews', 'tcs', '-s', 'both']).source, 'both')
 
-    def test_display_flag_stores_false(self):
-        """-D exists to *show* the browser, so its stored value is headless."""
-        self.assertTrue(self.parser.parse_args(['jobs']).Display)
-        self.assertFalse(self.parser.parse_args(['jobs', '-D']).Display)
+    def test_show_is_the_one_way_to_see_the_browser(self):
+        """-D/--Display (inverted: it stored False to show) is gone since 0.2.0."""
+        for command in (['jobs'], ['reviews', 'tcs']):
+            with self.subTest(command=command[0]):
+                self.assertFalse(self.parser.parse_args(command).show)
+                self.assertTrue(self.parser.parse_args([*command, '--show']).show)
 
 
 class MainTest(unittest.TestCase):
     def test_the_bare_parser_binds_no_handler(self):
-        """Which is exactly why normalise() rewrites an empty argv to `jobs`."""
+        """Which is why `main([])` is a usage error rather than a run."""
         self.assertIsNone(getattr(build_parser().parse_args([]), 'handler', None))
 
     def test_help_exits_zero(self):
@@ -139,6 +191,23 @@ class StatusCommandTest(unittest.TestCase):
         with redirect_stdout(buffer):
             code = main(['status', '-i', self.listing, '--log', self.log, '--no-log-file', *extra])
         return code, buffer.getvalue()
+
+    def test_the_files_table_names_the_listing(self):
+        """[files] listing in applicant.toml is what a command reads by default."""
+        config = self.root / 'applicant.toml'
+        config.write_text('[files]\nlisting = "mine.json"\n', encoding='utf-8')
+        save_jobs([Job(source='naukri', id='1', title='SDE')], str(self.root / 'mine.json'))
+        flags = ['--config', str(config), '--data-dir', str(self.root), '--store', 'files']
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = main(['status', *flags, '--no-log-file'])
+        self.assertEqual(code, 0)
+        self.assertIn('1 jobs stored in {}'.format(self.root / 'mine.json'), buffer.getvalue())
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            main(['status', '-i', 'other.json', *flags, '--no-log-file'])
+        self.assertIn('0 jobs stored in {}'.format(self.root / 'other.json'), buffer.getvalue())
 
     def test_empty_state_reports_zeroes_rather_than_failing(self):
         code, output = self.run_status()
@@ -201,6 +270,30 @@ class RatesCommandTest(unittest.TestCase):
                 self.assertIn(currency, output)
         self.assertIn('of {} mapped currencies'.format(len(set(CURRENCY_COUNTRY.values()))), output)
 
+    def test_an_unknown_currency_is_named_not_silently_dropped(self):
+        with (
+            tempfile.TemporaryDirectory() as root,
+            mock.patch('applicant.money.fetch_factor', side_effect=AssertionError('fetched')),
+        ):
+            code, output = self.run_rates('--refresh', '-c', 'xyz', '--data-dir', root)
+        self.assertEqual(code, 2)
+        self.assertIn('not a mapped currency: XYZ', output)
+
+    def test_the_known_ones_are_still_refreshed_beside_an_unknown_one(self):
+        with (
+            tempfile.TemporaryDirectory() as root,
+            mock.patch(
+                'applicant.money.fetch_factor', return_value={'value': 0.7, 'year': '2024'}
+            ) as fetched,
+        ):
+            code, output = self.run_rates(
+                '--refresh', '--force', '-c', 'GBP', 'XYZ', '--data-dir', root
+            )
+            self.assertTrue((Path(root) / 'ppp_factors.json').exists())
+        self.assertEqual(code, 0)
+        self.assertIn('not a mapped currency: XYZ', output)
+        self.assertEqual(fetched.call_args.args[0], 'GBR')
+
     def test_a_cached_factor_shows_its_value_and_year(self):
         _, output = self.run_rates()
         self.assertIn('USD (USA): 1.0 per international $ (definition)', output)
@@ -208,6 +301,120 @@ class RatesCommandTest(unittest.TestCase):
     def test_an_uncached_currency_says_so_rather_than_showing_a_number(self):
         _, output = self.run_rates()
         self.assertIn('not cached - fetched on demand', output)
+
+
+class EscapedOutputTest(unittest.TestCase):
+    """Scraped text cannot rewrite what the terminal shows - above all the list
+    `apply` asks you to confirm."""
+
+    HOSTILE = 'Legit Role\r\x1b[2K\x1b[1Afake line\n\x9b31m'
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.root = Path(self._dir.name)
+
+    def assert_inert(self, text: str) -> None:
+        for raw in ('\r', '\x1b', '\x9b'):
+            self.assertNotIn(raw, text)
+
+    def test_the_confirmation_list_is_escaped(self):
+        listing = str(self.root / 'jobs.json')
+        save_jobs(
+            [
+                Job(
+                    source='linkedin',
+                    id='1',
+                    title=self.HOSTILE,
+                    company='Acme\x1b]0;owned\x07',
+                    url='https://www.linkedin.com/jobs/view/1',
+                )
+            ],
+            listing,
+        )
+        out = io.StringIO()
+        with (
+            mock.patch('sys.stdin.isatty', return_value=False),
+            redirect_stdout(out),
+            redirect_stderr(io.StringIO()),
+        ):
+            main(['apply', '-i', listing, '--log', str(self.root / 'a.csv'), '--no-log-file'])
+        listed = [line for line in out.getvalue().splitlines() if line.startswith('  Legit')]
+        self.assertEqual(len(listed), 1, 'the posting is one line of the list, whatever it holds')
+        self.assert_inert(out.getvalue())
+        self.assertIn('\\x1b[2K', listed[0])
+
+    def test_a_rating_is_escaped(self):
+        from applicant.cli.render import Renderer
+        from applicant.reviews.models import CompanyRating
+        from applicant.services.events import RatingFetched
+
+        rating = CompanyRating(
+            source='ambitionbox', company=self.HOSTILE, url='https://x', overall_rating=4.0
+        )
+        out = io.StringIO()
+        with redirect_stdout(out):
+            Renderer()(RatingFetched('ambitionbox', rating))
+        self.assertEqual(len(out.getvalue().splitlines()), 1)
+        self.assert_inert(out.getvalue())
+
+    def test_the_log_escapes_c1_controls_too(self):
+        from applicant.log import escape
+
+        self.assertEqual(escape('a\x9bb'), 'a\\x9bb')
+
+
+class JobsCommandTest(unittest.TestCase):
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.root = Path(self._dir.name)
+
+    def test_an_expired_session_says_how_to_sign_in_again_and_stops(self):
+        cookies = self.root / 'cookies.json'
+        cookies.write_text('{"cookies": []}', encoding='utf-8')
+        operator = mock.MagicMock()
+        operator.restore_session.return_value = False
+        err = io.StringIO()
+        with (
+            mock.patch('applicant.boards.linkedin_apply.LinkedIn') as linkedin,
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(err),
+        ):
+            linkedin.return_value.__enter__.return_value = operator
+            code = main(['jobs', '-c', str(cookies), '--no-log-file', '--store', 'files'])
+        self.assertEqual(code, 1)
+        self.assertIn('rerun with --overwrite', err.getvalue())
+        operator.scrape_jobs.assert_not_called()
+
+
+class JobsSignInTest(unittest.TestCase):
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+
+    def test_no_saved_session_signs_in_with_what_the_person_types(self):
+        from applicant.interaction import Scripted
+
+        root = Path(self._dir.name)
+        operator = mock.MagicMock()
+        operator.login.return_value = root / 'cookies.json'
+        operator.scrape_jobs.return_value = []
+        asked = Scripted('me@example.com', 'hunter2')
+        with (
+            mock.patch('applicant.boards.linkedin_apply.LinkedIn') as linkedin,
+            mock.patch('applicant.cli.jobs.terminal', return_value=asked),
+            redirect_stdout(io.StringIO()) as out,
+        ):
+            linkedin.return_value.__enter__.return_value = operator
+            code = main(['jobs', '--data-dir', str(root), '--no-log-file', '--store', 'files'])
+        self.assertEqual(code, 0)
+        self.assertEqual(asked.said, ['Username/Email ID: ', 'Password: '])
+        kwargs = operator.login.call_args.kwargs
+        self.assertEqual((kwargs['username'], kwargs['password']), ('me@example.com', 'hunter2'))
+        self.assertEqual(kwargs['filepath'], root / 'cookies.json')
+        self.assertIn('session saved to', out.getvalue())
+        operator.scrape_jobs.assert_called_once()
 
 
 class ApplyCommandTest(unittest.TestCase):
@@ -292,7 +499,7 @@ class FinancialsCommandTest(unittest.TestCase):
         def fetch(client, company, max_rounds=20):
             self.asked.append((source, company))
             if source == 'tracxn':
-                raise FinancialsError('Tracxn needs an API token or a profile url')
+                raise SourceError('Tracxn needs an API token or a profile url')
             return CompanyFinancials(
                 source=source,
                 company=company,
@@ -312,14 +519,14 @@ class FinancialsCommandTest(unittest.TestCase):
             mock.patch('time.sleep'),
             redirect_stdout(buffer),
         ):
-            code = main(['financials', '-o', self.history, *argv])
+            code = main(['financials', '-o', self.history, '--no-log-file', *argv])
         return code, buffer.getvalue()
 
     def test_defaults(self):
         args = build_parser().parse_args(['financials', 'zomato'])
         self.assertEqual(args.source, 'both')
         self.assertEqual(args.max_rounds, 20)
-        self.assertEqual(args.output, 'company_financials.json')
+        self.assertIsNone(args.output)  # [files] financials decides
 
     def test_nothing_to_track_fails_cleanly(self):
         code, output = self.run_financials()
@@ -351,6 +558,45 @@ class FinancialsCommandTest(unittest.TestCase):
         )
         self.run_financials('--from-jobs', listing, '-s', 'crunchbase')
         self.assertEqual(self.asked, [('crunchbase', 'Zomato Ltd.'), ('crunchbase', 'Swiggy')])
+
+    def test_a_history_that_cannot_be_saved_stops_the_run_once(self):
+        """Not blamed on Crunchbase, and not met again for every company."""
+        from applicant.errors import StoreError
+
+        err = io.StringIO()
+        with (
+            mock.patch(
+                'applicant.financials.tracker.FinancialsTracker.save',
+                side_effect=StoreError('could not write company_financials.json'),
+            ),
+            redirect_stderr(err),
+        ):
+            code, _ = self.run_financials('zomato', 'swiggy', '-s', 'crunchbase')
+        self.assertEqual(code, 1)
+        self.assertEqual(self.asked, [('crunchbase', 'zomato')])
+        self.assertIn('financials: could not write company_financials.json', err.getvalue())
+        self.assertNotIn('unexpected', err.getvalue())
+
+    def test_the_clients_it_made_are_closed(self):
+        with (
+            mock.patch('applicant.financials.CrunchbaseClient.close') as crunchbase,
+            mock.patch('applicant.financials.TracxnClient.close') as tracxn,
+        ):
+            self.run_financials('zomato')
+        crunchbase.assert_called_once()
+        tracxn.assert_called_once()
+
+    def test_a_named_company_is_not_fetched_again_in_another_case(self):
+        listing = str(self.root / 'jobs.json')
+        save_jobs(
+            [
+                Job(source='naukri', id='1', title='SDE', company='zomato ltd.'),
+                Job(source='indeed', id='3', title='Dev', company='Swiggy'),
+            ],
+            listing,
+        )
+        self.run_financials(' ZOMATO LTD.', '--from-jobs', listing, '-s', 'crunchbase')
+        self.assertEqual([company.strip() for _, company in self.asked], ['ZOMATO LTD.', 'Swiggy'])
 
     def test_a_profile_url_only_goes_to_its_own_site(self):
         self.run_financials('https://tracxn.com/d/companies/zomato/__abc')

@@ -19,6 +19,7 @@ uv sync                       # includes the dev group: ruff, pyright, pytest
 uv run pytest tests           # or: uv run python -m unittest discover -s tests -t .
 uv run ruff check . && uv run ruff format .
 uv run pyright                # CI also runs: uv run pyright --pythonversion 3.12
+uv run --with coverage coverage run -m pytest tests && uv run --with coverage coverage report
 ```
 
 Tests are `unittest.TestCase` subclasses run under pytest, so both runners work and
@@ -27,14 +28,41 @@ injected `httpx` client, the parsers run against fixtures, and currency tests us
 `JobFilter(rates=Rates(offline=True))` so no ECB or World Bank call is ever made.
 Pass `rates=` yourself to keep a real search off the network too.
 
+The sources that drive a browser are tested twice. `tests/fakes.py` has a scripted
+page that their own code runs against - paging, limits, bot checks, sign in - in
+milliseconds. `tests/test_live_pages.py` runs the same flows in a real Chromium
+against saved pages in `tests/fixtures/pages`, every request answered locally, so
+the selectors and the pages' own API calls are checked too. It skips without a
+browser: `uv run playwright install chromium`, or point `APPLICANT_TEST_CHROMIUM`
+at a Chromium binary. Coverage has a floor of 90% (`fail_under` in
+`pyproject.toml`), measured without the browser tier.
+
+The parsers that read scraped text - pay, dates, places, money, experience - are
+fuzzed with [Hypothesis](https://hypothesis.readthedocs.io) (`tests/test_fuzz.py`,
+strategies in `tests/strategies.py`). The default `ci` profile tries the same 150
+inputs per property on every run, so it cannot flake;
+`HYPOTHESIS_PROFILE=deep uv run pytest tests/test_fuzz.py` tries 20,000 random ones.
+Now and then - not on every push - a mutation pass checks that the tests would
+notice a change to the domain and services code:
+`uv run --with mutmut mutmut run`, then `mutmut results`
+([`docs/mutation-report.md`](docs/mutation-report.md) has the last one).
+
 CI mirrors this in two workflows. `format` is the only one that writes - it runs
-`ruff format` and pushes the result back to the branch. `ci` runs ruff, type checks
+`ruff format`, pushes the result back to the branch, and starts `ci` for that commit
+(its own push would not). `ci` runs ruff, type checks
 with pyright against both Python 3.10 (the floor) and 3.12, runs the tests across
-Python 3.10-3.13, reports everything to the run summary, and stores a `status.json`
-artifact; none of it gates a merge.
+Python 3.10-3.13, measures coverage, runs the browser tier in a real Chromium,
+reports everything to the run summary, and stores a `status.json` artifact. A
+failing test, a type error, coverage under the floor or a failing browser test fails
+the run (its `status` job is the one to mark as required); lint findings and format
+drift are reported, never blocking.
+
+The steps only a repository admin can take - renaming the default branch from
+`master` to `main`, requiring `status`, tagging a release - are written out in
+[`docs/maintainers.md`](docs/maintainers.md).
 
 No chromedriver step any more - everything runs on Playwright, which manages its own
-browser. The `--driver` flag is still accepted but ignored.
+browser.
 
 > If you have Chrome or Edge installed, keep it. Naukri and Google both reject Playwright's
 > bundled Chromium outright ("Access Denied"), so the scrapers try an installed Chrome, then
@@ -90,8 +118,8 @@ Location and date are handed to the boards themselves where they support it
 **A country filter understands its cities.** Boards answer `-l India` with bare
 city names, so `apply -l India` over a stored file checks "India" against
 "Bengaluru, Karnataka" itself and keeps it. A posting somewhere we can name is
-dropped; one we cannot place at all - "Remote", a town in no table - is kept and
-flagged `location-unverified`. The same table means `-l Bengaluru` reaches
+dropped; one we cannot place at all - "Remote", a town in no table, or no location
+given - is kept and flagged `location-unverified` (and dropped under `--strict`). The same table means `-l Bengaluru` reaches
 Indeed's Indian site rather than its US one.
 `-n/--limit` is how many to pull from each board *before* filtering, so a tight
 filter returns fewer than you asked for - raise it if you want more survivors.
@@ -143,38 +171,32 @@ no upper bound, not as exactly five.
 
 ### Salaries across currencies
 
-Pay is normalised to an annual figure first, so `2-2.5 Lacs PA`, `₹25K–₹40K a month`
-and `$30 an hour` all compare properly. Pay in *another* currency is then converted,
-and the basis matters a great deal:
-
-| `--salary-basis` | ₹20,00,000 compared against a USD floor |
-|---|---|
-| `ppp` (default) | **$99,559** - what it is worth where it is earned |
-| `market` | $20,978 - today's exchange rate |
-| `strict` | not compared at all, flagged `salary-currency-mismatch` |
-
-Purchasing power parity is the default because a market conversion makes every
-Indian salary look small next to an American one, which is not a useful way to
-choose a job. Exchange rates come from the ECB via frankfurter.dev; PPP conversion
-factors from the World Bank indicator `PA.NUS.PPP`. Both are cached in
-`.money_cache.json`.
-
-**Nothing is ever guessed.** The World Bank API throttles hard, so factors are
-fetched one country at a time and only when needed. When one cannot be had, the
-comparison falls back to a market rate and says so with a `ppp-unavailable` flag
-rather than inventing a number. Factors for India, Japan and the US ship built in;
-the rest are fetched on first use.
+Pay is normalised to an annual figure, and pay in another currency is compared by
+purchasing power by default. The details, and the other bases, are in
+[Comparing pay across currencies](#comparing-pay-across-currencies).
 
 ## Applying
 
 ```
 uv run applicant apply --min-salary 1200000 --currency INR --dry-run
-uv run applicant apply --title "python"
+uv run applicant apply --title "python"          # lists what it will send, asks first
+uv run applicant apply --title "python" --yes    # no question: for a script
 ```
 
 Reads `job_listing.json`, keeps what matches the same filters as above, and appends
 every one to `applied_jobs.csv`. `--dry-run` records what *would* happen without
-submitting anything.
+submitting anything - and without opening a browser or signing in.
+
+A real run signs in with the session `applicant jobs` saved (`--cookies`, default
+`cookies.json`), so run `applicant jobs` first. With no usable session - or if
+LinkedIn signs you out or asks for a check part way - the LinkedIn rows are logged
+`failed`, which a later run tries again.
+
+**Nothing is sent in your name without a yes.** Without `--dry-run`, `apply` lists
+every application it is about to submit and waits for you to type `yes`. Any other
+answer submits nothing, and so does running with no terminal to ask on (a cron job,
+a pipe) unless you pass `--yes`. Declined postings are left out of the log, so a
+later run can still apply to them.
 
 **Only LinkedIn Easy Apply is actually automated.** Indeed, Naukri and Google Jobs
 hand off to each employer's own form, which differs every time, so those are logged
@@ -216,30 +238,44 @@ are written with a leading apostrophe, so `=HYPERLINK(...)` arrives as the text
 
 ## Comparing pay across currencies
 
-`--min-salary` needs a `--currency`, and most postings are priced in another one.
-`--salary-basis` decides how they are compared:
+Pay is normalised to an annual figure first, so `2-2.5 Lacs PA`, `₹25K–₹40K a month`
+and `$30 an hour` all compare properly - and so do the formats Indeed's other country
+sites use: `45.000 € pro Jahr`, `45 000 € par an`, `CHF 110'000`, `¥5,000,000`, and a
+bare `$` on its Canadian, Australian, Singaporean, New Zealand or Mexican site, read
+as that country's dollar. A salary is its first figure or range; the rest of the text
+("plus 401k") is not pay. `--min-salary` needs a `--currency`, and most
+postings are priced in another one; `--salary-basis` decides how they are compared:
 
 | basis | ₹20,00,000 against a USD floor | when to use it |
 |---|---|---|
-| `ppp` (default) | ~$99,600 | "which of these is the better job" |
-| `market` | ~$21,000 | "what is this worth in my currency" |
-| `strict` | not compared, flagged | when you would rather judge it yourself |
+| `ppp` (default) | ~$99,600 - what it is worth where it is earned | "which of these is the better job" |
+| `market` | ~$21,000 - today's exchange rate | "what is this worth in my currency" |
+| `strict` | not compared, flagged `salary-currency-mismatch` | when you would rather judge it yourself |
 
-PPP factors come from the World Bank indicator `PA.NUS.PPP` and are cached in
-`src/applicant/ppp_factors.json`, which is checked in so a fresh clone starts
-with whatever is already known.
+Purchasing power parity is the default because a market conversion makes every
+Indian salary look small next to an American one, which is not a useful way to
+choose a job. Exchange rates come from the ECB via frankfurter.dev and are cached in
+`.money_cache.json`; every rate a run needs is fetched once, before any job is
+compared.
+
+PPP factors come from the World Bank indicator `PA.NUS.PPP`. The package ships a
+read-only table, `src/applicant/ppp_factors.json`, so a fresh clone starts with
+whatever is already known; factors you refresh go to `ppp_factors.json` in your
+data directory and are layered over it. (They used to be written into the package
+itself, which fails - or worse, succeeds - once applicant is installed.)
 
 ```
 uv run applicant rates                          # what is cached right now
 uv run applicant rates --refresh                # fetch everything missing
 uv run applicant rates --refresh -c GBP SEK NZD # just these
 uv run applicant rates --refresh --force        # re-fetch what is already there
+uv run applicant rates --refresh --into src/applicant/ppp_factors.json   # maintainers
 ```
 
-**The file ships with only USD, INR and JPY.** The World Bank API throttles
+**The shipped table has only USD, INR and JPY.** The World Bank API throttles
 hard - roughly one country per attempt - so the rest are fetched on demand and
-cached as you use them, or all at once with `--refresh`. Run it once and commit
-the result so nobody else has to.
+cached as you use them, or all at once with `--refresh`. To give every fresh clone
+more, refresh `--into` the shipped table and commit it.
 
 Nothing is ever written from memory. A factor that cannot be retrieved is
 reported and left out, and a comparison needing it falls back to a market rate
@@ -249,7 +285,7 @@ Two things worth knowing before reading a converted figure: `EUR` maps to the
 euro area aggregate, which is coarser than a single country, and `TWD` has no
 factor at all because Taiwan is not a World Bank member.
 
-### Checking where things stand
+## Checking where things stand
 
 ```
 uv run applicant status
@@ -273,37 +309,53 @@ Google Jobs is the most fragile of the four: it is Google Search, its CSS classe
 obfuscated and rotate, and it gives no posting URL - applications route back to the
 originating board, which is reported as `via`.
 
-## How much it says
+## Logging
 
-Every subcommand takes `-v`, `-q`, `--log-file` and `--no-log-file`:
+Printed output is each command's answer - `status`' tally, `rates`' table, where a
+file was written - and goes to **stdout**. Everything said about the work in
+progress - which board answered, how many survived, which one refused - goes
+through Python's `logging` to **stderr**, so the two never mix in a pipe. Every
+subcommand takes:
+
+| Flag | Console (stderr) shows |
+|---|---|
+| `-q` | warnings and failures only |
+| *(default)* | progress too: what each source fetched, kept, saved |
+| `-v` | debug detail, with a UTC timestamp and the module that spoke |
+| `-vv` | all of that plus each HTTP request httpx makes |
+| `--log-file PATH` | also write everything, at debug level, to `PATH` |
+| `--no-log-file` | do not write a log file for this run |
 
 ```
 uv run applicant search "python developer" -l India -q
 uv run applicant search "python developer" -l India -v
-uv run applicant search "python developer" -l India --log-file today.log
-uv run applicant search "python developer" -l India --no-log-file
+uv run applicant financials zomato --log-file financials.log
 ```
 
-A normal run reads exactly as it always did. `-q` keeps warnings and failures and
-drops the progress; `-v` adds timestamps and says which module spoke.
+`-q` silences commentary, never the answer: a quiet run still prints what it found.
 
 **Every run records itself.** Unless you pass `--no-log-file`, it writes
-`logs/run_20260812-143502.log` - named for when the run started, so they sort
-chronologically and two never collide. The directory is created on the way, and
-is gitignored. The file gets everything down to debug in full detail whatever
-the terminal is showing, which is the point: a scrape you left running is
-exactly the one whose output you no longer have.
+`logs/run_20260812-143502.log`, named for when the run started (UTC), so they sort
+chronologically and two never collide. The directory is created on the way and is
+gitignored, and a run that logs nothing leaves no file. The file gets everything
+down to debug whatever the console is showing, which is the point: a scrape you
+left running is exactly the one whose output you no longer have. Nothing prunes
+them - `rm -rf logs/` when you have had enough.
 
-They accumulate, one per run, which is why they are not loose in the working
-directory next to `job_listing.json`. Nothing prunes them - `rm -rf logs/` when
-you have had enough. `--log-file` puts one somewhere else, creating whatever
-directory you name.
+What is logged and how it is protected (the log inventory [OWASP ASVS 5.0](https://github.com/OWASP/ASVS/blob/v5.0.0/5.0/en/0x25-V16-Security-Logging-and-Error-Handling.md) 16.1.1 asks for):
 
-**The library logs, the commands print.** A message about work in progress -
-which board answered, how many survived, which one refused - goes through
-`applicant.log`, so `-q` silences it. The answer a subcommand was asked for -
-`status`' tally, `rates`' table, where a file was written - is printed, because
-silencing the answer is not what asking for quiet means.
+- **Where:** stderr, and the log file. Nothing is sent anywhere else.
+- **Format:** on the console at the default level, just the message. In the file
+  and at `-v`: `2026-09-27T08:42:42Z WARNING applicant.search: naukri: ...` - UTC
+  time, level, module, message.
+- **Never logged:** passwords, cookies and session files. API keys given by flag or
+  environment are masked as `***` anywhere they would appear, tracebacks included.
+- **Log injection:** job titles and company names come from websites, so control
+  characters are escaped on the console and in the file alike - a newline in a
+  scraped title cannot forge a second entry.
+- **The log file** is created readable by its owner only (`0600`).
+- **Unexpected errors** print one line naming the error; the traceback goes to the
+  log file (and to the console at `-v`). Ctrl-C exits with status 130.
 
 Importing `applicant` configures no logging at all, so embedding it in another
 program is silent until that program calls `applicant.log.configure()` or handles
@@ -313,69 +365,140 @@ the `applicant` logger itself.
 `uv run applicant -h` lists everything. `python -m applicant` works identically, and is
 what to use without `uv`.
 
-1. `uv run applicant --help` for the full list of arguments
-2. `uv run applicant` without arguments creates two files in the current directory:
-   `cookies.json` for the session and `job_listing.json` for the scraped jobs
+1. `uv run applicant --help` for the commands; `uv run applicant <command> --help` for each
+2. `uv run applicant jobs` signs in to LinkedIn and scrapes your recommended jobs:
+   `cookies.json` holds the session and `job_listing.json` the jobs
+3. `uv run applicant --version`
 
-Job scraping also has its own subcommand, `applicant jobs`, which takes the same flags.
-Running `applicant` with bare flags still means the job run, so invocations documented
-before subcommands existed keep working.
+A command is required. (Before 0.2.0, `applicant` alone or with bare flags meant
+`applicant jobs`; it is now a usage error.) The logging and data flags - `-v`, `-q`,
+`--log-file`, `--no-log-file`, `--data-dir`, `--store`, `--config` - go before or after
+the command: `applicant -v search x` and `applicant search x -v` are the same.
 
-## Logging
+### Exit codes
 
-Printed output is each command's result. Diagnostics go to **stderr** through
-Python's `logging`, so they never mix into piped output. Every subcommand takes:
+What ended a run, for a script deciding whether to retry:
 
-| Flag | Console shows |
+| Code | Meaning |
 |---|---|
-| `-q` | errors only |
-| *(default)* | warnings and errors |
-| `-v` | progress: what each source fetched, kept, saved |
-| `-vv` | debug detail, including each HTTP request and why a filter dropped a job |
-| `--log-file PATH` | also writes everything, at debug level, to `PATH` |
+| 0 | done |
+| 1 | nothing to do, nothing matched, or an unexpected error (one line on stderr) |
+| 2 | a usage or settings error: bad flags, a bad `applicant.toml` |
+| 3 | blocked: a bot check, a login wall, a rate limit - retry later |
+| 4 | not found: the company, slug or url resolves to nothing |
+| 5 | unparseable: the page arrived without the data - the site changed |
+| 6 | an API key refused, or out of credits |
+| 7 | unreachable: the network failed through every retry - retry later |
+| 130 | interrupted (Ctrl-C). `apply` still logs what it had already sent |
+
+## Where your data lives
+
+Everything goes in one **data directory** - the current directory unless you say
+otherwise - and every file flag (`-o`, `-i`, `--log`, ...) is relative to it:
 
 ```
-uv run applicant search "python developer" -l India -v
-uv run applicant financials zomato --log-file financials.log
+uv run applicant search "python developer" --data-dir ~/applicant
+export APPLICANT_HOME=~/applicant        # the same, for every run
 ```
 
-What is logged and how it is protected (the log inventory [OWASP ASVS 5.0](https://github.com/OWASP/ASVS/blob/v5.0.0/5.0/en/0x25-V16-Security-Logging-and-Error-Handling.md) 16.1.1 asks for):
+Settings come from, in order - later wins: the defaults, an `applicant.toml` in
+the current directory (or `--config PATH`), the environment, and flags.
 
-- **Where:** stderr, and the `--log-file` if given. Nothing is sent anywhere else.
-- **Format:** `2026-09-27T08:42:42Z WARNING applicant.search: naukri: ...` - UTC time,
-  level, module, message.
-- **Never logged:** passwords, cookies and session files. API keys given by flag or
-  environment are masked as `***` anywhere they would appear, tracebacks included.
-- **Log injection:** job titles and company names come from websites, so control
-  characters are escaped - a newline in a scraped title cannot forge a second entry.
-- **The log file** is created readable by its owner only (`0600`).
-- **Unexpected errors** print one line naming the error; the traceback goes to the
-  debug log (`-vv` or `--log-file`). Ctrl-C exits with status 130.
+```toml
+# applicant.toml
+data_dir = "~/applicant"
+store = "sqlite"                 # or "files"
 
-Used as a library, `applicant` logs nothing until you configure `logging` yourself.
+[files]
+listing = "job_listing.json"     # any file name can be changed here
+```
+
+A relative `data_dir` in `applicant.toml` is relative to that file, so
+`data_dir = "data"` means the `data` folder beside it wherever you run from. On
+the command line (`--data-dir`, `APPLICANT_HOME`) it is relative to the current
+directory, as paths there usually are.
+
+### Saved searches
+
+A search worth running is usually worth running again. Save it in `applicant.toml`
+under a name, using the long flag names (`--posted-within` is `posted_within`):
+
+```toml
+[searches.ai-ml]
+keywords = "ai ml engineer"
+location = "India"
+source = ["naukri", "linkedin"]
+experience = 3
+title = ["ai", "ml", "machine learning", "data scientist"]
+posted_within = 14
+```
+
+```
+uv run applicant search --saved ai-ml                 # the twelve flags, by name
+uv run applicant search --saved ai-ml -t "nlp"        # a flag given here wins
+uv run applicant search --list-saved
+```
+
+A misspelt field, or a board that doesn't exist, is reported when the file is read,
+not ignored.
+
+API keys are read from the environment (`CRUNCHBASE_API_KEY`, `TRACXN_API_KEY`) or
+their flags only. A config file that sets one is refused, because config files get
+committed.
+
+**`applicant.db` is the record; the JSON and CSV are its exports.** With the
+default `--store sqlite`, the jobs, applications and ratings live in an SQLite file
+beside them. `job_listing.json` and `applied_jobs.csv` are rewritten after every
+change, byte for byte as before, so a Google Sheets import works exactly as it did.
+
+- **An existing directory is picked up on first use.** Point a new version at the
+  files from an old one and they are imported. Nothing is converted or deleted.
+- **The file you see is the data the next run uses.** Edit `job_listing.json` by
+  hand, replace it, or delete it, and the next run imports what is there. The
+  database notices that the file no longer matches what it last wrote.
+- **Ratings are kept over time.** `company_reviews.json` holds this run's ratings,
+  as always. Every rating ever read stays in the database.
+- A command that only looks, in a directory with nothing in it, creates nothing.
+
+`--store files` (or `store = "files"`) keeps the JSON and CSV alone, with no
+database. Used as a library, applicant defaults to that, so importing it never
+creates a database behind anyone's back.
 
 ## Where things are
 
 ```
 src/applicant/
-  cli.py         argument parsing and the subcommand handlers
-  logs.py        logging setup: escaping, secret masking, UTC timestamps
-  files.py       atomic JSON writes; unreadable stores are moved aside, never overwritten
-  __main__.py    python -m applicant
-  models.py      the Job dataclass and the shared error types
-  dates.py       relative and epoch posting dates -> ISO
-  salary.py      reading pay off a posting, normalised to an annual figure
-  browser.py     launching Playwright in a way the boards accept
-  filters.py     JobFilter, and the flags saying what could not be checked
-  places.py      whether a posting's location is inside the one you asked for
-  log.py         where the running commentary goes, and how much of it
-  storage.py     job_listing.json and applied_jobs.csv
-  search.py      the facade over boards, filters and storage
-  boards/        one module per job board, all returning Job
-  money.py       FX and PPP factors, for comparing pay across currencies
-  ppp_factors.json  the checked in PPP table, filled by `applicant rates --refresh`
+  domain/        the pure core: no network, no files, and a test that keeps it so
+    job.py         the Job model, and required experience read out of text
+    filtering.py   JobFilter, compiled to one Check per criterion
+    capability.py  Field, and what a board filters on and publishes
+    flags.py       every flag a posting can carry - a file format, so fixed
+    rates.py       currency conversion from a RateSnapshot handed in
+    dedupe.py      when postings on different boards are one job
+    dates.py salary.py places.py   posting dates, pay, and where a place is
+  errors.py      one error hierarchy for every source: Blocked, NotFound, Unreachable, ...
+  infra/         the shared HTTP client (retries, backoff, 429s, per-host pacing),
+                 the one browser launcher (Chrome, then Edge, then bundled), and
+                 store/: applicant.db and the file exports kept in step with it
+  filters.py     JobFilter wired to live rates and the board table; prepared()
+  money.py       the FX and PPP cache, and Rates.snapshot() for a run
+  ppp_factors.json  the shipped, read-only PPP table; refreshes go to the data dir
+  settings.py    Settings: data dir, file names, store, keys - flags > env > applicant.toml
+  boards/        one module per job board, all returning Job, and their capabilities;
+                 linkedin_apply.py is the only code that acts on an account
   reviews/       company ratings from AmbitionBox and Glassdoor
   financials/    company funding from Crunchbase and Tracxn, tracked over time
+  storage.py     job_listing.json and applied_jobs.csv
+  files.py       atomic JSON writes; unreadable stores are moved aside, never overwritten
+  services/      what each command does, callable without the command line:
+                 search, apply, reviews, financials, rates, status; fan_out
+                 isolates each source's failure, and events report progress
+  search.py      Jobs: the thin front door over the search and apply services
+  interaction.py how a --login run asks the person at the keyboard
+  log.py         logging: stderr, levels, per-run file, escaping, secret masking
+  cli/           one module per subcommand, each calling a service; render.py
+                 is the one place results are printed
+  __main__.py    python -m applicant
 tests/           unittest.TestCase suites, run under pytest
 ```
 
@@ -452,20 +575,44 @@ The whole thing is importable, with `Jobs` as the front door:
 from applicant.search import Jobs
 from applicant.filters import JobFilter
 
-board = Jobs()
-hits = board.search(
-    'python developer',
-    JobFilter(
-        location='India',
-        min_salary=1_200_000,
-        currency='INR',
-        salary_basis='ppp',
-        experience=5,
-        posted_within_days=7,
-    ),
-)
-board.apply(hits, log='applied_jobs.csv', dry_run=True)
+with Jobs() as board:
+    hits = board.search(
+        'python developer',
+        JobFilter(
+            location='India',
+            min_salary=1_200_000,
+            currency='INR',
+            salary_basis='ppp',
+            experience=5,
+            posted_within_days=7,
+        ),
+    )
+    board.apply(hits, log='applied_jobs.csv', dry_run=True)
 ```
+
+Nothing is printed. Progress is logged under the `applicant` logger, and anything
+you may want to show as it happens is emitted as an event - pass `emit=` to see
+them:
+
+```python
+from applicant.services.events import BoardSearched, SourceFailed
+
+
+def show(event):
+    if isinstance(event, BoardSearched):
+        print(f'{event.source}: {event.kept} of {event.seen}')
+    elif isinstance(event, SourceFailed):
+        print(f'{event.source} failed: {event.error}')
+
+
+hits = Jobs().search('python developer', emit=show)
+```
+
+Every command has a service behind it in `applicant.services` - `fetch_reviews`,
+`track_financials`, `summarise`, and so on - so a program can do anything the
+command line does. A source that needs a person (a `--login` run clearing a bot
+check, LinkedIn's one-time code) asks through `interaction=`; the default asks on
+the terminal, and `applicant.interaction.Scripted` answers from a list.
 
 `Job` is a Pydantic model, so postings are validated as they are built - blank
 strings become `None`, whitespace is stripped, and a year range is derived from
@@ -480,10 +627,17 @@ for job in Indeed().search('python developer', 'remote', limit=10):
     print(job.title, job.company, job.location, job.salary)
 ```
 
-`LinkedIn` additionally keeps the signed-in flows - `login()`, `restore_session()`,
-`scrape_jobs()` for recommended jobs and `easy_apply()`. Sessions are stored as Playwright
-storage state, and a `cookies.json` written by the older Selenium version is converted
-automatically on read.
+LinkedIn comes in two parts, because reading job cards and acting on your account
+are different risks. `LinkedInGuest` (`applicant.boards.linkedin`) is the logged-out
+search, and all a search ever loads. `LinkedIn` (`applicant.boards.linkedin_apply`) adds
+the signed-in flows: `login()`, `restore_session()`, `scrape_jobs()` for recommended
+jobs, `easy_apply()`, and `apply(jobs, dry_run=...)`. That last one is the `Applier`
+interface the apply service calls, and `dry_run` has no default. Sessions are stored
+as Playwright storage state. A `cookies.json` from the old Selenium version is no longer
+converted; `applicant jobs --overwrite` signs in again and replaces it.
+
+`Jobs.apply()` requires `dry_run` too, keyword-only, and takes `confirm=`: a function
+shown the postings before anything is sent.
 
 Company ratings are also importable:
 

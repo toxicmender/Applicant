@@ -47,20 +47,41 @@ def company_key(financials):
 
 
 class FinancialsTracker:
-    def __init__(self, path='company_financials.json'):
+    """The change log of each company's financials, in a file or in applicant.db.
+
+    `backend='files'` keeps company_financials.json alone. `backend='sqlite'`
+    keeps the history in applicant.db beside it and exports the same file, byte
+    for byte; a file edited or replaced by hand is imported and wins. The change
+    rules below are the same either way - only loading and saving differ.
+    """
+
+    def __init__(self, path='company_financials.json', backend: str = 'files'):
         self.path = path
+        self.backend = backend
         self.data = self._load()
 
     def _load(self):
         # the tracker exists to write: an unreadable history is moved aside
         # rather than replaced, since it is the only copy of every snapshot
-        data = read_document(self.path, quarantine=True)
+        if self.backend == 'sqlite':
+            from ..infra.store.sqlite import Store
+
+            with Store.beside(self.path) as store:
+                data = store.financials_document(self.path)
+        else:
+            data = read_document(self.path, quarantine=True)
         if not isinstance(data.get('companies'), dict):
             data['companies'] = {}
         return data
 
     def save(self):
-        write_document(self.path, self.data)
+        if self.backend == 'sqlite':
+            from ..infra.store.sqlite import Store
+
+            with Store.beside(self.path) as store:
+                store.save_financials(self.data, self.path)
+        else:
+            write_document(self.path, self.data)
 
     def latest(self, key):
         entry = self.data['companies'].get(key)

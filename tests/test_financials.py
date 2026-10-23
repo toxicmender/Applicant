@@ -9,15 +9,8 @@ import unittest
 
 import httpx
 
-from applicant.financials import (
-    AuthError,
-    CompanyNotFound,
-    CrunchbaseClient,
-    FinancialsError,
-    FinancialsTracker,
-    TracxnClient,
-    parse_money,
-)
+from applicant.errors import AuthFailed, NotFound, QuotaExhausted, SourceError
+from applicant.financials import CrunchbaseClient, FinancialsTracker, TracxnClient, parse_money
 from applicant.financials.crunchbase import employee_band, permalink
 from applicant.financials.models import CompanyFinancials, FundingRound, Money
 from applicant.financials.parsing import clean_name, embedded_json, humanize, labelled, to_money
@@ -221,7 +214,7 @@ class Crunchbase(unittest.TestCase):
 
     def test_basic_plan_is_explained(self):
         client = crunchbase(lambda request: httpx.Response(403, json=[{'message': 'nope'}]))
-        with self.assertRaisesRegex(AuthError, 'Basic'):
+        with self.assertRaisesRegex(AuthFailed, 'Basic'):
             client.fetch('zomato')
 
     def test_single_attempt_reports_transport_error(self):
@@ -230,7 +223,7 @@ class Crunchbase(unittest.TestCase):
 
         client = crunchbase(handler)
         client.retries = 0  # still one attempt, and its failure must be reported
-        with self.assertRaisesRegex(FinancialsError, 'could not reach Crunchbase'):
+        with self.assertRaisesRegex(SourceError, 'could not reach Crunchbase'):
             client.fetch('zomato')
 
     def test_not_found(self):
@@ -239,7 +232,7 @@ class Crunchbase(unittest.TestCase):
                 return httpx.Response(200, json={'entities': []})
             return httpx.Response(404)
 
-        with self.assertRaises(CompanyNotFound):
+        with self.assertRaises(NotFound):
             crunchbase(handler).fetch('no such company')
 
 
@@ -337,6 +330,14 @@ class Tracxn(unittest.TestCase):
         self.assertIsNone(result.revenue)
         self.assertTrue(any(note.startswith('revenue:') for note in result.notes))
 
+    def test_rounds_are_counted_only_when_the_api_ran_out_of_them(self):
+        """A short page ends the list; stopping at max_rounds may not have."""
+        whole = tracxn(self.handler([])).fetch('Zomato', max_rounds=20)
+        self.assertEqual(whole.funding_rounds_count, 1)
+        cut = tracxn(self.handler([])).fetch('Zomato', max_rounds=1)
+        self.assertEqual(len(cut.rounds), 1)
+        self.assertIsNone(cut.funding_rounds_count)
+
     def test_domain_lookup(self):
         calls = []
         tracxn(self.handler(calls)).fetch('https://www.zomato.com/')
@@ -351,13 +352,72 @@ class Tracxn(unittest.TestCase):
             calls.append(request)
             return httpx.Response(403, json={'errorCode': 900, 'message': 'API out of credits'})
 
-        with self.assertRaisesRegex(AuthError, 'out of credits'):
+        # its own kind, not a refusal that happens to quote the message: the CLI
+        # tells a person to renew credits rather than to check the token
+        with self.assertRaisesRegex(QuotaExhausted, 'retrying cannot help'):
             tracxn(handler).fetch(TX_ID)
         self.assertEqual(len(calls), 1)
 
     def test_name_without_token_is_explained(self):
-        with self.assertRaisesRegex(FinancialsError, 'profile url'):
+        with self.assertRaisesRegex(SourceError, 'profile url'):
             TracxnClient(api_key='').fetch('Zomato')
+
+
+class RoundCount(unittest.TestCase):
+    """A round count read off a list is only a count when the list is whole."""
+
+    ROUNDS = tuple(
+        {'investment_type': 'series_a', 'announced_on': '2020-01-0{}'.format(n)} for n in (1, 2, 3)
+    )
+
+    def build(self, max_rounds):
+        financials = CrunchbaseClient()._build(
+            [{'rounds': list(self.ROUNDS)}], 'acme', 'Acme', max_rounds
+        )
+        return financials.fill_from_rounds()
+
+    def test_a_whole_list_is_counted(self):
+        self.assertEqual(self.build(max_rounds=5).funding_rounds_count, 3)
+
+    def test_a_list_cut_at_max_rounds_is_not(self):
+        """-n 2 over three rounds is not 'raised over 2 rounds'."""
+        financials = self.build(max_rounds=2)
+        self.assertEqual(len(financials.rounds), 2)
+        self.assertIsNone(financials.funding_rounds_count)
+        self.assertNotIn('over 2 round', financials.summary())
+
+    def test_a_stated_count_is_kept_either_way(self):
+        financials = CrunchbaseClient()._build(
+            [{'rounds': list(self.ROUNDS)}, {'num_funding_rounds': 30}], 'acme', 'Acme', 2
+        )
+        self.assertEqual(financials.fill_from_rounds().funding_rounds_count, 30)
+
+    def test_the_count_is_not_part_of_the_stored_record(self):
+        self.assertNotIn('_rounds_complete', json.dumps(self.build(max_rounds=2).to_dict()))
+
+
+class Teardown(unittest.TestCase):
+    """Whoever makes a client closes it; a pool handed in belongs to the caller."""
+
+    def test_the_api_pool_is_closed_once_opened(self):
+        for make in (CrunchbaseClient, TracxnClient):
+            with self.subTest(client=make.__name__):
+                with make(api_key='k' * 12) as client:
+                    pool = client.http.client
+                self.assertTrue(pool.is_closed)
+                client.close()  # twice is fine
+
+    def test_a_client_that_never_opened_a_pool_closes_quietly(self):
+        for make in (CrunchbaseClient, TracxnClient):
+            with self.subTest(client=make.__name__):
+                make().close()
+
+    def test_a_pool_handed_in_is_left_open(self):
+        handed = httpx.Client()
+        self.addCleanup(handed.close)
+        with CrunchbaseClient(api_key='k' * 12, client=handed) as client:
+            client.http  # noqa: B018 - opening it is the point
+        self.assertFalse(handed.is_closed)
 
 
 class Tracker(unittest.TestCase):

@@ -10,6 +10,8 @@ from __future__ import annotations
 import io
 import logging
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import datetime
@@ -101,8 +103,16 @@ class QuietByDefaultTest(LogTest):
     """A library says nothing until its caller asks it to."""
 
     def test_nothing_is_configured_until_configure_is_called(self):
-        handlers = logging.getLogger(log.ROOT).handlers
-        self.assertTrue(all(isinstance(one, logging.NullHandler) for one in handlers))
+        """As imported, in a fresh interpreter: in this one, any test that ran
+        main() before this one may have configured logging and not undone it."""
+        probe = (
+            'import logging, applicant.cli, applicant.search\n'
+            'print([type(h).__name__ for h in logging.getLogger("applicant").handlers])'
+        )
+        done = subprocess.run(
+            [sys.executable, '-c', probe], capture_output=True, text=True, timeout=60, check=True
+        )
+        self.assertEqual(done.stdout.strip(), "['NullHandler']")
 
     def test_silence_undoes_configure(self):
         log.configure(stream=self.stream)
@@ -217,6 +227,15 @@ class DefaultFileTest(LogTest):
     def test_the_directory_can_be_named(self):
         name = log.default_file(datetime(2026, 8, 12, 14, 35, 2), folder='elsewhere')
         self.assertEqual(name, os.path.join('elsewhere', 'run_20260812-143502.log'))
+
+
+class FoundByFuzzingTest(unittest.TestCase):
+    """Inputs Hypothesis found (tests/test_fuzz.py), pinned by name."""
+
+    def test_unicode_line_separators_cannot_split_an_entry(self):
+        from applicant.log import escape
+
+        self.assertEqual(escape('a\u2028b\u2029c'), 'a\\x2028b\\x2029c')
 
 
 if __name__ == '__main__':

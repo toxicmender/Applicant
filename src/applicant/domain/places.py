@@ -321,7 +321,8 @@ def country_for(location: str | None) -> str | None:
 
 
 def within(wanted: str, actual: str | None) -> bool | None:
-    """Is `actual` inside `wanted`? None when what we know cannot settle it.
+    """Is `actual` inside `wanted`? None when what we know cannot settle it -
+    a place we have no table for, or a posting that gives no location at all.
 
     Text matching first, so a city or a state filter behaves exactly as it always
     has. Only a country filter consults the table, because only a country filter
@@ -332,7 +333,9 @@ def within(wanted: str, actual: str | None) -> bool | None:
     if not target:
         return True
     if not text:
-        return False  # a posting with no location cannot be shown to be in one
+        # the posting did not say: like a salary it left out, that is "cannot
+        # tell" - kept and flagged, and dropped only under --strict
+        return None
     if names(target, text):
         return True
 

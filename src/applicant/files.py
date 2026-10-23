@@ -58,6 +58,8 @@ def read_document(path: str | Path, *, quarantine: bool = False) -> dict[str, An
 def write_document(path: str | Path, document: Any, *, trailing_newline: bool = False) -> None:
     """Replace `path` with `document`, all at once or not at all."""
     target = Path(path)
+    # a data directory named for the first time does not exist yet
+    target.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(
         prefix=f'.{target.name}.', suffix='.tmp', dir=target.parent
     )

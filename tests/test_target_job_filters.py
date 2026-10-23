@@ -15,15 +15,16 @@ from __future__ import annotations
 import io
 import os
 import unittest
-from contextlib import contextmanager, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from applicant.boards import capability
 from applicant.cli import main
+from applicant.domain.job import Job
+from applicant.errors import Blocked
 from applicant.filters import JobFilter
-from applicant.models import BlockedError, Job
 from applicant.search import Jobs
 from applicant.storage import ApplicationLog, fingerprint, load_jobs, save_jobs
 
@@ -418,7 +419,7 @@ class DescribingBoard(StubBoard):
 
     def describe(self, job):
         if self.fail:
-            raise BlockedError('rate limited')
+            raise Blocked('rate limited')
         self.read.append(job.id)
         return self.pages.get(job.id)
 
@@ -607,9 +608,19 @@ class CrossBoardTest(unittest.TestCase):
 
     def test_a_later_run_does_not_apply_again_through_another_board(self):
         google, indeed, linked = self.everywhere()
-        self.apply([linked])
+        ApplicationLog(self.log).record([(linked, 'applied', 'linkedin easy apply')])
         self.apply([google, indeed])
         self.assertEqual(len(ApplicationLog(self.log).rows()), 1)
+
+    def test_a_dry_run_does_not_stand_in_for_the_outcome(self):
+        """Only an outcome blocks another row: a dry run is a rehearsal."""
+        google, indeed, linked = self.everywhere()
+        self.apply([linked])
+        self.apply([google, indeed])
+        self.assertEqual(
+            [row['status'] for row in ApplicationLog(self.log).rows()],
+            ['would_apply', 'needs_manual_apply'],
+        )
 
     def test_two_postings_from_one_board_are_two_postings(self):
         """However alike they look, the board's own id is the authority."""
@@ -656,7 +667,13 @@ class SearchCommandTest(unittest.TestCase):
         board = StubBoard(pool())
         buffer = io.StringIO()
         quiet = [] if log_file or '--log-file' in argv else ['--no-log-file']
-        with patch.object(Jobs, '_client', return_value=board), redirect_stdout(buffer):
+        # what the person at the terminal sees: the answer on stdout, the
+        # commentary on stderr
+        with (
+            patch.object(Jobs, '_client', return_value=board),
+            redirect_stdout(buffer),
+            redirect_stderr(buffer),
+        ):
             code = main([*argv, '-o', self.output, *quiet])
         return code, buffer.getvalue()
 
@@ -720,7 +737,8 @@ class SearchCommandTest(unittest.TestCase):
     def test_verbose_says_which_module_spoke(self):
         code, output = self.run_cli('search', 'ai', '-s', 'naukri', '-l', 'India', '-v')
         self.assertEqual(code, 0)
-        self.assertIn('applicant.search', output)
+        # the board loop lives in the search service since the services split
+        self.assertIn('applicant.services.search', output)
         self.assertIn('jobs match', output)
 
     def test_a_run_can_be_recorded_to_a_file(self):

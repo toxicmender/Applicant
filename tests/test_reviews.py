@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest import mock
 
 import httpx
 
-from applicant.reviews import AmbitionBoxClient, CompanyNotFound, ParseError, ReviewsError
+from applicant.errors import NotFound, SourceError, Unparseable
+from applicant.reviews import AmbitionBoxClient
 from applicant.reviews.ambitionbox import slugify
 from applicant.reviews.glassdoor import GlassdoorClient, reviews_url
 from applicant.reviews.models import CompanyRating, Review
@@ -78,15 +80,15 @@ class AmbitionBoxParseTest(unittest.TestCase):
         self.assertEqual(props['companyName'], 'TCS')
 
     def test_a_missing_blob_is_a_parse_error(self):
-        with self.assertRaises(ParseError):
+        with self.assertRaises(Unparseable):
             self.client._page_props('<html>nothing here</html>')
 
     def test_a_malformed_blob_is_a_parse_error(self):
-        with self.assertRaises(ParseError):
+        with self.assertRaises(Unparseable):
             self.client._page_props('<script id="__NEXT_DATA__">{not json}</script>')
 
     def test_missing_page_props_is_a_parse_error(self):
-        with self.assertRaises(ParseError):
+        with self.assertRaises(Unparseable):
             self.client._page_props('<script id="__NEXT_DATA__">{"props": {}}</script>')
 
     def test_rating_is_built_from_the_props(self):
@@ -120,7 +122,7 @@ class AmbitionBoxParseTest(unittest.TestCase):
         self.assertEqual(rating.review_count, 117_600)
 
     def test_neither_blob_present_is_a_parse_error(self):
-        with self.assertRaises(ParseError):
+        with self.assertRaises(Unparseable):
             self.client._from_json_ld('<html></html>', 'tcs', 'url')
 
 
@@ -134,7 +136,7 @@ class AmbitionBoxFetchTest(unittest.TestCase):
         def handler(request):
             return httpx.Response(404)
 
-        with self.assertRaises(CompanyNotFound):
+        with self.assertRaises(NotFound):
             self.client(handler).fetch('nope')
 
     def test_the_first_page_is_enough_for_a_small_request(self):
@@ -158,6 +160,44 @@ class AmbitionBoxFetchTest(unittest.TestCase):
             return httpx.Response(200, text=next_data_html(PAGE_PROPS))
 
         self.assertEqual(self.client(handler).fetch('tcs', max_reviews=0).reviews, [])
+
+    def test_a_later_page_failing_keeps_the_first(self):
+        def handler(request):
+            if '/_next/data/' in request.url.path:
+                return httpx.Response(500)
+            props = {**PAGE_PROPS, 'pagination': {'totalPages': 5}}
+            return httpx.Response(200, text=next_data_html(props))
+
+        with self.assertLogs('applicant.reviews.ambitionbox', 'WARNING') as logged:
+            rating = self.client(handler).fetch('tcs', max_reviews=40)
+        self.assertEqual(rating.overall_rating, 3.3)
+        self.assertEqual(len(rating.reviews), 1)
+        self.assertIn('review page 2 failed', logged.output[0])
+
+    def test_closing_releases_the_pool(self):
+        with AmbitionBoxClient() as client:
+            pool = client.http.client
+        self.assertTrue(pool.is_closed)
+
+    def test_a_rotated_build_id_is_fetched_again(self):
+        """Next's data route 404s once a deploy changes the build id: the page is
+        read again for the new one, and paging carries on."""
+        props = {**PAGE_PROPS, 'pagination': {'totalPages': 2}}
+        more = {**PAGE_PROPS['reviewsData'][0], 'reviewTitle': 'Second page'}
+        seen = []
+
+        def handler(request):
+            seen.append(request.url.path)
+            if request.url.path == '/_next/data/old/reviews/tcs-reviews.json':
+                return httpx.Response(404)
+            if request.url.path == '/_next/data/new/reviews/tcs-reviews.json':
+                return httpx.Response(200, json={'pageProps': {'reviewsData': [more]}})
+            build = 'old' if len(seen) == 1 else 'new'
+            return httpx.Response(200, text=next_data_html(props, build_id=build))
+
+        rating = self.client(handler).fetch('tcs', max_reviews=2)
+        self.assertEqual([review.title for review in rating.reviews][-1], 'Second page')
+        self.assertEqual(seen.count('/reviews/tcs-reviews'), 2, 'the page, then its new build id')
 
     def test_retries_a_transient_503(self):
         attempts = []
@@ -197,7 +237,7 @@ class GlassdoorUrlTest(unittest.TestCase):
 
     def test_a_bare_name_cannot_be_resolved(self):
         """Glassdoor's company search is behind the same bot check, so we refuse."""
-        with self.assertRaises(ReviewsError):
+        with self.assertRaises(SourceError):
             reviews_url('Google')
 
 
@@ -249,11 +289,38 @@ class GlassdoorExtractTest(unittest.TestCase):
         self.assertEqual(rating.review_count, 12_345)
         self.assertEqual(rating.rating_breakdown['work_life_balance'], 4.1)
 
+    def test_a_review_s_own_rating_is_never_the_company_s(self):
+        """The walk visits the reviews first here; their ratings must not stick."""
+        payload = {
+            'employer': {'ratingOverall': 3.9, 'reviewCount': 12_345},
+            'reviews': [{'ratingOverall': 5, 'reviewCount': 3, 'pros': 'p', 'cons': 'c'}],
+        }
+        rating = self.client._build([payload], [], 'Google', '9079', 'url')
+        self.assertEqual(rating.overall_rating, 3.9)
+        self.assertEqual(rating.review_count, 12_345)
+
+    def test_the_paging_counts_each_review_once(self):
+        """A page's XHR and its embedded HTML carry the same reviews."""
+        page = {'reviews': [{'pros': str(n), 'cons': 'c', 'summary': 's'} for n in range(10)]}
+        self.assertEqual(self.client._review_count([page, page], []), 10)
+
+    def test_a_login_run_asks_the_person_once(self):
+        from applicant.interaction import Scripted
+
+        asked = Scripted()
+        client = GlassdoorClient(login=True, interaction=asked)
+        # pages after the first get the ordinary bot-check probe instead
+        client._blocked = lambda page: False
+        page = mock.MagicMock()
+        client._settle(page)
+        client._settle(page)
+        self.assertEqual(len(asked.said), 1)
+
     def test_a_node_without_pros_or_cons_is_not_a_review(self):
         self.assertIsNone(self.client._read_review({'summary': 'no body'}))
 
     def test_no_data_at_all_is_a_parse_error(self):
-        with self.assertRaises(ParseError):
+        with self.assertRaises(Unparseable):
             self.client._build([], [], 'Google', '9079', 'url')
 
 

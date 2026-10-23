@@ -16,9 +16,10 @@ import logging
 import re
 from urllib.parse import urlencode
 
-from ..browser import browser, looks_blocked
-from ..dates import relative_to_iso
-from ..models import BlockedError, Job
+from ..domain.dates import relative_to_iso
+from ..domain.job import Job
+from ..errors import Blocked
+from ..infra.browser import browser, looks_blocked
 from . import CAPABILITIES
 
 logger = logging.getLogger(__name__)
@@ -59,7 +60,7 @@ class GoogleJobs:
         with browser(headless=self.headless, timeout=self.timeout) as page:
             page.goto(url, wait_until='domcontentloaded')
             if looks_blocked(page):
-                raise BlockedError(
+                raise Blocked(
                     'Google served a bot check instead of job results. Google Search is '
                     'strict about automation - retry later or from another network.'
                 )
@@ -67,7 +68,7 @@ class GoogleJobs:
             try:
                 page.wait_for_selector(CARD, timeout=20000)
             except Exception:  # noqa: BLE001 - wait_for_selector times out with its own error type
-                raise BlockedError(
+                raise Blocked(
                     'no job cards on the Google Jobs page. The Jobs tab may be '
                     'unavailable for this query or region, or the layout changed again.'
                 ) from None

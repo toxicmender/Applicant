@@ -1,5 +1,10 @@
 # CI plan
 
+> **Historical document.** This plan was written against an earlier layout
+> (`src/run.py`, `src/utils/`, a single `cli.py`) and has been carried out. It is kept
+> for its reasoning. For how the code is organised now, see
+> [`architecture-plan.md`](architecture-plan.md) and the README's "Where things are".
+
 Written against PR #2 (`company-reviews-submodule`, head `02a8b5b`).
 
 **Status: implemented, with four changes agreed after the plan was written.**

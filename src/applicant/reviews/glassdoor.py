@@ -4,8 +4,10 @@ import json
 import re
 from contextlib import suppress
 
+from ..errors import Blocked, SourceError, Unparseable
+from ..infra.browser import BrowserSession, looks_blocked
+from ..interaction import Interaction, Terminal
 from ..log import get
-from .errors import ChallengeError, ParseError, ReviewsError
 from .models import CompanyRating, Review
 
 logger = get(__name__)
@@ -21,17 +23,12 @@ SLUG_AND_ID = re.compile(r'^(?P<slug>.+?)-?E(?P<id>\d+)$', re.IGNORECASE)
 APOLLO_STATE = re.compile(r'apolloState"\s*:\s*(\{.+?\})\s*\}\s*;', re.DOTALL)
 NEXT_DATA = re.compile(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.DOTALL)
 
-USER_AGENT = (
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-    '(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36'
-)
-
 
 def reviews_url(company, page=1):
     """Accepts a full reviews url or a 'Google-E9079' style slug+id pair."""
     match = REVIEWS_URL.match(company) or SLUG_AND_ID.match(company)
     if not match:
-        raise ReviewsError(
+        raise SourceError(
             'Glassdoor needs a reviews url or a slug with employer id (e.g. "Google-E9079"), '
             'got {!r}. Glassdoor company search is behind the same bot check, so names '
             'cannot be resolved automatically.'.format(company)
@@ -53,23 +50,34 @@ class GlassdoorClient:
     falling back to the apolloState blob embedded in the HTML.
     """
 
-    def __init__(self, profile_dir='.gd_profile', login=False, headless=True, timeout=45000):
+    def __init__(
+        self,
+        profile_dir='.gd_profile',
+        login=False,
+        headless=True,
+        timeout=45000,
+        interaction: Interaction | None = None,
+    ):
+        # asked to wait while a person clears the bot check in a --login run
+        self.interaction = interaction or Terminal()
         self.profile_dir = profile_dir
         self.login = login
         self.headless = False if login else headless
         self.timeout = timeout
+        # a --login run asks the person once; the profile remembers after that
+        self._paused = False
 
     def fetch(self, company, max_reviews=PAGE_SIZE):
-        """Every failure leaves as a ReviewsError, so a caller trying several
+        """Every failure leaves as a SourceError, so a caller trying several
         sources can report this one and carry on with the rest."""
         try:
             rating = self._fetch(company, max_reviews)
-        except ReviewsError:
+        except SourceError:
             raise
         # the browser: launch failures, timeouts, a window closed by hand
         except Exception as error:
             logger.debug('glassdoor: traceback', exc_info=True)
-            raise ReviewsError(
+            raise SourceError(
                 f'the Glassdoor browser session failed: {type(error).__name__}: '
                 f'{str(error).splitlines()[0][:160] if str(error) else ""}'
             ) from error
@@ -80,55 +88,47 @@ class GlassdoorClient:
         return rating
 
     def _fetch(self, company, max_reviews):
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError:
-            raise ReviewsError(
-                'the glassdoor source needs playwright: '
-                'pip install playwright && playwright install chromium'
-            ) from None
-
         url, slug, employer_id = reviews_url(company)
         payloads = []
         html_pages = []
 
-        with sync_playwright() as driver:
-            context = driver.chromium.launch_persistent_context(
-                self.profile_dir,
-                headless=self.headless,
-                user_agent=USER_AGENT,
-                locale='en-US',
-                viewport={'width': 1366, 'height': 900},
-                args=['--disable-blink-features=AutomationControlled', '--disable-extensions'],
-            )
-            try:
-                page = context.pages[0] if context.pages else context.new_page()
-                page.set_default_timeout(self.timeout)
-                page.on('response', lambda response: self._capture(response, payloads))
+        with BrowserSession(
+            self.profile_dir, headless=self.headless, timeout=self.timeout
+        ) as session:
+            page = session.start()
+            page.on('response', lambda response: self._capture(response, payloads))
 
-                page.goto(url, wait_until='domcontentloaded')
+            page.goto(url, wait_until='domcontentloaded')
+            self._settle(page)
+            html_pages.append(page.content())
+
+            # Glassdoor shows ~10 reviews per page; keep paging until we have enough
+            current = 1
+            while self._review_count(payloads, html_pages) < max_reviews and current < 30:
+                current += 1
+                next_url, _, _ = reviews_url(company, current)
+                response = page.goto(next_url, wait_until='domcontentloaded')
+                if response is not None and response.status >= 400:
+                    break
                 self._settle(page)
                 html_pages.append(page.content())
 
-                # Glassdoor shows ~10 reviews per page; keep paging until we have enough
-                current = 1
-                while self._review_count(payloads, html_pages) < max_reviews and current < 30:
-                    current += 1
-                    next_url, _, _ = reviews_url(company, current)
-                    response = page.goto(next_url, wait_until='domcontentloaded')
-                    if response is not None and response.status >= 400:
-                        break
-                    self._settle(page)
-                    html_pages.append(page.content())
-
-                if self.login:
-                    self._save_state(context)
-            finally:
-                context.close()
+            if self.login:
+                self._save_state(session)
 
         rating = self._build(payloads, html_pages, slug, employer_id, url)
         rating.reviews = rating.reviews[: max(0, max_reviews)]
         return rating
+
+    def close(self) -> None:
+        """Nothing is held between fetches: each one opens and closes its own
+        browser. Here so every review source can be closed the same way."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
 
     # -- browser ----------------------------------------------------------
 
@@ -138,31 +138,26 @@ class GlassdoorClient:
         with suppress(Exception):
             page.wait_for_load_state('networkidle', timeout=self.timeout)
 
-        if self.login:
-            print(
+        if self.login and not self._paused:
+            self._paused = True
+            self.interaction.pause(
                 'A browser window is open. Clear the Cloudflare check and sign in to '
                 'Glassdoor, then come back here.'
+                ' Press Enter once the reviews page is visible.'
             )
-            input('Press Enter once the reviews page is visible: ')
             with suppress(Exception):
                 page.wait_for_load_state('networkidle', timeout=self.timeout)
             return
 
         if self._blocked(page):
-            raise ChallengeError(
+            raise Blocked(
                 'Glassdoor served a bot check instead of the reviews page. Re-run with '
                 '--login to clear it once in a visible browser; the saved profile is '
                 'reused headlessly afterwards.'
             )
 
     def _blocked(self, page):
-        try:
-            title = page.title()
-        except Exception:  # noqa: BLE001 - a page mid-navigation has no title yet
-            title = ''
-        if 'just a moment' in title.lower() or 'attention required' in title.lower():
-            return True
-        return page.locator('#challenge-platform, #cf-challenge-running').count() > 0
+        return looks_blocked(page)
 
     def _capture(self, response, payloads):
         if '/graph' not in response.url:
@@ -174,11 +169,18 @@ class GlassdoorClient:
         if body:
             payloads.append(body)
 
-    def _save_state(self, context):
+    def _save_state(self, session):
+        """Export the signed in session beside the profile it belongs to.
+
+        It is a session credential: owner-only, and inside `.gd_profile/`
+        rather than loose in whatever directory the command ran from.
+        """
         try:
-            context.storage_state(path='storage_state.json')
+            target = session.save_state()
         except Exception as error:  # noqa: BLE001 - reported, never fatal to the scrape
-            logger.warning(f'glassdoor: could not write storage_state.json: {error}')
+            logger.warning(f'glassdoor: could not save the session state: {error}')
+            return
+        logger.info(f'glassdoor: session state saved to {target}')
 
     # -- parsing ----------------------------------------------------------
 
@@ -188,7 +190,7 @@ class GlassdoorClient:
             sources.extend(self._embedded(html))
 
         if not sources:
-            raise ParseError('no review data found in Glassdoor responses for {}'.format(url))
+            raise Unparseable('no review data found in Glassdoor responses for {}'.format(url))
 
         rating = CompanyRating(
             source='glassdoor',
@@ -241,6 +243,9 @@ class GlassdoorClient:
                 stack.extend(current)
 
     def _read_aggregate(self, node, rating):
+        # a review carries its own ratingOverall: never the company's
+        if 'pros' in node or 'cons' in node:
+            return
         if rating.overall_rating is None:
             value = (
                 node.get('ratingOverall')
@@ -295,12 +300,15 @@ class GlassdoorClient:
         )
 
     def _review_count(self, payloads, html_pages):
-        """Cheap progress check for the pagination loop."""
-        total = 0
+        """Cheap progress check for the pagination loop: distinct reviews, the
+        way `_build` counts them - a page's XHR and its embedded HTML carry the
+        same reviews, and counting both stops the paging halfway."""
+        seen = set()
         for source in list(payloads) + [
             page for html in html_pages for page in self._embedded(html)
         ]:
             for node in self._walk(source):
-                if self._read_review(node) is not None:
-                    total += 1
-        return total
+                review = self._read_review(node)
+                if review is not None:
+                    seen.add((review.pros, review.cons, review.title))
+        return len(seen)

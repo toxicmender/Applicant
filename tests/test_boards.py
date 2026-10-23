@@ -16,9 +16,10 @@ import httpx
 from applicant.boards import CAPABILITIES, capability
 from applicant.boards.googlejobs import GoogleJobs
 from applicant.boards.indeed import Indeed, host_for
-from applicant.boards.linkedin import LinkedIn
+from applicant.boards.linkedin import LinkedInGuest
 from applicant.boards.naukri import Naukri, search_url
-from applicant.models import BlockedError, Job, experience_from
+from applicant.domain.job import Job, experience_from
+from applicant.errors import Blocked, Unparseable
 from applicant.search import SOURCES
 
 
@@ -98,8 +99,13 @@ class IndeedParseTest(unittest.TestCase):
     def setUp(self):
         self.client = Indeed(domain='https://in.indeed.com')
 
+    def job(self, item: dict) -> Job:
+        job = self.client._to_job(item)
+        assert job is not None
+        return job
+
     def test_fields_are_mapped(self):
-        job = self.client._to_job(self.ITEM)
+        job = self.job(self.ITEM)
         self.assertEqual(job.source, 'indeed')
         self.assertEqual(job.id, 'abc123')
         self.assertEqual(job.title, 'Python Developer')
@@ -109,39 +115,64 @@ class IndeedParseTest(unittest.TestCase):
         self.assertTrue(job.remote)
 
     def test_relative_links_are_made_absolute(self):
-        self.assertEqual(
-            self.client._to_job(self.ITEM).url, 'https://in.indeed.com/rc/clk?jk=abc123'
-        )
+        self.assertEqual(self.job(self.ITEM).url, 'https://in.indeed.com/rc/clk?jk=abc123')
 
     def test_epoch_becomes_an_iso_date(self):
-        self.assertEqual(self.client._to_job(self.ITEM).posted, '2025-08-03')
+        self.assertEqual(self.job(self.ITEM).posted, '2025-08-03')
 
     def test_a_sparse_item_does_not_crash(self):
-        job = self.client._to_job({'title': 'Dev'})
+        job = self.job({'title': 'Dev'})
         self.assertEqual(job.title, 'Dev')
         self.assertIsNone(job.url)
         self.assertIsNone(job.salary)
+
+    def test_a_bare_dollar_is_the_country_site_s_own(self):
+        """'$80,000' on ca.indeed.com is Canadian, not US, pay."""
+        from applicant.domain.salary import parse_salary
+
+        item = {'title': 'Dev', 'salarySnippet': {'text': '$80,000 a year'}}
+        for host, currency in (
+            ('https://ca.indeed.com', 'CAD'),
+            ('https://au.indeed.com', 'AUD'),
+            ('https://www.indeed.com', 'USD'),
+        ):
+            with self.subTest(host=host):
+                job = Indeed(domain=host)._to_job(item)
+                assert job is not None
+                salary = parse_salary(job.salary)
+                assert salary is not None
+                self.assertEqual(salary.currency, currency)
+        stated = {'title': 'Dev', 'salarySnippet': {'text': 'US$80,000 a year'}}
+        job = Indeed(domain='https://ca.indeed.com')._to_job(stated)
+        assert job is not None
+        self.assertEqual(job.salary, 'US$80,000 a year')
+
+    def test_an_item_without_a_title_is_no_job(self):
+        self.assertIsNone(self.client._to_job({'jobkey': 'x', 'title': '  '}))
 
     def test_employment_type_from_taxonomy_attributes(self):
         item = {
             'title': 'Dev',
             'taxonomyAttributes': [{'label': 'job-types', 'attributes': [{'label': 'Contract'}]}],
         }
-        self.assertEqual(self.client._to_job(item).employment_type, 'Contract')
+        self.assertEqual(self.job(item).employment_type, 'Contract')
 
     def test_results_are_read_out_of_the_mosaic_blob(self):
         results = self.client._results(mosaic_html([self.ITEM]))
         self.assertEqual(len(results), 1)
 
-    def test_a_page_without_the_blob_reads_as_blocked(self):
-        with self.assertRaises(BlockedError):
-            self.client._results('<html>Access Denied</html>')
+    # A bot check is caught before this (_html_via_browser raises Blocked), so a
+    # page that reaches here without the payload is one that changed: exit 5,
+    # "file a bug" - not exit 3, "retry later"
+    def test_a_page_without_the_blob_reads_as_unparseable(self):
+        with self.assertRaises(Unparseable):
+            self.client._results('<html><body>Jobs, redesigned</body></html>')
 
-    def test_a_malformed_blob_reads_as_blocked(self):
+    def test_a_malformed_blob_reads_as_unparseable(self):
         html = (
             '<script>window.mosaic.providerData["mosaic-provider-jobcards"] = {not json};</script>'
         )
-        with self.assertRaises(BlockedError):
+        with self.assertRaises(Unparseable):
             self.client._results(html)
 
 
@@ -187,6 +218,39 @@ class IndeedSearchTest(unittest.TestCase):
         jobs = self.client(handler).search('python', limit=25)
         self.assertEqual(len(jobs), 5)
         self.assertEqual(len(calls), 2, 'one page of results, one that added nothing')
+
+    def test_a_card_without_a_title_is_skipped_not_fatal(self):
+        def handler(request):
+            if dict(request.url.params).get('start'):
+                return httpx.Response(200, text=mosaic_html([]))
+            items = self.items(0, 2)
+            items.insert(1, {'jobkey': 'sponsored', 'title': None})
+            return httpx.Response(200, text=mosaic_html(items))
+
+        jobs = self.client(handler).search('python', limit=25)
+        self.assertEqual([job.id for job in jobs], ['k0', 'k1'])
+
+    def unreadable_after(self, pages: int):
+        """A board whose results stop parsing after `pages` good pages."""
+
+        def handler(request):
+            start = int(dict(request.url.params).get('start', 0))
+            if start // 10 < pages:
+                return httpx.Response(200, text=mosaic_html(self.items(start, 10)))
+            return httpx.Response(200, text='<html><body>Jobs, redesigned</body></html>')
+
+        client = self.client(handler)
+        # the browser retry sees the same changed page, and no bot check
+        client._html_via_browser = lambda url: '<html><body>Jobs, redesigned</body></html>'
+        return client
+
+    def test_a_later_page_that_changed_keeps_the_pages_already_read(self):
+        jobs = self.unreadable_after(1).search('python', limit=25)
+        self.assertEqual([job.id for job in jobs], ['k{}'.format(n) for n in range(10)])
+
+    def test_a_first_page_that_changed_is_unparseable(self):
+        with self.assertRaises(Unparseable):
+            self.unreadable_after(0).search('python', limit=25)
 
     def test_partial_overlap_between_pages_still_advances(self):
         def handler(request):
@@ -328,7 +392,7 @@ class LinkedInGuestCardTest(unittest.TestCase):
     """
 
     def setUp(self):
-        self.client = LinkedIn()
+        self.client = LinkedInGuest()
         self.addCleanup(self.client.close)
 
     def test_fields_are_extracted(self):
@@ -344,6 +408,25 @@ class LinkedInGuestCardTest(unittest.TestCase):
         job = self.client._card_to_job(self.CARD)
         assert job is not None
         self.assertEqual(job.company, 'Acme & Co')
+
+    def test_every_entity_is_decoded_not_just_the_ampersand(self):
+        """So the title matches, and fingerprints like, Indeed's copy of it."""
+        from applicant.domain.dedupe import fingerprint
+
+        card = self.CARD.replace(
+            'Senior Python Developer', 'Women&#39;s Health &quot;ML&quot; Engineer'
+        )
+        job = self.client._card_to_job(card)
+        assert job is not None
+        self.assertEqual(job.title, 'Women\'s Health "ML" Engineer')
+        indeed = Job(
+            source='indeed',
+            id='k1',
+            title='Women\'s Health "ML" Engineer',
+            company='Acme & Co',
+            location='Bengaluru',
+        )
+        self.assertEqual(fingerprint(job.to_dict()), fingerprint(indeed.to_dict()))
 
     def test_query_strings_are_dropped_from_the_link(self):
         job = self.client._card_to_job(self.CARD)
@@ -366,8 +449,10 @@ class LinkedInGuestSearchTest(unittest.TestCase):
             '<h3 class="base-search-card__title">Dev {0}</h3></div></li>'.format(job_id)
         )
 
-    def client(self, handler) -> LinkedIn:
-        instance = LinkedIn(delay=0, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    def client(self, handler) -> LinkedInGuest:
+        instance = LinkedInGuest(
+            delay=0, client=httpx.Client(transport=httpx.MockTransport(handler))
+        )
         self.addCleanup(instance.close)
         return instance
 
@@ -392,7 +477,7 @@ class LinkedInGuestSearchTest(unittest.TestCase):
         def handler(request):
             return httpx.Response(429)
 
-        with self.assertRaises(BlockedError):
+        with self.assertRaises(Blocked):
             self.client(handler).search('python', limit=5)
 
     def test_the_age_filter_is_sent_in_seconds(self):
@@ -414,8 +499,10 @@ class LinkedInDescribeTest(unittest.TestCase):
         '<ul><li>3+ years of experience with Python &amp; PyTorch</li></ul></section>'
     )
 
-    def client(self, handler) -> LinkedIn:
-        instance = LinkedIn(delay=0, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    def client(self, handler) -> LinkedInGuest:
+        instance = LinkedInGuest(
+            delay=0, client=httpx.Client(transport=httpx.MockTransport(handler))
+        )
         self.addCleanup(instance.close)
         return instance
 
@@ -454,7 +541,7 @@ class LinkedInDescribeTest(unittest.TestCase):
     def test_rate_limiting_is_reported_not_swallowed(self):
         """Carrying on through a 429 is how a working scrape becomes a blocked one."""
         client = self.client(lambda request: httpx.Response(429))
-        with self.assertRaises(BlockedError):
+        with self.assertRaises(Blocked):
             client.describe(self.job())
 
 
@@ -525,7 +612,7 @@ class CapabilityTest(unittest.TestCase):
 
     def test_each_client_carries_its_own(self):
         for client, name in (
-            (LinkedIn(), 'linkedin'),
+            (LinkedInGuest(), 'linkedin'),
             (Indeed(), 'indeed'),
             (Naukri(), 'naukri'),
             (GoogleJobs(), 'googlejobs'),

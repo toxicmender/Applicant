@@ -6,6 +6,8 @@
 **/.money_cache.json
 **/storage_state.json
 **/company_financials.json
+**/applicant.db
+**/applicant.db-journal
 # unreadable stores moved aside by applicant.files - personal data, like the originals
 **/*.corrupt-*
 .gd_profile/
@@ -335,3 +337,9 @@ Sessionx.vim
 tags
 # Persistent undo
 [._]*.un~
+
+# Hypothesis keeps found examples here (the `deep` profile; `ci` uses no database)
+.hypothesis/
+
+# mutmut works here; see docs/mutation-report.md
+mutants/

@@ -3,14 +3,15 @@ from __future__ import annotations
 import logging
 import os
 import re
-import time
 from contextlib import suppress
 from datetime import datetime, timezone
 
 import httpx
 
-from .. import logs
-from .errors import AuthError, ChallengeError, CompanyNotFound, FinancialsError, ParseError
+from .. import log
+from ..errors import AuthFailed, Blocked, NotFound, QuotaExhausted, SourceError, Unparseable
+from ..infra.http import HttpClient
+from ..interaction import Interaction, Terminal
 from .models import CompanyFinancials, FundingRound
 from .parsing import (
     clean_name,
@@ -139,10 +140,13 @@ class TracxnClient:
         delay=1.0,
         retries=3,
         client=None,
+        interaction: Interaction | None = None,
     ):
+        # asked to wait while a person clears the bot check in a --login run
+        self.interaction = interaction or Terminal()
         self.api_key = api_key if api_key is not None else os.environ.get('TRACXN_API_KEY')
         # masked in every log line from here on (ASVS 16.2.5)
-        logs.register_secret(self.api_key)
+        log.register_secret(self.api_key)
         self.profile_dir = profile_dir
         self.login = login
         self.headless = False if login else headless
@@ -150,16 +154,21 @@ class TracxnClient:
         self.delay = delay
         self.retries = retries
         self._client = client
+        self._http: HttpClient | None = None
+
+    def accepts(self, company: str) -> bool:
+        """Whether Tracxn can look this up: anything but a profile url on crunchbase.com."""
+        return 'crunchbase.com' not in company.lower()
 
     def fetch(self, company, max_rounds=20):
-        """Every failure leaves as a FinancialsError, so a caller trying several
+        """Every failure leaves as a SourceError, so a caller trying several
         sources can report this one and carry on with the rest."""
         try:
             financials = self._fetch(company, max_rounds)
         except httpx.HTTPStatusError as error:
-            raise FinancialsError(f'Tracxn answered HTTP {error.response.status_code}') from error
+            raise SourceError(f'Tracxn answered HTTP {error.response.status_code}') from error
         except httpx.HTTPError as error:
-            raise FinancialsError(f'could not reach Tracxn: {error}') from error
+            raise SourceError(f'could not reach Tracxn: {error}') from error
         logger.info(
             f'tracxn: {financials.company}: {len(financials.rounds)} round(s), '
             f'{len(financials.notes)} gap(s) noted'
@@ -173,7 +182,7 @@ class TracxnClient:
         elif PROFILE_URL.match(company.strip()):
             financials = self._fetch_web(company.strip(), max_rounds)
         else:
-            raise FinancialsError(
+            raise SourceError(
                 'Tracxn needs either an API token (TRACXN_API_KEY / --tracxn-key) or a '
                 'profile url like https://tracxn.com/d/companies/<name>/__<id>, got {!r}. '
                 'Its company search is behind a login, so names cannot be resolved '
@@ -182,57 +191,69 @@ class TracxnClient:
         financials.fill_from_rounds()
         return financials
 
+    def close(self) -> None:
+        """Release the API connection pool, if one was opened (and not handed
+        in). Safe to call more than once; whoever makes a client closes it."""
+        if self._http is not None:
+            self._http.close()
+            self._http = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
+
     # -- api --------------------------------------------------------------
 
     @property
-    def client(self):
-        if self._client is None:
-            self._client = httpx.Client(timeout=self.timeout, follow_redirects=True)
-        return self._client
+    def http(self) -> HttpClient:
+        """Made on first use: a run on the website never needs one."""
+        if self._http is None:
+            self._http = HttpClient(
+                'Tracxn',
+                client=self._client,
+                headers={},
+                timeout=self.timeout,
+                retries=self.retries,
+                backoff=self.delay,
+                interval=self.delay,
+                secret=self.api_key,
+            )
+        return self._http
+
+    @property
+    def client(self) -> httpx.Client:
+        return self.http.client
 
     def _post(self, path, body, base=API):
-        response = None
-        attempts = max(1, self.retries)
-        for attempt in range(attempts):
-            if attempt:
-                time.sleep(self.delay * 2**attempt)
-            try:
-                response = self.client.post(
-                    base + path,
-                    json=body,
-                    headers={'accessToken': self.api_key or '', 'Content-Type': 'application/json'},
-                )
-            except httpx.TransportError as error:
-                if attempt == attempts - 1:
-                    raise FinancialsError('could not reach Tracxn: {}'.format(error)) from error
-                continue
-            # no Retry-After is sent, so plain backoff is all we can do
-            if response.status_code not in (429, 502, 503):
-                break
-            logger.debug(f'tracxn: HTTP {response.status_code} for {path}; backing off')
-        assert response is not None  # every attempt either assigned it or raised
+        # no Retry-After is sent, so HttpClient's own backoff is all there is;
+        # a rate limit that outlasts it leaves as Blocked
+        response = self.http.post(
+            base + path,
+            json=body,
+            headers={'accessToken': self.api_key or '', 'Content-Type': 'application/json'},
+        )
 
         if response.status_code == 401:
-            raise AuthError('Tracxn rejected the API token')
+            raise AuthFailed('Tracxn rejected the API token')
         if response.status_code == 403:
             message = _error(response)
             if 'credit' in message.lower():
-                raise AuthError(
+                raise QuotaExhausted(
                     'Tracxn API is out of credits - retrying cannot help until they are renewed'
                 )
-            raise AuthError(
+            raise AuthFailed(
                 'Tracxn refused the request (token expired, or the plan does '
                 'not cover it): {}'.format(message)
             )
-        if response.status_code == 429:
-            raise FinancialsError('Tracxn rate limit hit; try again later')
         if response.status_code == 400:
-            raise FinancialsError('Tracxn rejected the request: {}'.format(_error(response)))
+            raise SourceError('Tracxn rejected the request: {}'.format(_error(response)))
         response.raise_for_status()
         try:
             return response.json()
         except ValueError:
-            raise ParseError(
+            raise Unparseable(
                 'Tracxn returned something other than JSON for {}'.format(path)
             ) from None
 
@@ -247,6 +268,8 @@ class TracxnClient:
 
         rounds = []
         start = 0
+        # only a short page shows the list ran out; stopping at max_rounds does not
+        ran_out = False
         while len(rounds) < max_rounds:
             size = min(PAGE_SIZE, max_rounds - len(rounds))
             try:
@@ -254,16 +277,18 @@ class TracxnClient:
                     '/fundingrounds',
                     {'filter': {'companiesId': [entity_id]}, 'from': start, 'size': size},
                 )
-            except AuthError as error:
+            except AuthFailed as error:
                 logger.warning(f'tracxn: funding rounds unavailable: {error}')
                 financials.notes.append('funding rounds: {}'.format(error))
                 break
             page = self._rounds(payload)
             rounds.extend(page)
             if len(page) < size:
+                ran_out = True
                 break
             start += size
         financials.rounds = _dedupe(rounds)[: max(0, max_rounds)]
+        financials.rounds_cut(not ran_out)
 
         for metric, attribute in (('valuation', 'valuation'), ('revenue', 'revenue')):
             try:
@@ -271,7 +296,7 @@ class TracxnClient:
                     '/timeseries/{}'.format(metric),
                     {'filter': {'companyId': [entity_id]}, 'from': 0},
                 )
-            except (AuthError, FinancialsError) as error:
+            except (AuthFailed, SourceError) as error:
                 logger.info(f'tracxn: {metric} series unavailable: {error}')
                 financials.notes.append('{}: {}'.format(metric, error))
                 continue
@@ -310,7 +335,7 @@ class TracxnClient:
             and first(node, *NAME_KEYS)
         ]
         if not candidates:
-            raise CompanyNotFound('Tracxn has no company matching {!r}'.format(company))
+            raise NotFound('Tracxn has no company matching {!r}'.format(company))
         if wanted:
             for node in candidates:
                 if clean_name(str(first(node, *NAME_KEYS))).lower() == wanted.lower():
@@ -358,12 +383,11 @@ class TracxnClient:
     # -- web --------------------------------------------------------------
 
     def _fetch_web(self, url, max_rounds):
-        from ..browser import browser, looks_blocked
-        from ..models import JobsError
+        from ..infra.browser import browser, looks_blocked
 
         match = PROFILE_URL.match(url)
         if match is None:
-            raise FinancialsError('not a Tracxn profile url: {!r}'.format(url))
+            raise SourceError('not a Tracxn profile url: {!r}'.format(url))
         base = match.group('base')
         payloads, texts = [], []
 
@@ -382,20 +406,18 @@ class TracxnClient:
                     response = page.goto(target, wait_until='domcontentloaded')
                     if response is not None and response.status == 404:
                         if target == base:
-                            raise CompanyNotFound('no Tracxn profile at {}'.format(base))
+                            raise NotFound('no Tracxn profile at {}'.format(base))
                         continue
                     self._settle(page, looks_blocked)
                     payloads.extend(embedded_json(page.content()))
                     with suppress(Exception):
                         texts.append(page.inner_text('body'))
-        except FinancialsError:
+        except SourceError:
             raise
-        except JobsError as error:
-            raise FinancialsError(str(error)) from error
         # navigation failures, timeouts and a closed browser all surface as plain
         # playwright errors, and each should read as this source failing
         except Exception as error:
-            raise FinancialsError(
+            raise SourceError(
                 'could not load {}: {}'.format(base, str(error).split('\n')[0][:160])
             ) from error
 
@@ -413,7 +435,9 @@ class TracxnClient:
         rounds = []
         for payload in payloads:
             rounds.extend(self._rounds(payload))
-        financials.rounds = _dedupe(rounds)[: max(0, max_rounds)]
+        found = _dedupe(rounds)
+        financials.rounds = found[: max(0, max_rounds)]
+        financials.rounds_cut(len(found) > len(financials.rounds))
         self._from_text('\n'.join(texts), financials)
 
         if (
@@ -422,7 +446,7 @@ class TracxnClient:
             and financials.valuation is None
             and financials.revenue is None
         ):
-            raise ParseError(
+            raise Unparseable(
                 'no funding data found on {} - the page layout may have changed, '
                 'or it needs a signed in profile (--login)'.format(base)
             )
@@ -432,15 +456,15 @@ class TracxnClient:
         with suppress(Exception):
             page.wait_for_load_state('networkidle', timeout=int(self.timeout * 1000))
         if self.login:
-            print(
+            self.interaction.pause(
                 'A browser window is open. Clear any bot check and sign in to Tracxn if '
                 'you want to, then come back here.'
+                ' Press Enter once the company page is visible.'
             )
-            input('Press Enter once the company page is visible: ')
             self.login = False
             return
         if looks_blocked(page):
-            raise ChallengeError(
+            raise Blocked(
                 'Tracxn served a bot check instead of the company page. Re-run with --login '
                 'to clear it once in a visible browser; the saved profile is reused '
                 'headlessly afterwards.'
