@@ -9,7 +9,6 @@ from __future__ import annotations
 import io
 import json
 import os
-import stat
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -36,6 +35,7 @@ from applicant.reviews import AmbitionBoxClient, GlassdoorClient
 from applicant.search import Jobs
 from applicant.storage import ApplicationLog, load_jobs, save_jobs
 from tests.fakes import FakeBoard
+from tests.permissions import assert_private, loosen, policy
 
 
 class TempDir(unittest.TestCase):
@@ -300,6 +300,16 @@ class ListingStorageTest(TempDir):
 
 
 class AtomicWriteTest(TempDir):
+    def test_permission_failure_closes_and_removes_the_empty_temporary_file(self):
+        target = self.root / 'private.json'
+        with (
+            mock.patch('applicant.files.make_private', side_effect=PermissionError('denied')),
+            self.assertRaises(PermissionError),
+        ):
+            write_document(target, {'secret': 'must not be written'})
+        self.assertFalse(target.exists())
+        self.assertEqual(list(self.root.iterdir()), [])
+
     def test_a_failed_write_leaves_the_old_file_and_no_temp_file(self):
         target = self.root / 'data.json'
         write_document(target, {'kept': True})
@@ -311,14 +321,15 @@ class AtomicWriteTest(TempDir):
     def test_an_existing_files_permissions_are_kept(self):
         target = self.root / 'data.json'
         target.write_text('{}', encoding='utf-8')
-        os.chmod(target, 0o644)
+        loosen(target)
+        before = policy(target)
         write_document(target, {'a': 1})
-        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o644)
+        self.assertEqual(policy(target), before)
 
     def test_a_new_file_is_owner_only(self):
         target = self.root / 'new.json'
         write_document(target, {})
-        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+        assert_private(self, target)
 
 
 class PppTableTest(TempDir):

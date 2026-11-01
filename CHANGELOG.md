@@ -7,6 +7,11 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Enforce private Windows ACLs for new JSON data, browser credentials, log files,
+  and SQLite databases/WAL sidecars; preserve existing JSON export permissions.
+- Make permission, path, and saved-search TOML tests portable across Windows and
+  POSIX, and type-check optional POSIX test APIs safely on Windows.
+
 - Add versioned candidate, compensation, FX, scoring configuration, job-version,
   and ranking-run contracts with offline currency validation and canonical hashes.
 - Upgrade SQLite to schema 3 with immutable historical inputs, profile revision

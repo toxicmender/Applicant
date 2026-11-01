@@ -7,7 +7,6 @@ No browser is started here. `sync_playwright` is replaced by a mock whose
 from __future__ import annotations
 
 import os
-import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +17,7 @@ from applicant.errors import SourceError
 from applicant.infra.browser import STATE_FILE, BrowserSession, browser
 from applicant.reviews import GlassdoorClient
 from applicant.search import Jobs
+from tests.permissions import assert_private, loosen
 
 
 class FakePlaywright:
@@ -138,17 +138,17 @@ class StateTest(TempDir):
         with fake.patch(), BrowserSession(profile) as session:
             saved = session.save_state()
         self.assertEqual(saved, profile / STATE_FILE)
-        self.assertEqual(stat.S_IMODE(os.stat(saved).st_mode), 0o600)
+        assert_private(self, saved)
 
     def test_an_older_looser_file_is_tightened(self):
         fake = FakePlaywright()
         profile = self.root / 'profile'
         profile.mkdir()
         (profile / STATE_FILE).write_text('{}', encoding='utf-8')
-        os.chmod(profile / STATE_FILE, 0o644)
+        loosen(profile / STATE_FILE)
         with fake.patch(), BrowserSession(profile) as session:
             saved = session.save_state()
-        self.assertEqual(stat.S_IMODE(os.stat(saved).st_mode), 0o600)
+        assert_private(self, saved)
 
     def test_glassdoor_saves_beside_its_profile(self):
         fake = FakePlaywright()
@@ -174,13 +174,13 @@ class StateTest(TempDir):
             page.return_value = signed_in
             saved = client.login('someone', 'secret', filepath=target)
         self.assertEqual(saved, target)
-        self.assertEqual(stat.S_IMODE(os.stat(target).st_mode), 0o600)
+        assert_private(self, target)
 
     def test_signing_in_again_tightens_an_older_session_file(self):
         fake = FakePlaywright()
         target = self.root / 'cookies.json'
         target.write_text('{}', encoding='utf-8')
-        os.chmod(target, 0o644)
+        loosen(target)
         signed_in = mock.Mock(url='https://www.linkedin.com/feed/')
         with (
             fake.patch(),
@@ -189,7 +189,7 @@ class StateTest(TempDir):
         ):
             page.return_value = signed_in
             client.login('someone', 'secret', filepath=target, overwrite=True)
-        self.assertEqual(stat.S_IMODE(os.stat(target).st_mode), 0o600)
+        assert_private(self, target)
 
 
 class LooksBlockedTest(unittest.TestCase):

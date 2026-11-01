@@ -57,7 +57,7 @@ def calls_to(name: str) -> dict[str, int]:
             and node.func.id == name
         )
         if count:
-            found[str(path.relative_to(PACKAGE))] = count
+            found[path.relative_to(PACKAGE).as_posix()] = count
     return found
 
 

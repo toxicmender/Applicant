@@ -8,6 +8,7 @@ Saved once, it is `applicant search --saved ai-ml`.
 from __future__ import annotations
 
 import io
+import json
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -68,7 +69,7 @@ class SavedSearchTest(unittest.TestCase):
         self.assertIn("search: 'something else' on naukri", err)
 
     def test_the_output_can_be_saved_as_well(self):
-        self.config.write_text(AI_ML + f'output = "{self.output}"\n', encoding='utf-8')
+        self.config.write_text(AI_ML + f'output = {json.dumps(self.output)}\n', encoding='utf-8')
         code, _, _ = self.run_cli('--saved', 'ai-ml')
         self.assertEqual(code, 0)
         self.assertTrue(Path(self.output).exists())

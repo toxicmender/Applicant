@@ -39,6 +39,8 @@ import time
 from datetime import datetime, timezone
 from typing import TextIO
 
+from .permissions import make_private
+
 ROOT = 'applicant'
 MASK = '***'
 
@@ -150,6 +152,11 @@ class _OwnerOnlyFile(logging.FileHandler):
 
     def _open(self):
         descriptor = os.open(self.baseFilename, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            make_private(self.baseFilename)
+        except BaseException:
+            os.close(descriptor)
+            raise
         return os.fdopen(descriptor, self.mode, encoding=self.encoding, errors=self.errors)
 
 

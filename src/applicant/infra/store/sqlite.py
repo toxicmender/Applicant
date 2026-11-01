@@ -39,6 +39,7 @@ from ...domain.dedupe import fingerprint, key
 from ...domain.job import Job
 from ...errors import StoreError
 from ...files import read_document, write_document
+from ...permissions import make_private
 from ...storage import APPLIED_COLUMNS, PROVISIONAL, ApplicationLog, plan_rows, write_rows
 from .ranking_schema import RANKING_MIGRATION
 
@@ -141,6 +142,7 @@ class Store:
             # created owner-only before SQLite opens it: it holds everything the
             # listing and the application log do (ASVS 14.2)
             os.close(os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600))
+            make_private(self.path)
             self.db = sqlite3.connect(self.path)
             try:
                 self.db.execute('PRAGMA busy_timeout = 5000')
@@ -191,6 +193,12 @@ class Store:
             # initializer may have upgraded the database while we waited.
             self.db.execute('BEGIN IMMEDIATE')
             try:
+                # BEGIN creates WAL sidecars on first use. Restrict them before
+                # migrations or application writes put any data in the WAL.
+                for suffix in ('-wal', '-shm'):
+                    sidecar = Path(str(self.path) + suffix)
+                    if sidecar.exists():
+                        make_private(sidecar)
                 version = self.db.execute('PRAGMA user_version').fetchone()[0]
                 if version > len(MIGRATIONS):
                     raise sqlite3.DatabaseError(

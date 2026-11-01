@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..errors import SourceError
+from ..permissions import make_private
 from .http import USER_AGENT
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle only matters to type checkers
@@ -156,7 +157,7 @@ class BrowserSession:
         # created 0600 before Playwright writes into it; an older file saved with
         # looser permissions is tightened too
         os.close(os.open(target, os.O_WRONLY | os.O_CREAT, 0o600))
-        os.chmod(target, 0o600)
+        make_private(target)
         self.context.storage_state(path=str(target))
         return target
 

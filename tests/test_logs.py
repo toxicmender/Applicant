@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import io
 import logging
-import os
-import stat
 import sys
 import tempfile
 import unittest
@@ -15,6 +13,7 @@ from unittest import mock
 
 from applicant import log
 from applicant.cli import main
+from tests.permissions import assert_private
 
 
 def record(message: str, level: int = logging.INFO) -> logging.LogRecord:
@@ -104,7 +103,7 @@ class SetupTest(unittest.TestCase):
         with redirect_stderr(io.StringIO()):
             log.configure(filepath=self.path)
             logging.getLogger('applicant.test').info('recorded')
-        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
+        assert_private(self, self.path)
 
     def test_the_file_gets_debug_detail_the_console_does_not(self):
         stderr = io.StringIO()

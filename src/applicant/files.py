@@ -16,11 +16,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-import stat
 import tempfile
 import time
 from pathlib import Path
 from typing import Any
+
+from .permissions import copy_permissions, make_private
 
 logger = logging.getLogger(__name__)
 
@@ -64,10 +65,12 @@ def write_document(path: str | Path, document: Any, *, trailing_newline: bool = 
         prefix=f'.{target.name}.', suffix='.tmp', dir=target.parent
     )
     try:
-        # keep an existing file's permissions; a new one stays owner-only (mkstemp)
-        if target.exists():
-            os.chmod(temporary, stat.S_IMODE(target.stat().st_mode))
         with os.fdopen(descriptor, 'w', encoding='utf-8') as handle:
+            # Own the descriptor even if permission setup fails.
+            if target.exists():
+                copy_permissions(target, temporary)
+            else:
+                make_private(temporary)
             json.dump(document, handle, indent=2, ensure_ascii=False)
             if trailing_newline:
                 handle.write('\n')

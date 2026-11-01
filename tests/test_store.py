@@ -29,6 +29,7 @@ from applicant.infra.store.sqlite import DB_NAME, MIGRATIONS, Store
 from applicant.services.apply import ApplyToJobs, easy_apply_with
 from applicant.settings import Settings
 from applicant.storage import ApplicationLog, load_jobs, save_jobs
+from tests.permissions import assert_private
 
 FIXED = datetime(2026, 9, 27, 8, 0, 0, tzinfo=timezone.utc)
 
@@ -86,7 +87,8 @@ class SettingsTest(TempDir):
     def test_relative_names_live_under_the_data_dir(self):
         settings = self.load(data_dir=str(self.root))
         self.assertEqual(settings.path('applied_jobs.csv'), str(self.root / 'applied_jobs.csv'))
-        self.assertEqual(settings.path('/elsewhere/x.csv'), '/elsewhere/x.csv')
+        absolute = str(self.root / 'elsewhere' / 'x.csv')
+        self.assertEqual(settings.path(absolute), absolute)
 
     def test_flags_beat_the_environment_which_beats_the_file(self):
         config = self.root / 'applicant.toml'
@@ -124,8 +126,9 @@ class SettingsTest(TempDir):
 
     def test_absolute_and_home_data_dirs_in_the_file_are_kept(self):
         config = self.root / 'applicant.toml'
-        config.write_text('data_dir = "/srv/applicant"\n', encoding='utf-8')
-        self.assertEqual(self.load(config=str(config)).data_dir, Path('/srv/applicant'))
+        absolute = self.root / 'absolute-data'
+        config.write_text(f'data_dir = {json.dumps(str(absolute))}\n', encoding='utf-8')
+        self.assertEqual(self.load(config=str(config)).data_dir, absolute)
         config.write_text('data_dir = "~/applicant"\n', encoding='utf-8')
         self.assertEqual(
             self.load(config=str(config)).data_dir, Path(os.path.expanduser('~/applicant'))
@@ -324,9 +327,15 @@ class SyncTest(TempDir):
 
     def test_the_database_is_owner_only_and_versioned(self):
         path = self.root / DB_NAME
-        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        assert_private(self, path)
         version = self.store.db.execute('PRAGMA user_version').fetchone()[0]
         self.assertEqual(version, len(MIGRATIONS))
+
+    def test_wal_sidecars_are_private_before_application_writes(self):
+        for suffix in ('-wal', '-shm'):
+            path = self.root / (DB_NAME + suffix)
+            self.assertTrue(path.exists())
+            assert_private(self, path)
 
 
 class RatingHistoryTest(TempDir):
