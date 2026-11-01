@@ -145,6 +145,17 @@ source order must not silently resolve a hard-constraint conflict. Unrecognized
 evidence schemas are preserved but not consumed. Every consumed payload, alias
 map and policy participates in a persisted input/configuration hash.
 
+Conflict explanations are part of the M2 result contract, ready for the M3 display
+layer. Record `conflicting_evidence`, the affected criterion and route, competing
+normalized values, evidence references, source labels, observation times, and
+short supporting excerpts. Supply a stable human-readable explanation, for example:
+"Remote location needs review: the structured posting permits US applicants only,
+but the description says worldwide." Identify the unresolved fact the candidate
+needs to verify. Distinguish contradictory assertions about the same route from
+valid alternative routes, and distinguish conflicts from simply missing evidence.
+Acceptance fixtures must verify both structured details and rendered explanations,
+including after persistence/replay; a generic "review required" label is insufficient.
+
 ## 3. Compensation normalization
 
 Use only comparable annual base pay. Parse explicit structured values first,
@@ -242,6 +253,23 @@ satisfies every relevant mode/location condition, fail only if every route
 explicitly fails, otherwise review. A viable onsite route must not be excluded by
 restrictions applying solely to its remote alternative. M2 does not infer onsite
 commutability, relocation, immigration permission, or tax eligibility.
+
+Keep route evaluation linear in the supplied facts, country entries and routes:
+normalize/deduplicate facts once, build country membership sets once, and evaluate
+job-wide criteria once. Represent country restrictions as sets attached to routes;
+do not expand a Cartesian product of modes and countries. Classify relevant
+evidence conflicts before route short-circuiting so input order cannot hide them.
+Within a route, test cheap mandatory constraints first and stop once it explicitly
+fails. Stop alternative-route evaluation once a fully verified route passes;
+otherwise retain unknown routes until all alternatives are resolved. Record the
+decisive route/reason and mark skipped checks as not evaluated, never as passes.
+Route-check trace entries support `not_evaluated`; the job-wide criterion statuses
+remain unchanged.
+This optimization must preserve the aggregate result and every job-wide criterion
+reason promised above; it need not calculate diagnostics for irrelevant routes.
+Test decision equivalence against a simple exhaustive reference evaluator on bounded
+generated cases, plus predicate-call counts on large synthetic route sets. Avoid
+wall-clock thresholds in CI; correctness and bounded work are the acceptance gates.
 
 With lower-only pay below the floor, the offer could still meet it: review. Equality
 at an upper-only ceiling still gives no guarantee: review. Hard constraints apply
@@ -366,11 +394,11 @@ none implies M2 functionality already exists.
 | Order | Subject | Scope and acceptance |
 | --- | --- | --- |
 | 1 | `docs(plan): specify milestone 2 ranking policies and delivery sequence` | This researched plan and links from earlier documents. |
-| 2 | `feat(ranking): add versioned engine facts and result contracts` | V2 profile/config/FX/result/run models, country registry via `uv add iso3166==3.0.0`, explicit profile/config upgrades, typed evidence, policy validation, golden hashes and v1 compatibility fixtures. Commit manifest and lock together. |
+| 2 | `feat(ranking): add versioned engine facts and result contracts` | V2 profile/config/FX/result/run models, country registry via `uv add iso3166==3.0.0`, explicit profile/config upgrades, typed evidence and conflict explanations, policy validation, reusable golden fixture loaders, golden hashes and v1 compatibility fixtures. Commit manifest and lock together. |
 | 3 | `feat(store): support versioned ranking payloads and fx selection` | Discriminated repository decoding, versioned history bundles, latest eligible cache query, unchanged v1 round trips and SQL guards. Verify schema 3 handles v2 payloads without rewriting rows. |
-| 4 | `feat(compensation): normalize explicit base pay with decimal policies` | Conservative facts parser, open ranges, annualization, FX cross-rates, gross/net handling, representative strategy and provenance. Regression tests retain legacy search parser behavior. |
+| 4 | `feat(compensation): normalize explicit base pay with decimal policies` | Conservative facts parser, open ranges, annualization, FX cross-rates, gross/net handling, representative strategy and provenance. Add reviewed cross-currency and multi-tier compensation golden cases; regression tests retain legacy search parser behavior. |
 | 5 | `feat(fx): resolve ranking snapshots with recorded fallback provenance` | V2 ECB adapter, raw acquisition capture, deterministic cache/static/identity resolution, age/coverage diagnostics, HTTP mock fixtures and no-network replay checks. |
-| 6 | `feat(eligibility): evaluate pay employment and remote constraints` | Structured criteria, three-state aggregation, alternative work routes, exact-floor boundary cases, country restrictions, incomplete and contradictory evidence. |
+| 6 | `feat(eligibility): evaluate pay employment and remote constraints` | Structured criteria, three-state aggregation, bounded alternative-route evaluation with safe short-circuiting, exhaustive-reference equivalence and work-count tests, exact-floor boundary cases, country restrictions, incomplete and contradictory evidence with readable explanations. |
 | 7 | `feat(ranking): score opportunities with evidence coverage and explanations` | Six policies, captured review adapters, known-only aggregation, independent confidence, freshness rules, stable ordering, source selection and formula fixtures. |
 | 8 | `feat(ranking): persist engine runs and verify offline replay` | New-run orchestration, deduplicated IDs, complete results, atomic completion, version dispatch and deterministic result comparison. Reopen/change-current-input journeys. |
 | 9 | `docs(ranking): document engine policies and validated library workflows` | Working offline library example, explanations/limits, release notes, installed-wheel run/replay exercise and full existing quality gates. Record actual results. |
@@ -406,6 +434,25 @@ Meaningful fixtures and properties must cover:
   architecture rules keeping domain pure and SQL in infrastructure.
 
 Use existing unittest/pytest, Hypothesis, httpx MockTransport, and fixture patterns.
+Establish reusable golden fixtures under `tests/fixtures/ranking/` in the contracts
+commit and extend them with the normalization commit. Store decimal strings, fixed
+UTC timestamps/IDs, source text, schema/policy versions, and independently reviewed
+expected facts, normalized bounds, reason codes and calculations. Cover FX cross
+rates, rounding boundaries, locale formats, hourly/monthly ranges, base plus
+bonus/equity, and alternative seniority/location pay tiers. Ambiguous tiers must
+remain distinct or require review, never become one artificial salary range.
+Reuse fixture loaders/builders across parser, normalization, eligibility and replay
+tests; return fresh objects to prevent shared mutable state. Expected values must
+not be generated by the implementation under test or silently refreshed wholesale.
+
+Hypothesis supplements these examples with bounded Decimal/route strategies and
+invariants. Use fixed evaluation times and mocked HTTP, with no live rates or random
+UUID assertions. Keep shrinking enabled and turn discovered regressions into
+named examples or golden cases so reproduction does not depend on a local example
+database. Configure explicit example budgets in a shared test profile; avoid
+timing-sensitive properties or blanket suppression of health checks. Golden data
+changes must explain the policy change and its effect on historical replay.
+
 Do not add a numerical/ML framework for six arithmetic rules. No live API response
 should determine CI success. M2 is ready only after the implementation gates pass:
 
