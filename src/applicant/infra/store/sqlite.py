@@ -40,6 +40,7 @@ from ...domain.job import Job
 from ...errors import StoreError
 from ...files import read_document, write_document
 from ...storage import APPLIED_COLUMNS, PROVISIONAL, ApplicationLog, plan_rows, write_rows
+from .ranking_schema import RANKING_MIGRATION
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,7 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         )""",
         'CREATE INDEX financial_history ON financial_snapshots (key, recorded_at)',
     ),
+    RANKING_MIGRATION,
 )
 
 
@@ -143,6 +145,9 @@ class Store:
             try:
                 self.db.execute('PRAGMA busy_timeout = 5000')
                 self.db.execute('PRAGMA foreign_keys = ON')
+                # REPLACE deletes conflicting rows. Fire delete guards for that
+                # path too, so it cannot bypass append-only history triggers.
+                self.db.execute('PRAGMA recursive_triggers = ON')
                 if self.db.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
                     raise sqlite3.DatabaseError('foreign key enforcement is unavailable')
                 # WAL is a persistent database setting, configured outside a

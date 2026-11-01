@@ -80,4 +80,6 @@ class InitializationTest(unittest.TestCase):
             ThreadPoolExecutor(max_workers=2) as executor,
         ):
             futures = [executor.submit(initialize) for _ in range(2)]
-            self.assertEqual([future.result(timeout=10) for future in futures], [3, 3])
+            self.assertEqual(
+                [future.result(timeout=10) for future in futures], [len(migrations)] * 2
+            )
