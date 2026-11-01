@@ -53,7 +53,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
-    { name = "iso4217", specifier = ">=1.14" },
+    { name = "iso4217", specifier = "==1.16.20260101" },
     { name = "playwright", specifier = ">=1.44" },
     { name = "pydantic", specifier = ">=2" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2" },

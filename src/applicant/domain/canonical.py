@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -32,6 +32,8 @@ def _value(value: Any) -> Any:
         return '0' if value == 0 else text.rstrip('0').rstrip('.') if '.' in text else text
     if isinstance(value, datetime):
         return utc(value).isoformat(timespec='microseconds').replace('+00:00', 'Z')
+    if isinstance(value, date):
+        return value.isoformat()
     if isinstance(value, dict):
         return {key: _value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):

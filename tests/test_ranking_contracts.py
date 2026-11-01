@@ -83,7 +83,9 @@ class ContractTest(unittest.TestCase):
     def test_config_hash_excludes_identity_but_includes_behavior(self):
         a = ScoringConfiguration()
         self.assertEqual(a.config_hash, ScoringConfiguration().config_hash)
-        self.assertNotEqual(a.config_hash, ScoringConfiguration(annual_hours=Decimal(1000)).config_hash)
+        self.assertNotEqual(
+            a.config_hash, ScoringConfiguration(annual_hours=Decimal(1000)).config_hash
+        )
         for changes in (
             {'evidence_weights': {}},
             {'annual_hours': 0},
@@ -95,6 +97,7 @@ class ContractTest(unittest.TestCase):
 
     def test_fx_validation_and_direction(self):
         self.assertEqual(fx().rates['INR'], 90)  # INR per EUR
+        self.assertEqual(FXSnapshot.model_validate_json(canonical_json(fx())), fx())
         for changes in (
             {'rates': {'EUR': 2}},
             {'rates': {'EUR': 1, 'USD': 0}},
@@ -117,6 +120,40 @@ class ContractTest(unittest.TestCase):
         ):
             with self.subTest(changes=changes), self.assertRaises(ValidationError):
                 NormalizedCompensation.model_validate(changes)
+
+    def test_available_compensation_requires_complete_run_provenance(self):
+        data = {
+            'original_minimum': '10',
+            'original_maximum': '20',
+            'original_currency': 'EUR',
+            'original_period': 'hourly',
+            'original_basis': 'gross',
+            'annual_minimum': '20800',
+            'annual_maximum': '41600',
+            'representative_value': '31200',
+            'normalized_currency': 'EUR',
+            'normalized_basis': 'gross',
+            'normalization_method': 'midpoint',
+            'normalizer_version': '1',
+            'rounding_policy': 'decimal-half-even-2',
+            'fx_snapshot_id': 'fx',
+            'scoring_config_id': 'config',
+            'assumed_annual_hours': '2080',
+            'status': 'available',
+        }
+        value = NormalizedCompensation.model_validate(data)
+        self.assertEqual(NormalizedCompensation.model_validate_json(canonical_json(value)), value)
+        for changes in (
+            {'normalized_basis': 'net'},
+            {'assumed_annual_hours': None},
+            {'representative_value': '50000'},
+            {'representative_value': '1'},
+            {'annual_minimum': '50000'},
+            {'status': 'unavailable'},
+            {'fx_snapshot_id': None},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(ValidationError):
+                NormalizedCompensation.model_validate(data | changes)
 
     def test_job_hashes_follow_real_fields_and_not_filter_flags(self):
         job = Job(source='indeed', id='1', title=' Developer ', remote=True)
