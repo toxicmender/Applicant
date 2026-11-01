@@ -140,7 +140,21 @@ class Store:
             # listing and the application log do (ASVS 14.2)
             os.close(os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600))
             self.db = sqlite3.connect(self.path)
-            self._migrate()
+            try:
+                self.db.execute('PRAGMA busy_timeout = 5000')
+                self.db.execute('PRAGMA foreign_keys = ON')
+                if self.db.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
+                    raise sqlite3.DatabaseError('foreign key enforcement is unavailable')
+                # WAL is a persistent database setting, configured outside a
+                # transaction. Refuse an unsupported mode rather than claiming
+                # concurrent readers are supported when they are not.
+                mode = self.db.execute('PRAGMA journal_mode = WAL').fetchone()[0]
+                if mode.lower() != 'wal':
+                    raise sqlite3.DatabaseError(f'WAL journal mode unavailable: {mode}')
+                self._migrate()
+            except BaseException:
+                self.db.close()
+                raise
         except (OSError, sqlite3.Error) as error:
             raise StoreError(f'could not open {self.path}: {error}') from error
 
@@ -167,13 +181,21 @@ class Store:
             raise StoreError(f'{self.path}: {error}') from error
 
     def _migrate(self) -> None:
-        version = self.db.execute('PRAGMA user_version').fetchone()[0]
-        for number, statements in enumerate(MIGRATIONS[version:], start=version + 1):
-            # an explicit BEGIN: sqlite3 opens no transaction of its own for
-            # DDL, and a migration must land whole or not at all
-            self.db.execute('BEGIN')
+        while True:
+            # Read the version only after acquiring the writer lock. Another
+            # initializer may have upgraded the database while we waited.
+            self.db.execute('BEGIN IMMEDIATE')
             try:
-                for statement in statements:
+                version = self.db.execute('PRAGMA user_version').fetchone()[0]
+                if version > len(MIGRATIONS):
+                    raise sqlite3.DatabaseError(
+                        f'database schema {version} is newer than supported {len(MIGRATIONS)}'
+                    )
+                if version == len(MIGRATIONS):
+                    self.db.commit()
+                    return
+                number = version + 1
+                for statement in MIGRATIONS[version]:
                     self.db.execute(statement)
                 self.db.execute(f'PRAGMA user_version = {number}')
             except BaseException:
