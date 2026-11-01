@@ -7,7 +7,17 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from .contracts import Basis, Contract, CurrencyCode, Fraction, Identity, Money, Timestamp, now
+from .contracts import (
+    Basis,
+    Contract,
+    CurrencyCode,
+    Fraction,
+    Identity,
+    Money,
+    Timestamp,
+    VersionedContract,
+    now,
+)
 
 DIMENSIONS = (
     'compensation',
@@ -25,7 +35,7 @@ def default_weights() -> dict[str, Decimal]:
     )
 
 
-class CandidateProfile(Contract):
+class ProfileFields(VersionedContract):
     profile_id: Identity
     profile_revision: int = Field(default=1, ge=1, strict=True)
     survey_version: Literal[1] = 1
@@ -57,3 +67,7 @@ class CandidateProfile(Contract):
         ):
             raise ValueError('minimum salary exceeds preferred salary')
         return self
+
+
+class CandidateProfile(ProfileFields, Contract):
+    """Original profile format, retained for historical validation."""

@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "httpx>=0.27",
+    "iso3166==3.0.0",
     "iso4217==1.16.20260101",
     "playwright>=1.44",
     "pydantic>=2",

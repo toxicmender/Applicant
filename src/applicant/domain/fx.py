@@ -8,10 +8,10 @@ from typing import Literal
 
 from pydantic import model_validator
 
-from .contracts import Contract, CurrencyCode, Identity, Positive, Timestamp
+from .contracts import Contract, CurrencyCode, Identity, Positive, Timestamp, VersionedContract
 
 
-class FXSnapshot(Contract):
+class FXFields(VersionedContract):
     snapshot_id: Identity
     base_currency: CurrencyCode
     source: Identity
@@ -33,3 +33,7 @@ class FXSnapshot(Contract):
         if self.effective_date > self.retrieved_at.date() or self.retrieved_at > self.captured_at:
             raise ValueError('FX observation chronology is inconsistent')
         return self
+
+
+class FXSnapshot(FXFields, Contract):
+    """Original snapshot format, retained for historical validation."""

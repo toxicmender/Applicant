@@ -1,0 +1,40 @@
+{
+  "fixture_version": 1,
+  "evaluated_at": "2026-11-02T00:00:00Z",
+  "source": {
+    "evidence_id": "posting-1",
+    "source": "fixture-employer",
+    "observed_at": "2026-11-01T00:00:00Z",
+    "extractor_version": "structured-1",
+    "quality": "explicit",
+    "excerpt": "Employer-provided annual base pay, gross."
+  },
+  "fx": {"EUR": "1", "USD": "1.25", "GBP": "0.8"},
+  "cases": [
+    {
+      "id": "monthly-usd-range",
+      "facts": {"original_text": "USD 5,000–6,000 monthly gross base", "minimum": "5000", "maximum": "6000", "shape": "range", "currency": "USD", "period": "monthly", "basis": "gross", "component": "base"},
+      "expected_eur": {"minimum": "48000.00", "maximum": "57600.00", "midpoint": "52800.00"}
+    },
+    {
+      "id": "hourly-gbp-exact",
+      "facts": {"original_text": "GBP 25/hour gross base", "minimum": "25", "maximum": "25", "shape": "exact", "currency": "GBP", "period": "hourly", "basis": "gross", "component": "base"},
+      "expected_eur": {"minimum": "65000.00", "maximum": "65000.00", "midpoint": "65000.00"}
+    },
+    {
+      "id": "open-ceiling",
+      "facts": {"original_text": "Up to EUR 100,000 annual gross base", "maximum": "100000", "shape": "upper_only", "currency": "EUR", "period": "annual", "basis": "gross", "component": "base"},
+      "expected_eur": {"minimum": null, "maximum": "100000.00", "midpoint": null}
+    },
+    {
+      "id": "senior-tier",
+      "facts": {"original_text": "Senior: EUR 80–100k; Staff: EUR 120–140k annual gross base, plus equity", "minimum": "80000", "maximum": "100000", "shape": "range", "currency": "EUR", "period": "annual", "basis": "gross", "component": "base", "tier": "Senior"},
+      "expected_eur": {"minimum": "80000.00", "maximum": "100000.00", "midpoint": "90000.00"}
+    },
+    {
+      "id": "staff-tier",
+      "facts": {"original_text": "Senior: EUR 80–100k; Staff: EUR 120–140k annual gross base, plus equity", "minimum": "120000", "maximum": "140000", "shape": "range", "currency": "EUR", "period": "annual", "basis": "gross", "component": "base", "tier": "Staff"},
+      "expected_eur": {"minimum": "120000.00", "maximum": "140000.00", "midpoint": "130000.00"}
+    }
+  ]
+}

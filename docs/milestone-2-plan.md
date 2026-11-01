@@ -1,6 +1,6 @@
 # Milestone 2: eligibility and ranking engine
 
-Status: implementation-ready plan; engine implementation has not started.
+Status: implementation started; versioned engine contracts and reusable fixtures delivered.
 Reviewed 2026-11-02 against `24b2388` on `codex/ranking-foundation`.
 This document refines section 17 of [the original proposal](../Implementation_plan.md)
 and follows the [Milestone 1 repository amendments](implementation-plan-review.md).
@@ -471,4 +471,8 @@ uv build
 Retain the 90% coverage floor, Linux Python 3.10–3.13 and Windows Python 3.12
 matrix, and saved-page browser CI. Document local Chromium skips separately from
 hosted results; do not call hosted CI verified until it has actually run.
-No dependency or runtime code changes were made as part of this planning review.
+The original planning review made no dependency or runtime changes. Implementation
+now includes v2 engine contracts, provenance/conflict validation, explicit profile
+and configuration upgrades, and reusable compensation fixtures. Country definitions
+are pinned through uv. Existing v1 validation remains available. Normalization,
+FX acquisition, route evaluation, scoring and replay execution remain to be delivered.

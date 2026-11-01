@@ -34,9 +34,12 @@ def now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-class Contract(BaseModel):
+class VersionedContract(BaseModel):
     # Repositories serialize/revalidate at ingress: frozen does not freeze nested
     # dictionaries, and model_copy(update=...) bypasses validation.
     model_config = ConfigDict(frozen=True, extra='forbid', validate_default=True)
-    schema_version: Literal[1] = 1
     currency_registry: Literal['iso4217-1.16.20260101'] = REGISTRY_VERSION
+
+
+class Contract(VersionedContract):
+    schema_version: Literal[1] = 1
