@@ -503,6 +503,48 @@ src/applicant/
 tests/           unittest.TestCase suites, run under pytest
 ```
 
+## Ranking history (library)
+
+The library can now preserve candidate revisions, job content versions, FX
+snapshots, scoring configurations, and completed runs in SQLite. It stores supplied
+results; scoring and survey commands will follow in later milestones.
+
+Use an explicit `Store` and the functions in `applicant.services.preferences` and
+`applicant.services.ranking_history`. Save profiles with `expected_revision=0` for
+the first revision, then pass the revision you edited when saving the next one.
+Stale edits raise `RevisionConflict` without changing history.
+
+```python
+from applicant.domain.preferences import CandidateProfile
+from applicant.infra.store.sqlite import Store
+from applicant.services.preferences import save_profile
+
+with Store('data/applicant.db') as store:
+    profile = save_profile(
+        store,
+        CandidateProfile(profile_id='me', experience_years=5, primary_discipline='software'),
+        expected_revision=0,
+    )
+```
+
+For a run, call `save_fx` and `save_config`, then `capture_jobs` with
+`JobVersion.capture(job, parser_version="...")` values. These functions return the
+persisted records; use their IDs because equivalent configurations and job content
+reuse existing records. Construct a `RankingRun` with the exact profile revision,
+FX/config IDs, ordered job-version IDs, algorithm/build identity, lockfile SHA-256,
+and any supplied `JobRanking` results. `complete_run` saves the run atomically;
+`load_history(store, run_id)` recovers its original inputs and results offline.
+
+Money/rates use decimal strings in canonical JSON. FX rates are quote-currency
+units per base-currency unit, with a base rate of one. FX provenance, effective
+date, and retrieval/capture times are required; even a run without conversion uses
+an explicit identity snapshot. Unknown pay and unscored results remain absent.
+
+The schema upgrades existing databases to version 3 on open. Historical records
+and completed runs cannot be overwritten or extended. Existing JSON/CSV listing
+edits and deletions do not alter captured job versions. Ranking history requires
+SQLite; existing discovery/application file storage continues to work.
+
 ## Company ratings
 `applicant reviews` pulls a company's overall rating, its rating count and the pros/cons of
 individual reviews from AmbitionBox and Glassdoor, writing them to `company_reviews.json`.

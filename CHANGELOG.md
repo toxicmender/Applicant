@@ -5,6 +5,20 @@ All notable changes to applicant. The format follows
 [Semantic Versioning](https://semver.org/): while the major version is 0, a breaking
 change bumps the minor version.
 
+## Unreleased
+
+- Add versioned candidate, compensation, FX, scoring configuration, job-version,
+  and ranking-run contracts with offline currency validation and canonical hashes.
+- Upgrade SQLite to schema 3 with immutable historical inputs, profile revision
+  conflicts, ordered run membership, atomic completion, and exact offline recovery.
+- Preserve ranking history when current profiles, rates, configurations, jobs, or
+  listing exports change. The library accepts supplied results; ranking calculations
+  and survey/ranking commands remain future work.
+- Manage dependencies and CI tools through `uv.lock`; install with `uv sync --locked`
+  instead of the removed `requirements.txt`.
+- Serialize migration decisions and close failed SQLite connections and CLI log
+  handlers on completion.
+
 ## [0.2.0] - 2026-09-30
 
 A redesign into layers - a pure domain core, shared infrastructure, services, and a

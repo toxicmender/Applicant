@@ -284,8 +284,7 @@ Implementation started on `codex/ranking-foundation`:
 
 SQLite initialization and logging lifecycle changes were pulled forward because
 they are independently testable prerequisites and require no new ranking schema.
-The next feature commit is the versioned domain contracts; the portability work
-remains open. Milestone 1 is not complete.
+That initial slice left domain contracts and portability work open.
 
 Validation of this initial slice: focused workflow, migration, and logging tests
 pass; repository-wide Ruff checks and formatting checks pass; `uv lock --check`
@@ -297,6 +296,39 @@ passed** in 53.83 seconds, improving on the reviewed baseline's 23 failures.
 Remaining failures are the previously observed Windows permission assertions,
 path comparisons, and unescaped saved-search TOML path. Browser checks still skip
 because Chromium is not installed locally.
+
+The subsequent feature slice implements the Milestone 1 persistence workflow:
+
+- `cd85e71`: versioned domain contracts, decimal canonicalization, ISO currency
+  validation, and hashes using the actual Job fields.
+- `8c830c9`: canonical FX effective dates and an exact currency-dataset dependency
+  pin, so schema-v1 validation cannot silently switch registries on dependency refresh.
+- `0d0cb7d`: migration 3, immutable history tables and completion guards, composite
+  job/version foreign keys, caller-owned transactions, and profile revision services.
+- `02c6894`: FX/configuration storage, content-addressed job-version reuse, atomic
+  run completion, and exact typed input recovery. Snapshots, job versions, and run
+  services landed together because the acceptance journeys exercise their shared
+  transaction and recovery boundaries.
+
+Acceptance journeys cover concurrent profile editors and configuration writers,
+reopened databases, edited/deleted listing exports, all newer current input records,
+unknown/unscored jobs, ordered membership, duplicate records, mismatched job/version
+references, failed batch rollback, and direct-SQL update/delete/REPLACE guards.
+
+Feature validation: **995 passed, 12 failed, 13 skipped, 777 subtests passed** under
+coverage in 56.07 seconds. All failures match the existing Windows baseline; measured
+coverage is **98%**. Repository-wide lint and format checks pass, as do type checks
+for every new/changed feature module and test, lock validation, and `uv build`.
+The built wheel was installed into an isolated uv environment and passed an offline
+profile/FX/configuration/run history round-trip, including packaged currency data.
+
+Milestone 1 functionality is implemented at the library/service layer. Its final
+cross-platform validation gate remains open: resolve the existing Windows failures
+and type-check issues, then verify the Linux matrix and saved-page browser tier.
+Scoring/eligibility algorithms, normalization calculations, survey interaction, and
+ranking CLI remain outside Milestone 1. Latest-cache selection and static fallback
+policies are deferred to the normalization engine; this layer requires explicit
+snapshots and never substitutes them when recovering history.
 
 Each commit includes its own focused tests and necessary documentation. Use
 Conventional Commit subjects; use `!` and a `BREAKING CHANGE:` footer only when
