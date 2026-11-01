@@ -6,20 +6,21 @@ It is a dynamic web scraper which gets the posted jobs which are applicable from
 The project is managed with [uv](https://docs.astral.sh/uv/):
 
 ```
-uv sync
+uv sync --locked
 uv run playwright install chromium
 ```
 
-`requirements.txt` is kept in sync for anyone who would rather use `pip install -r requirements.txt`.
+`pyproject.toml` and `uv.lock` are the dependency sources of truth. Use `uv sync --locked`
+to install the project and its development tools at the committed versions.
 
 ## Development
 
 ```
-uv sync                       # includes the dev group: ruff, pyright, pytest
+uv sync --locked                       # includes the dev group: ruff, pyright, pytest
 uv run pytest tests           # or: uv run python -m unittest discover -s tests -t .
 uv run ruff check . && uv run ruff format .
 uv run pyright                # CI also runs: uv run pyright --pythonversion 3.12
-uv run --with coverage coverage run -m pytest tests && uv run --with coverage coverage report
+uv run --frozen coverage run -m pytest tests && uv run --frozen coverage report
 ```
 
 Tests are `unittest.TestCase` subclasses run under pytest, so both runners work and

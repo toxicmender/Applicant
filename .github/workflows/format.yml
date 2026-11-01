@@ -25,9 +25,6 @@ concurrency:
   group: format-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  RUFF_VERSION: 0.16.1
-
 jobs:
   format:
     runs-on: ubuntu-latest
@@ -43,10 +40,13 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Install locked development tools
+        run: uv sync --locked
+
       - name: Format and apply safe autofixes
         run: |
-          uvx "ruff@${RUFF_VERSION}" format .
-          uvx "ruff@${RUFF_VERSION}" check --fix-only .
+          uv run --frozen ruff format .
+          uv run --frozen ruff check --fix-only .
 
       - name: Commit the result
         id: commit

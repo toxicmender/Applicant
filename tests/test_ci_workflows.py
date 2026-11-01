@@ -62,7 +62,7 @@ class WorkflowScriptsTest(unittest.TestCase):
     def test_the_workflows_themselves_are_tracked(self):
         tracked = tracked_files()
         for workflow in self.workflows():
-            relative = str(workflow.relative_to(ROOT))
+            relative = workflow.relative_to(ROOT).as_posix()
             with self.subTest(workflow=relative):
                 self.assertIn(relative, tracked)
 
@@ -73,6 +73,15 @@ class GateTest(unittest.TestCase):
 
     def setUp(self):
         self.text = (WORKFLOWS / 'ci.yml').read_text(encoding='utf-8')
+
+    def test_workflows_use_locked_project_tools(self):
+        for path in WORKFLOWS.glob('*.yml'):
+            text = path.read_text(encoding='utf-8')
+            with self.subTest(workflow=path.name):
+                self.assertNotIn('uvx ', text)
+                self.assertNotIn('--with coverage', text)
+                self.assertIn('uv sync --locked', text)
+                self.assertNotRegex(text, r'uv sync(?! --locked)')
 
     def test_status_waits_for_every_other_job(self):
         body = self.text.split('\njobs:\n', 1)[1]

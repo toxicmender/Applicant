@@ -27,13 +27,14 @@ path = "src/applicant/__init__.py"
 packages = ["src/applicant"]
 
 [dependency-groups]
-# local parity with the pinned versions CI runs through uvx
+# CI and local runs share these tools through uv.lock
 dev = [
     # property-based fuzzing of the parsers that read scraped text
     "hypothesis>=6.168",
     "pytest>=8.3",
-    "pyright>=1.1.400",
-    "ruff>=0.12",
+    "pyright==1.1.411",
+    "ruff==0.16.1",
+    "coverage>=7.6",
 ]
 
 [tool.pytest.ini_options]
@@ -42,7 +43,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-ra"
 
-# `uv run --with coverage coverage run -m pytest tests && uv run --with coverage
+# `uv run --frozen coverage run -m pytest tests && uv run --frozen
 # coverage report` - CI's coverage job runs exactly this, and fails under the floor
 [tool.coverage.run]
 branch = true

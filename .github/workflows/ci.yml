@@ -26,10 +26,6 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  RUFF_VERSION: 0.16.1
-  PYRIGHT_VERSION: 1.1.411
-
 jobs:
   lint:
     name: lint (ruff)
@@ -43,12 +39,15 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Install locked development tools
+        run: uv sync --locked
+
       - name: ruff check
         id: ruff
         run: |
           # --output-format=github puts each finding on the diff as an annotation
-          uvx "ruff@${RUFF_VERSION}" check --output-format=github . && code=0 || code=$?
-          uvx "ruff@${RUFF_VERSION}" check --output-format=concise . > findings.txt 2>&1 || true
+          uv run --frozen ruff check --output-format=github . && code=0 || code=$?
+          uv run --frozen ruff check --output-format=concise . > findings.txt 2>&1 || true
 
           if [ "$code" -eq 0 ]; then
             echo 'outcome=pass' >> "$GITHUB_OUTPUT"
@@ -65,7 +64,7 @@ jobs:
 
       - name: format drift
         run: |
-          if uvx "ruff@${RUFF_VERSION}" format --check . > /dev/null 2>&1; then
+          if uv run --frozen ruff format --check . > /dev/null 2>&1; then
             echo 'Formatting is current.' >> "$GITHUB_STEP_SUMMARY"
           else
             echo 'Formatting is stale - the `format` workflow pushes the fix.' \
@@ -94,7 +93,7 @@ jobs:
       # without the venv every `import httpx` is an unresolved import and the
       # whole run says nothing useful
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --locked
 
       # Checked against the floor requires-python claims and against 3.12, where
       # the stdlib typeshed differs (deprecations, removed aliases). One job and
@@ -109,7 +108,7 @@ jobs:
           details=''
           for version in $PYRIGHT_PYTHONS; do
             report="pyright-${version}.json"
-            uvx "pyright@${PYRIGHT_VERSION}" --pythonversion "$version" --outputjson \
+            uv run --frozen pyright --pythonversion "$version" --outputjson \
               > "$report" || true
             echo "#### Python ${version}" >> "$GITHUB_STEP_SUMMARY"
             python .github/scripts/ci_report.py pyright "$report"
@@ -153,7 +152,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --python ${{ matrix.python }}
+        run: uv sync --locked --python ${{ matrix.python }}
 
       # the suite is unittest.TestCase throughout; pytest is here for the reporting.
       # The real-browser tier is the browser job's: here it would only skip, and
@@ -164,7 +163,7 @@ jobs:
           # any non-zero exit fails the job: 1 is failing tests, and 2-5 are a
           # session that was interrupted, crashed or collected nothing - all of
           # which mean the suite did not actually vouch for this commit
-          if uv run pytest tests -v --ignore=tests/test_live_pages.py \
+          if uv run --frozen pytest tests -v --ignore=tests/test_live_pages.py \
             --junitxml="junit-${{ matrix.python }}.xml"; then
             echo 'outcome=pass' >> "$GITHUB_OUTPUT"
           else
@@ -177,7 +176,7 @@ jobs:
       # proves the suite still runs on the stdlib runner alone, which is what a
       # contributor has before installing anything
       - name: unittest discover
-        run: uv run python -m unittest discover -s tests -t . || true
+        run: uv run --frozen python -m unittest discover -s tests -t . || true
 
       - name: Summarise
         if: always()
@@ -206,21 +205,21 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --python 3.12
+        run: uv sync --locked --python 3.12
 
       - name: coverage
         id: coverage
         run: |
-          if ! uv run --with coverage coverage run -m pytest tests -q; then
+          if ! uv run --frozen coverage run -m pytest tests -q; then
             echo 'outcome=fail' >> "$GITHUB_OUTPUT"
             echo 'detail=the suite failed under coverage' >> "$GITHUB_OUTPUT"
             exit 1
           fi
-          uv run --with coverage coverage xml -q
-          total=$(uv run --with coverage coverage report --format=total)
+          uv run --frozen coverage xml -q
+          total=$(uv run --frozen coverage report --format=total)
           echo "### Coverage: ${total}%" >> "$GITHUB_STEP_SUMMARY"
           # exits 2 under fail_under; the table is written either way
-          if uv run --with coverage coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"; then
+          if uv run --frozen coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"; then
             echo 'outcome=pass' >> "$GITHUB_OUTPUT"
             echo "detail=${total}% line and branch" >> "$GITHUB_OUTPUT"
           else
@@ -252,15 +251,15 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv sync --python 3.12
-          uv run playwright install --with-deps chromium
+          uv sync --locked --python 3.12
+          uv run --frozen playwright install --with-deps chromium
 
       - name: pytest
         id: pytest
         env:
           APPLICANT_BROWSER_TESTS: '1'
         run: |
-          if uv run pytest tests/test_live_pages.py -v --junitxml=junit-browser.xml; then
+          if uv run --frozen pytest tests/test_live_pages.py -v --junitxml=junit-browser.xml; then
             echo 'outcome=pass' >> "$GITHUB_OUTPUT"
           else
             code=$?
