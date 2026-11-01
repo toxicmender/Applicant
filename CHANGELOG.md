@@ -7,6 +7,8 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Add a gated Windows Python 3.12 unit/type-check CI leg alongside Linux Python
+  3.10–3.13, with separate report artifacts for each operating system.
 - Enforce private Windows ACLs for new JSON data, browser credentials, log files,
   and SQLite databases/WAL sidecars; preserve existing JSON export permissions.
 - Make permission, path, and saved-search TOML tests portable across Windows and

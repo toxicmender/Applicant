@@ -29,6 +29,10 @@ injected `httpx` client, the parsers run against fixtures, and currency tests us
 `JobFilter(rates=Rates(offline=True))` so no ECB or World Bank call is ever made.
 Pass `rates=` yourself to keep a real search off the network too.
 
+CI runs unit tests on Linux with Python 3.10–3.13 and on Windows with Python 3.12.
+The Windows leg also runs Pyright. Permission tests inspect native Windows ACLs
+or POSIX mode bits; the saved-page browser tier runs separately on Linux.
+
 The sources that drive a browser are tested twice. `tests/fakes.py` has a scripted
 page that their own code runs against - paging, limits, bot checks, sign in - in
 milliseconds. `tests/test_live_pages.py` runs the same flows in a real Chromium

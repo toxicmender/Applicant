@@ -135,16 +135,23 @@ jobs:
           retention-days: 30
 
   unit:
-    name: unit (python ${{ matrix.python }})
-    runs-on: ubuntu-latest
+    name: unit (${{ matrix.os }}, python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     outputs:
       outcome: ${{ steps.pytest.outputs.outcome }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         # 3.10 is here because requires-python claims it; raise the floor rather
         # than keep testing a version nobody supports
         python: ['3.10', '3.11', '3.12', '3.13']
+        include:
+          - os: windows-latest
+            python: '3.12'
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -153,6 +160,10 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --locked --python ${{ matrix.python }}
+
+      - name: Windows type check
+        if: runner.os == 'Windows'
+        run: uv run --frozen pyright
 
       # the suite is unittest.TestCase throughout; pytest is here for the reporting.
       # The real-browser tier is the browser job's: here it would only skip, and
@@ -164,7 +175,7 @@ jobs:
           # session that was interrupted, crashed or collected nothing - all of
           # which mean the suite did not actually vouch for this commit
           if uv run --frozen pytest tests -v --ignore=tests/test_live_pages.py \
-            --junitxml="junit-${{ matrix.python }}.xml"; then
+            --junitxml="junit-${{ matrix.os }}-${{ matrix.python }}.xml"; then
             echo 'outcome=pass' >> "$GITHUB_OUTPUT"
           else
             code=$?
@@ -185,7 +196,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: junit-${{ matrix.python }}
+          name: junit-${{ matrix.os }}-${{ matrix.python }}
           path: junit-*.xml
           retention-days: 30
 

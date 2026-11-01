@@ -105,6 +105,16 @@ class GateTest(unittest.TestCase):
     def test_the_browser_job_may_not_skip(self):
         self.assertIn("APPLICANT_BROWSER_TESTS: '1'", self.text)
 
+    def test_windows_unit_leg_is_in_the_gated_matrix(self):
+        unit = self.text.split('\n  unit:\n', 1)[1].split('\n  coverage:\n', 1)[0]
+        self.assertIn('runs-on: ${{ matrix.os }}', unit)
+        self.assertIn('os: [ubuntu-latest]', unit)
+        self.assertRegex(unit, r"os: windows-latest\s+python: '3.12'")
+        self.assertIn('shell: bash', unit)
+        self.assertIn('uv run --frozen pyright', unit)
+        self.assertIn('name: junit-${{ matrix.os }}-${{ matrix.python }}', unit)
+        self.assertIn('--junitxml="junit-${{ matrix.os }}-${{ matrix.python }}.xml"', unit)
+
     def test_the_coverage_floor_is_set_where_a_local_run_reads_it(self):
         if sys.version_info >= (3, 11):
             import tomllib

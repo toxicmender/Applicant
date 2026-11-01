@@ -323,12 +323,33 @@ The built wheel was installed into an isolated uv environment and passed an offl
 profile/FX/configuration/run history round-trip, including packaged currency data.
 
 Milestone 1 functionality is implemented at the library/service layer. Its final
-cross-platform validation gate remains open: resolve the existing Windows failures
-and type-check issues, then verify the Linux matrix and saved-page browser tier.
+validation gate still requires a hosted Linux matrix and saved-page browser run.
+The local Windows test and type-check issues described above are now resolved,
+as recorded below.
 Scoring/eligibility algorithms, normalization calculations, survey interaction, and
 ranking CLI remain outside Milestone 1. Latest-cache selection and static fallback
 policies are deferred to the normalization engine; this layer requires explicit
 snapshots and never substitutes them when recovering history.
+
+Windows portability follow-up:
+
+- `a68b4f7` makes optional POSIX test APIs type-safe and restores the prior timezone
+  after the timezone-sensitive test, including assertion failures.
+- `16734a6` resolves all 12 Windows failures. Private JSON, credentials, logs,
+  databases, and WAL sidecars receive protected Windows owner ACLs; atomic JSON
+  replacement preserves existing access policies. Tests inspect real native ACLs
+  on Windows and exact mode bits on POSIX. Path fixtures use native absolute paths,
+  source inspections use POSIX relative paths, and generated TOML escapes paths.
+- The unit CI matrix now retains Linux Python 3.10–3.13 and adds Windows Python
+  3.12 with a full Pyright check, an explicit Bash shell, and OS-qualified report
+  names. The existing required status gate covers the entire matrix.
+
+Latest local validation: **1,010 passed, 13 skipped, 777 subtests passed** under
+coverage in 69.70 seconds, with **98% coverage**. Full-project Pyright passes for
+both Windows and Linux targets. Repository lint, formatting, lock validation, and
+package build pass. The skips are nine unavailable-Chromium browser tests and
+four POSIX-only tests. Hosted GitHub Actions execution remains unverified locally;
+these commits have not been pushed.
 
 Each commit includes its own focused tests and necessary documentation. Use
 Conventional Commit subjects; use `!` and a `BREAKING CHANGE:` footer only when
