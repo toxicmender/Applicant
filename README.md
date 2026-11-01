@@ -16,7 +16,7 @@ to install the project and its development tools at the committed versions.
 ## Development
 
 ```
-uv sync --locked                       # includes the dev group: ruff, pyright, pytest
+uv sync --locked              # includes ruff, pyright, pytest, coverage
 uv run pytest tests           # or: uv run python -m unittest discover -s tests -t .
 uv run ruff check . && uv run ruff format .
 uv run pyright                # CI also runs: uv run pyright --pythonversion 3.12

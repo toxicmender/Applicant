@@ -273,6 +273,31 @@ free of direct SQL. Do not create placeholder survey/scoring/eligibility modules
 
 ## Semantic commit sequence
 
+Implementation started on `codex/ranking-foundation`:
+
+- `a3e396a` records the reviewed plan.
+- `fd0d4f0` consolidates dependencies and CI tools under the uv lockfile.
+- `ddee3b5` enables SQLite foreign keys/WAL, serializes migration decisions,
+  rejects future schemas, and closes failed connections, with regression tests.
+- `eb67d06` releases CLI-owned log handlers on success, failure, and interruption,
+  preserving caller-owned handlers and fixing logging test cleanup order.
+
+SQLite initialization and logging lifecycle changes were pulled forward because
+they are independently testable prerequisites and require no new ranking schema.
+The next feature commit is the versioned domain contracts; the portability work
+remains open. Milestone 1 is not complete.
+
+Validation of this initial slice: focused workflow, migration, and logging tests
+pass; repository-wide Ruff checks and formatting checks pass; `uv lock --check`
+passes; `uv build` produces the source distribution and wheel. Type checking the
+changed Python files passes. Full-project Pyright still reports three existing
+Windows errors for POSIX-only `os.geteuid` and `time.tzset` in unrelated tests.
+The full regression run reports **970 passed, 12 failed, 13 skipped, 671 subtests
+passed** in 53.83 seconds, improving on the reviewed baseline's 23 failures.
+Remaining failures are the previously observed Windows permission assertions,
+path comparisons, and unescaped saved-search TOML path. Browser checks still skip
+because Chromium is not installed locally.
+
 Each commit includes its own focused tests and necessary documentation. Use
 Conventional Commit subjects; use `!` and a `BREAKING CHANGE:` footer only when
 that commit actually breaks a public API, persisted format, or supported workflow.
