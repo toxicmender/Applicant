@@ -7,13 +7,13 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import TypeVar
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from ...domain.canonical import canonical_json
-from ...domain.contracts import Contract
+from ...domain.contracts import VersionedContract
 from ...errors import StoreError
 
-T = TypeVar('T', bound=Contract)
+T = TypeVar('T', bound=VersionedContract)
 
 
 def validated(value: T) -> T:
@@ -26,6 +26,13 @@ def decode(model: type[T], payload: str) -> T:
         return model.model_validate_json(payload)
     except ValidationError as error:
         raise StoreError(f'invalid historical {model.__name__}: {error}') from error
+
+
+def decode_versioned(adapter: TypeAdapter[T], payload: str, *, label: str) -> T:
+    try:
+        return adapter.validate_json(payload)
+    except ValidationError as error:
+        raise StoreError(f'invalid historical {label} (versioned payload): {error}') from error
 
 
 @contextmanager

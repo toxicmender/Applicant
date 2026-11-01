@@ -1,6 +1,6 @@
 # Milestone 2: eligibility and ranking engine
 
-Status: implementation started; versioned engine contracts and reusable fixtures delivered.
+Status: implementation started; versioned engine contracts, fixtures and repository support delivered.
 Reviewed 2026-11-02 against `24b2388` on `codex/ranking-foundation`.
 This document refines section 17 of [the original proposal](../Implementation_plan.md)
 and follows the [Milestone 1 repository amendments](implementation-plan-review.md).
@@ -476,3 +476,21 @@ now includes v2 engine contracts, provenance/conflict validation, explicit profi
 and configuration upgrades, and reusable compensation fixtures. Country definitions
 are pinned through uv. Existing v1 validation remains available. Normalization,
 FX acquisition, route evaluation, scoring and replay execution remain to be delivered.
+
+Initial implementation slices:
+
+- `00ae713` adds versioned facts/configuration/profile/FX/result/run contracts,
+  explicit upgrades, conflict explanations, country validation, a golden policy
+  hash and reusable compensation fixtures with separately represented pay tiers.
+- Version-aware repositories now read/write both payload generations through
+  explicit schema dispatch, reject unsupported versions, preserve schema-3 rows
+  and constraints, require engine configurations for engine runs, and select
+  eligible cached FX by effective age, original retrieval time and stable ID.
+  Integration tests recover v2 runs offline after reopening and preserve v1 profiles.
+
+Validation of these slices: **1,024 passed, 13 skipped, 835 subtests passed** in
+76.01 seconds under coverage, **97% overall coverage**. Repository lint/format,
+Windows and Linux Pyright targets, uv lock validation and package build pass.
+The skips are nine unavailable-Chromium cases and four POSIX-only cases. Hosted
+CI and installed-wheel acceptance are not claimed by this local run. Next is the
+Decimal normalization/parser slice; no eligibility/scoring execution exists yet.

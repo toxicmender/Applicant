@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from ..domain.contracts import Contract
-from ..domain.fx import FXSnapshot
-from ..domain.preferences import CandidateProfile
-from ..domain.ranking import JobVersion, RankingRun, ScoringConfiguration
+from ..domain.ranking import JobVersion
 from ..infra.store.job_versions import JobVersionRepository
 from ..infra.store.profiles import ProfileRepository
+from ..infra.store.ranking_codecs import FX, Config, Profile, Run
 from ..infra.store.ranking_common import validated, write_transaction
 from ..infra.store.ranking_runs import RankingRunRepository
 from ..infra.store.snapshots import FXSnapshotRepository, ScoringConfigRepository
@@ -15,20 +14,20 @@ from ..infra.store.sqlite import Store
 
 
 class RankingHistory(Contract):
-    run: RankingRun
-    profile: CandidateProfile
-    fx: FXSnapshot
-    config: ScoringConfiguration
+    run: Run
+    profile: Profile
+    fx: FX
+    config: Config
     jobs: tuple[JobVersion, ...]
 
 
-def save_fx(store: Store, snapshot: FXSnapshot) -> FXSnapshot:
+def save_fx(store: Store, snapshot: FX) -> FX:
     snapshot = validated(snapshot)
     with write_transaction(store.db):
         return FXSnapshotRepository(store.db).put(snapshot)
 
 
-def save_config(store: Store, config: ScoringConfiguration) -> ScoringConfiguration:
+def save_config(store: Store, config: Config) -> Config:
     config = validated(config)
     with write_transaction(store.db):
         return ScoringConfigRepository(store.db).put(config)
@@ -41,7 +40,7 @@ def capture_jobs(store: Store, versions: tuple[JobVersion, ...]) -> tuple[JobVer
         return tuple(repository.put(value) for value in versions)
 
 
-def complete_run(store: Store, run: RankingRun) -> RankingRun:
+def complete_run(store: Store, run: Run) -> Run:
     run = validated(run)
     with write_transaction(store.db):
         return RankingRunRepository(store.db).create(run)

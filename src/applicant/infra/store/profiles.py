@@ -5,9 +5,9 @@ from __future__ import annotations
 import sqlite3
 
 from ...domain.canonical import canonical_json
-from ...domain.preferences import CandidateProfile
 from ...errors import StoreError
-from .ranking_common import decode, require_transaction, validated
+from .ranking_codecs import PROFILE_CODEC, Profile
+from .ranking_common import decode_versioned, require_transaction, validated
 
 
 class RevisionConflict(StoreError):
@@ -18,7 +18,7 @@ class ProfileRepository:
     def __init__(self, db: sqlite3.Connection):
         self.db = db
 
-    def get(self, profile_id: str, revision: int | None = None) -> CandidateProfile:
+    def get(self, profile_id: str, revision: int | None = None) -> Profile:
         if revision is None:
             row = self.db.execute(
                 'SELECT active_revision FROM profile_heads WHERE profile_id = ?', (profile_id,)
@@ -32,12 +32,12 @@ class ProfileRepository:
         ).fetchone()
         if row is None:
             raise StoreError(f'profile revision not found: {profile_id}/{revision}')
-        value = decode(CandidateProfile, row[0])
+        value = decode_versioned(PROFILE_CODEC, row[0], label='CandidateProfile')
         if (value.profile_id, value.profile_revision) != (profile_id, revision):
             raise StoreError('profile identity does not match stored key')
         return value
 
-    def append(self, profile: CandidateProfile, *, expected_revision: int) -> CandidateProfile:
+    def append(self, profile: Profile, *, expected_revision: int) -> Profile:
         require_transaction(self.db)
         profile = validated(profile)
         row = self.db.execute(

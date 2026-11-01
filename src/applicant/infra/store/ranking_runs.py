@@ -6,11 +6,12 @@ import json
 import sqlite3
 
 from ...domain.canonical import canonical_json
-from ...domain.ranking import JobRanking, RankingRun
+from ...domain.ranking_v2 import RankingRunV2, ScoringConfigurationV2
 from ...errors import StoreError
 from .job_versions import JobVersionRepository
 from .profiles import ProfileRepository
-from .ranking_common import decode, require_transaction, validated
+from .ranking_codecs import RESULT_CODEC, RUN_CODEC, Run
+from .ranking_common import decode_versioned, require_transaction, validated
 from .snapshots import FXSnapshotRepository, ScoringConfigRepository
 
 
@@ -18,12 +19,17 @@ class RankingRunRepository:
     def __init__(self, db: sqlite3.Connection):
         self.db = db
 
-    def create(self, run: RankingRun) -> RankingRun:
+    def create(self, run: Run) -> Run:
         require_transaction(self.db)
         run = validated(run)
         ProfileRepository(self.db).get(run.profile_id, run.profile_revision)
         FXSnapshotRepository(self.db).get(run.fx_snapshot_id)
-        ScoringConfigRepository(self.db).get(run.scoring_config_id)
+        config = ScoringConfigRepository(self.db).get(run.scoring_config_id)
+        if isinstance(run, RankingRunV2) and (
+            not isinstance(config, ScoringConfigurationV2)
+            or config.algorithm_version != run.algorithm_version
+        ):
+            raise StoreError('engine run requires matching engine configuration')
         versions = [JobVersionRepository(self.db).get(key) for key in run.job_version_ids]
         self.db.execute(
             'INSERT INTO ranking_runs VALUES (?, ?, ?, ?, ?, ?)',
@@ -56,7 +62,7 @@ class RankingRunRepository:
         self.db.execute('INSERT INTO run_completions VALUES (?)', (run.ranking_run_id,))
         return self.get(run.ranking_run_id)
 
-    def get(self, run_id: str) -> RankingRun:
+    def get(self, run_id: str) -> Run:
         row = self.db.execute(
             'SELECT r.profile_id, r.profile_revision, r.fx_snapshot_id, r.scoring_config_id, r.payload FROM ranking_runs r JOIN run_completions c USING(ranking_run_id) WHERE r.ranking_run_id = ?',
             (run_id,),
@@ -73,7 +79,7 @@ class RankingRunRepository:
         ).fetchall()
         supplied = []
         for job_id, version_id, score, confidence, payload in results:
-            result = decode(JobRanking, payload)
+            result = decode_versioned(RESULT_CODEC, payload, label='JobRanking')
             if (
                 result.job_id,
                 result.job_version_id,
@@ -87,7 +93,7 @@ class RankingRunRepository:
             if not isinstance(data, dict):
                 raise ValueError('run metadata must be an object')
             data.update(job_version_ids=[item[0] for item in inputs], results=supplied)
-            run = decode(RankingRun, canonical_json(data))
+            run = decode_versioned(RUN_CODEC, canonical_json(data), label='RankingRun')
         except (TypeError, ValueError) as error:
             raise StoreError('invalid ranking run metadata') from error
         if (
