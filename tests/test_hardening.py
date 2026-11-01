@@ -214,13 +214,15 @@ class PlacesAndDatesTest(unittest.TestCase):
 
         (Not a 1970 instant: Kiritimati was then UTC-10:40, the same day.)
         """
-        with mock.patch.dict(os.environ, {'TZ': 'Pacific/Kiritimati'}):
-            time.tzset()
-            try:
+        tzset = getattr(time, 'tzset', None)
+        assert tzset is not None  # guarded by skipUnless above
+        try:
+            with mock.patch.dict(os.environ, {'TZ': 'Pacific/Kiritimati'}):
+                tzset()
                 self.assertEqual(epoch_to_iso(1_791_154_800_000), '2026-10-04')
-            finally:
-                os.environ.pop('TZ', None)
-        time.tzset()
+        finally:
+            # patch.dict restores the original TZ before resetting libc's zone.
+            tzset()
 
     def test_today_is_the_utc_date_not_the_machine_s(self):
         class Clock(datetime):

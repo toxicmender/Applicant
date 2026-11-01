@@ -46,7 +46,9 @@ class ExitsTest(Cli):
         self.assertEqual(code, 2)
         self.assertIn('could not open', err)
 
-    @unittest.skipIf(not hasattr(os, 'geteuid') or os.geteuid() == 0, 'root can write anywhere')
+    @unittest.skipIf(
+        getattr(os, 'geteuid', lambda: 0)() == 0, 'requires POSIX non-root permissions'
+    )
     def test_a_log_file_in_a_folder_that_cannot_be_written_is_a_usage_error(self):
         locked = self.root / 'locked'
         locked.mkdir(mode=0o500)
