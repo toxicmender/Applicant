@@ -145,11 +145,10 @@ def main(argv: list[str] | None = None) -> int:
         print('could not open {}: {}'.format(filepath, error), file=sys.stderr)
         return 2
 
-    if filepath:
-        logger.info('logging this run to {}'.format(filepath))
-    logger.debug(f'{args.command}: {_loggable(args)}')
-
     try:
+        if filepath:
+            logger.info('logging this run to {}'.format(filepath))
+        logger.debug(f'{args.command}: {_loggable(args)}')
         return handler(args) or 0
     except KeyboardInterrupt:
         logger.warning(f'{args.command}: interrupted')
@@ -177,6 +176,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         logger.debug(f'{args.command}: traceback', exc_info=True)
         return 1
+    finally:
+        # main() can be embedded or called repeatedly. Release this run's file
+        # handlers before returning, including error and interrupt paths.
+        log.silence()
 
 
 # argparse attributes that are plumbing, or secret, rather than something to log

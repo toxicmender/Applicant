@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 from applicant import log
 from applicant.cli import main
@@ -71,6 +72,32 @@ class SetupTest(unittest.TestCase):
         self.addCleanup(self._dir.cleanup)
         self.addCleanup(log.silence)
         self.path = str(Path(self._dir.name) / 'run.log')
+
+    def test_cli_releases_run_handlers_on_success_failure_and_interrupt(self):
+        for outcome in (None, ValueError('failure'), KeyboardInterrupt()):
+            with self.subTest(outcome=outcome):
+                caller = logging.NullHandler()
+                root = logging.getLogger('applicant')
+                root.addHandler(caller)
+                self.addCleanup(root.removeHandler, caller)
+                with (
+                    mock.patch('applicant.cli.run_status', side_effect=outcome, return_value=0),
+                    redirect_stderr(io.StringIO()),
+                ):
+                    code = main(['status', '--log-file', self.path])
+                self.assertEqual(
+                    code,
+                    130 if isinstance(outcome, KeyboardInterrupt) else int(outcome is not None),
+                )
+                self.assertIn(caller, root.handlers)
+                for name in (log.ROOT, *log.THIRD_PARTY):
+                    self.assertFalse(
+                        any(getattr(h, log.OURS, False) for h in logging.getLogger(name).handlers)
+                    )
+                target = Path(self.path)
+                renamed = target.with_suffix('.closed')
+                target.rename(renamed)
+                renamed.unlink()
 
     def test_the_log_file_is_readable_by_its_owner_only(self):
         """ASVS 16.4.2."""

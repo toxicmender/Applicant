@@ -147,6 +147,8 @@ class LogFileTest(LogTest):
         super().setUp()
         self._dir = tempfile.TemporaryDirectory()
         self.addCleanup(self._dir.cleanup)
+        # Cleanups run in reverse order: close handlers before deleting files.
+        self.addCleanup(log.silence)
         self.path = str(Path(self._dir.name) / 'run.log')
 
     def written(self) -> str:
