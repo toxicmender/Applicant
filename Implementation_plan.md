@@ -5,10 +5,13 @@
 > See [repository evaluation and revised semantic commit plan](docs/implementation-plan-review.md).
 > That review supersedes conflicting layout, migration, contract, and sequencing
 > details below. The remaining text preserves the original proposal for reference.
+> Milestone 1 is implemented. The [Milestone 2 implementation plan](docs/milestone-2-plan.md)
+> specifies the next engine work against `24b2388`, including researched policies,
+> compatible schema evolution, semantic commits, and acceptance criteria.
 
 Project: toxicmender/Applicant
 Document: Implementation Plan and Technical Specification
-Status: Reviewed; implement Milestone 1 using the amendments in the linked review
+Status: Milestone 1 implemented; Milestone 2 planned in the linked engine plan
 Primary language: Python
 Package manager: uv
 Data validation: Pydantic

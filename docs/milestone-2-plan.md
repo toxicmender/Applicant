@@ -1,0 +1,427 @@
+# Milestone 2: eligibility and ranking engine
+
+Status: implementation-ready plan; engine implementation has not started.
+Reviewed 2026-11-02 against `24b2388` on `codex/ranking-foundation`.
+This document refines section 17 of [the original proposal](../Implementation_plan.md)
+and follows the [Milestone 1 repository amendments](implementation-plan-review.md).
+The policies below are product decisions, not empirically calibrated predictions.
+
+## Deliverable and boundaries
+
+Deliver a library/service pipeline that freezes inputs, normalizes base pay,
+evaluates eligibility, computes six explainable dimension results and evidence
+confidence, orders opportunities deterministically, and persists a complete run.
+Loading and replaying that run must work offline after current inputs change.
+Every selected job gets a result, including excluded and unscored jobs.
+
+Survey interaction, `applicant rank`, listing-selection flags, user feedback,
+learned weights, and ranking-quality benchmarks remain Milestones 3–4. M2 exposes
+the services those commands will call. Existing search, PPP filtering, reviews,
+financials, applications, and file exports retain their behavior.
+
+## Repository findings that change the draft
+
+| Existing implementation | M2 consequence |
+| --- | --- |
+| `domain/ranking.py` provides immutable inputs and supplied results, not an engine | Add pure evaluation functions and service orchestration. Reuse the history repositories. |
+| `JobRanking.dimension_scores` permits either an empty map or six numeric scores | Introduce a new result schema with nullable dimension values. Missing culture evidence must not become zero or a fabricated neutral score. |
+| `ScoringConfiguration` lacks scoring curves, evidence-selection rules, and freshness policy | Add a versioned engine configuration. Include every behavior-affecting policy in its hash. |
+| `CandidateProfile` has preferred regions/modes but no actual work location or mandatory modes | Preserve preferences as soft signals; add explicit hard-constraint fields in a new profile schema. Never infer residence from currency or a preferred region. |
+| `JobVersion.evidence` is arbitrary JSON and is already included in both hashes | Put validated, versioned facts inside evidence payloads; no new job identity policy is necessary. |
+| `domain/salary.py` uses floats, assumes annual when period is absent, defaults bare `$` to USD, and collapses a singleton into two bounds | Keep its search API. Add a conservative Decimal facts parser for ranking; share lexical helpers only where semantics really agree. |
+| `money.Rates` returns float tables and uses `/v1/latest`; its cache does not preserve provider response bytes | Add a ranking FX adapter using the existing `HttpClient`. Do not claim old cached floats retain original precision or silently reuse PPP. |
+| Rating adapters already expose culture, career-growth/opportunities, and sometimes job-security categories | Snapshot those categories and score them as disclosed proxies. Overall rating is not a substitute for every dimension. |
+| Financial records contain funding, valuation, revenue and headcount, but no cash runway or profitability | Funding or a public-company label alone cannot establish stability. Initial stability scoring uses captured job-security ratings. |
+| Schema 3 stores versioned JSON and nullable score/confidence columns | New payload schemas can reuse its tables and integrity triggers. Do not rewrite migration 3 or historical rows. |
+| `RankingRunRepository.get()` returns results in input order | Preserve that order; derive ranked views separately using Decimal payload values, not SQL REAL order. |
+
+The focused existing contracts, store, history, salary and domain-boundary tests
+passed during this review: **86 passed, 225 subtests passed** using
+`uv run --frozen pytest`. The prior complete Windows validation is recorded in the
+M1 review; a new full-suite run is an implementation gate, not a claim of this review.
+
+## External references and decisions
+
+The following primary references were checked on 2026-11-02:
+
+| Reference | Finding and resulting decision |
+| --- | --- |
+| [Frankfurter v1 documentation](https://frankfurter.dev/v1/) | v1 is deprecated but remains available. Leave existing search integration alone; use v2 for new ranking acquisition. |
+| [Frankfurter v2 documentation](https://frankfurter.dev/) and [OpenAPI](https://api.frankfurter.dev/v2/openapi.json) | Default rates blend providers. Request the ECB provider explicitly with EUR as its native base. Responses are dated currency-pair records; validate every row and retain the response and request metadata. Do not collapse mixed observation dates into one misleading effective date. |
+| [ECB reference-rate documentation](https://www.ecb.europa.eu/stats/policy_and_exchange_rates/euro_reference_exchange_rates/html/index.en.html) | Reference rates update on working days and some currencies can be unavailable. Track observation date separately from retrieval time; ISO validity does not imply rate coverage. |
+| [Python 3.10 Decimal documentation](https://docs.python.org/3.10/library/decimal.html) | Decimal contexts and rounding are explicit controls. Use a local, fully specified arithmetic context and final quantization; ambient caller settings must not change results. |
+| [BLS OEWS methodology](https://www.bls.gov/opub/hom/oews/pdf/oews.pdf) | 2,080 hours is a full-time annualization convention. Keep it as a disclosed configurable assumption, not a claim about the actual contract or take-home income. |
+| [Google JobPosting documentation](https://developers.google.com/search/docs/appearance/structured-data/job-posting) | Remote mode and permitted applicant locations are distinct fields. Base salary has explicit units; full-time and contractor categories can coexist. Preserve these distinctions instead of treating remote as worldwide or full-time as permanent. |
+| [iso3166 package documentation](https://pypi.org/project/iso3166/) | Provides country-code definitions, including alpha-2 lookup. Pin `iso3166==3.0.0` through uv and record that registry version in new geographic contracts, following the existing currency-registry approach. |
+
+These sources support data interpretation and implementation mechanics. They do
+not validate the proposed utility curve, category weights, or confidence formula.
+
+## 1. Versioned contracts and compatibility
+
+Keep schema-v1 readers, validators, canonical hashes, and historical payloads
+unchanged. Add named v2 models and explicit discriminated decoding by
+`schema_version` for profiles, scoring configurations, FX snapshots, results, and
+runs. Unsupported versions fail with `StoreError`; never decode unknown versions
+as the latest model. Shared validation should live in a version-neutral base;
+avoid changing the existing `Contract.schema_version` default globally.
+
+- `CandidateProfileV2` adds optional `work_country` (validated ISO alpha-2),
+  `country_registry`, and `required_work_modes` (empty means unrestricted).
+  Existing preferred modes remain soft. An explicit upgrade creates a new profile
+  revision, copies old fields, and leaves new constraints unknown/unrestricted.
+  Running from a v1 profile uses those same absent-field semantics without
+  rewriting the profile or changing its revision.
+- `RankingFacts` is an independently versioned payload inside `Evidence` with
+  compensation facts, possible work modes, remote scope (`worldwide`,
+  `country_list`, `unknown`), allowed countries, residual restriction text,
+  employment arrangements, required technologies, and selected company ratings.
+  A known-empty set differs from a missing/incomplete extraction. Each fact has
+  source identity, observation time, extraction policy, quality category, and a
+  reference to its captured source value/text. Contradictory facts stay explicit.
+- `CompensationFacts` records optional bounds, whether the amount is exact or
+  open-ended, currency, period, gross/net basis, and pay component
+  (`base`, `total`, `unknown`). Preserve raw text and matched spans. Do not reuse
+  `NormalizedCompensation` as the source-of-truth facts model.
+- `ScoringConfigurationV2` includes the policies below, arithmetic context,
+  annualization factors, score and confidence precision, technology aliases,
+  source/category mappings, source priority, freshness windows, FX selection
+  policy, and all numeric coefficients. Use named policy IDs with validated
+  supported values rather than arbitrary executable expressions.
+- `FXSnapshotV2` retains v1 rates and chronology and adds immutable acquisition
+  metadata: request/provider, raw response when fetched, response digest,
+  selected observation date, and optional parent snapshot ID for cached copies.
+  Snapshot resolution diagnostics belong in run metadata. Explicit offline v1
+  snapshots remain usable with their existing, more limited provenance.
+- `DimensionResult` contains dimension, status (`known`, `unknown`,
+  `not_applicable`, `disabled`, `not_evaluated`), nullable score, quality, reason codes, selected
+  evidence references, raw calculation terms, and weighted contribution.
+  All non-known scores are null; known zero is valid. `not_evaluated` is reserved
+  for excluded jobs whose scoring was skipped.
+- `EligibilityDecision` contains one result per criterion (`pass`, `fail`,
+  `unknown`, `not_applicable`), stable reason codes, and supporting evidence.
+  The aggregate remains eligible/review_required/excluded.
+- `JobRankingV2` contains all six dimension results, eligibility details,
+  normalization, nullable overall score, confidence, and coverage. Reasons should
+  be machine-readable with separate display text. Excluded jobs retain facts and
+  decisions but have no fit/confidence calculation.
+- `RankingRunV2` identifies the engine/configuration and preserves resolution
+  diagnostics. Require exactly one result per input, unlike legacy supplied runs
+  which legitimately allowed a subset. Keep exact profile/FX/config IDs, build
+  identity, lockfile digest, calculated time and ordered membership.
+
+The engine accepts only v2 scoring configuration; M1 configs describe no complete
+algorithm. An explicit factory copies the existing normalization settings into a
+new v2 configuration. Never apply current defaults to an old run during replay.
+V1 history remains readable; it is not retrospectively claimed to be engine-generated.
+
+No new SQL columns are required for this design. Update repository codecs and
+types, not DDL. If implementation later needs indexed metadata, append migration
+4 with upgrade/rollback tests; never alter migration 3 or bypass immutability.
+
+## 2. Evidence acquisition and selection
+
+The service captures facts before scoring. Pure domain code receives frozen input
+objects and an explicit evaluation time; it performs no HTTP, SQL, file reads,
+clock reads, or UUID generation. Revalidate/copy nested containers at the boundary.
+
+For M2, support existing `Job` fields, explicitly supplied structured posting
+facts, supplied retained descriptions, and captured `CompanyRating` records.
+No new browser requests or broad NLP/LLM extraction are required. Add extraction
+only for well-defined formats with regression fixtures; unsupported text stays
+unknown. A legacy `remote=True` establishes a remote-mode hint, not geographic
+permission; `False` cannot distinguish hybrid from onsite.
+
+Preserve complete selected review payloads with provider company ID/URL and
+observation time. Company association must be supplied or resolved by a verified
+identifier mapping, not a fuzzy name match. For each category choose the latest
+usable observation per provider, then the configured provider priority
+(`glassdoor`, `ambitionbox` initially), then evidence hash. Do not average sources
+with unknown population overlap. Capture all considered evidence and the selection
+reason so later source-priority changes can create a different run.
+
+Conflicting high-quality posting facts produce unknown/review-required decisions;
+source order must not silently resolve a hard-constraint conflict. Unrecognized
+evidence schemas are preserved but not consumed. Every consumed payload, alias
+map and policy participates in a persisted input/configuration hash.
+
+## 3. Compensation normalization
+
+Use only comparable annual base pay. Parse explicit structured values first,
+otherwise use the new conservative text parser. Explicit currency codes and
+unambiguous symbols are accepted; bare `$`/`¥`, absent periods, absent gross/net
+basis, unspecified base versus total pay, bonus-only figures and conflicting
+units produce review-required facts. No hidden annual/gross/USD defaults.
+Board-specific assumptions can be added only as named, captured extraction rules.
+
+Preserve `from 80k`, `up to 100k`, exact `90k`, and `80k–100k` distinctly. Reversed
+ranges are invalid facts, not silently reordered. Known zero is not missing.
+Annualization factors: annual 1, monthly 12, weekly 52, daily configured days
+(default 260), hourly configured hours (default 2080). Record applied factors;
+contract and employee pay are comparable base amounts, not equivalent benefits.
+
+For snapshot rates expressed as quote units per base unit:
+
+```text
+annual_target = original_amount * annualization_factor * rate[target] / rate[source]
+```
+
+Same-currency conversion uses exactly 1 without requiring a non-base quote. Use
+Decimal inputs parsed directly from numeric strings/JSON tokens. Local context:
+precision 34, ROUND_HALF_EVEN, Emin=-6143, Emax=6144, clamp=0, capitals=1;
+enable InvalidOperation, DivisionByZero, Overflow and FloatOperation traps and
+disable the remaining traps. Reject values outside the supported range with an
+explained normalization failure. Set all context options, not just precision,
+so caller traps cannot change the result.
+Quantize annual endpoints and representative pay to 0.01 only at the final
+normalization boundary. This is a comparison precision policy, not ISO cash
+settlement precision. Eligibility compares these persisted values to annual
+profile thresholds quantized using the same policy.
+
+Representative strategy: minimum needs a lower bound, maximum needs an upper
+bound, midpoint needs both. Missing required bounds leave representative pay null
+while independently usable bounds remain available for eligibility. Never turn
+an upper-only offer into a guaranteed salary. Gross/net mismatch, missing rates,
+and unknown units return explicit unavailable/review-required outcomes and null
+comparable values. No tax or PPP conversion is introduced.
+
+## 4. New-run FX resolution
+
+Historical replay loads its exact snapshot and never invokes this resolver.
+For a new run, resolution mode and evaluation time are explicit service arguments:
+
+1. An explicitly supplied snapshot is used exactly after validation; missing
+   currencies are reported, never filled from another date/provider.
+2. Otherwise, if online and conversion is needed, fetch once per batch through
+   `HttpClient`: `/v2/providers/ECB/rates?base=EUR`. Parse Decimal from response
+   bytes and retain request/response metadata. Select the latest observation
+   date among non-identity rows and retain only rows with that date; add EUR=1
+   by definition. Exclude older rows and disclose omissions.
+   Reject wrong bases, duplicate conflicting pairs, nonpositive/nonfinite rates,
+   future dates, unsupported registry codes and malformed payloads.
+3. On network/provider failure or an unusable response, choose a persisted,
+   non-static market snapshot with usable conversion pairs and effective age at
+   most 7 calendar days. Sort candidates by effective date descending, original
+   retrieval time descending, snapshot ID ascending. Cache recapture must preserve
+   original retrieval time; it cannot make stale rates fresh. Add a repository
+   query method rather than SQL in services.
+4. A static snapshot is used only when explicitly supplied and enabled, with a
+   dataset version and effective date within the same configured age limit.
+   There is no bundled static market table today; do not manufacture one or
+   mistake the bundled PPP table for FX. Fallback quality is disclosed.
+5. If nothing is usable, create a target-currency identity-only snapshot and
+   record `fx_unavailable` for conversions. Same-currency jobs can still normalize;
+   other jobs have unknown compensation and remain in the run. An identity
+   snapshot never claims cross-currency coverage.
+
+A valid selected snapshot may be partial: missing currencies affect those jobs
+only. Do not merge another snapshot into it. A live response older than 7 days is
+unusable even if just retrieved. The 7-day window is configurable product policy
+to accommodate non-publication days, not a guarantee that a rate is current.
+No network operations occur inside a database write transaction. Provider timeouts
+and errors appear in resolution diagnostics, without turning expected acquisition
+failure into a failed ranking batch. Corrupt persisted historical inputs do fail.
+
+## 5. Eligibility rules
+
+Aggregate all criteria: any explicit failure means `excluded`; otherwise any
+material unknown means `review_required`; otherwise `eligible`. Return every
+criterion's reason rather than stopping at the first failure. Missing fit-only
+dimensions do not by themselves change eligibility.
+
+| Criterion | Pass / not applicable | Fail | Unknown / review |
+| --- | --- | --- | --- |
+| Annual base-pay floor `F` | No floor: N/A. Known comparable lower bound >= F: pass. | Known comparable upper bound < F. | Straddling range; upper-only at/above F; missing/incomparable pay. |
+| Employment | `either`: N/A. An explicit acceptable permanent/contract option exists. | Complete, explicit arrangement set contains no accepted option. | Missing/ambiguous arrangement; `FULL_TIME` alone does not establish permanence. |
+| Required work mode | Empty requirement: N/A. A verified offered mode intersects required modes. | Complete offered-mode set is disjoint. | Incomplete/contradictory mode evidence. Preferred modes alone never exclude. |
+| Remote location | Nonremote: N/A. Explicit worldwide permission without residual restrictions, or the declared work country is allowed. | Explicit exhaustive allowed-country list excludes the declared work country. | Restricted scope with missing work country; unknown scope; residual state/timezone/authorization restrictions. |
+
+Evaluate remote restrictions only on a remote route that the candidate is actually
+considering. Where a posting offers alternative modes, pass if at least one route
+satisfies every relevant mode/location condition, fail only if every route
+explicitly fails, otherwise review. A viable onsite route must not be excluded by
+restrictions applying solely to its remote alternative. M2 does not infer onsite
+commutability, relocation, immigration permission, or tax eligibility.
+
+With lower-only pay below the floor, the offer could still meet it: review. Equality
+at an upper-only ceiling still gives no guarantee: review. Hard constraints apply
+even when the corresponding scoring dimension has zero weight.
+
+Free-text `preferred_regions` and `timezone_overlap_tolerance` remain visible
+preferences with an `unstructured_preference_not_evaluated` explanation when set.
+They never silently become country whitelists or legal/working-hour decisions.
+
+## 6. Initial scoring policy
+
+Scores express configured preference utility, not hiring probability. Eligibility
+and confidence remain separate. Score eligible and review-required jobs; do not
+mix the latter into an unexplained eligible-only list. Excluded results have null
+overall score/confidence and uncomputed dimension results.
+
+| Dimension | Deterministic initial rule |
+| --- | --- |
+| Compensation | For representative pay `x` and minimum `F` / preferred `P`: if `0 < F < P`, use `50*x/F` below F, `50 + 50*(x-F)/(P-F)` from F to P, and 100 above P. Preferred-only (or F=0<P): `100*min(x/P, 1)`. Minimum-only or equal positive thresholds: binary 0 below / 100 at or above threshold. A zero-only threshold provides no useful preference: N/A. No thresholds: N/A. No representative/comparable pay: unknown. Clamp to [0,100]. |
+| Remote compatibility | No preferred modes: N/A. Known selectable mode intersects preference: 100; known exhaustive disjoint modes: 0; otherwise unknown. Geographic permission remains an eligibility decision. |
+| Technical fit | With nonempty candidate technologies and complete nonempty required-tech evidence: `100 * matched_required / total_required`. Deduplicate exact canonical tokens using a versioned alias map (`py`/`python`, `js`/`javascript` initially); never substring-match `Java` with `JavaScript`. Missing candidate skills or requirements: unknown. Verified no required technologies: N/A. This is skills overlap, not a complete assessment of competence. |
+| Company culture | Use captured `company_culture` (AmbitionBox) or `culture_and_values` (Glassdoor). For a verified 1–5 scale, `25*(rating-1)`. No matching category: unknown. |
+| Career growth | Same scale conversion, using `career_growth` or `career_opportunities`. No general-rating fallback. |
+| Stability | Same scale conversion, using `job_security`. Label this an employee-reported security proxy, not a solvency forecast. Missing category: unknown. |
+
+Experience, discipline and target seniority remain explanatory profile context in
+this initial algorithm. Do not manufacture role-level requirements from a title.
+Adding a rubric for those fields requires a new configuration/algorithm version
+and fixtures. Company-rating proxies remain limited to their observed categories;
+funding/valuation fields do not increase stability scores.
+
+For each positive-weight, applicable dimension let `s_i` be its known score,
+`w_i` its profile weight, and `q_i` its evidence quality. Let A include applicable
+dimensions (including unknown), and K include those with known scores:
+
+```text
+overall_score = sum(w_i * s_i for i in K) / sum(w_i for i in K)
+coverage      = sum(w_i for i in K) / sum(w_i for i in A)
+confidence    = sum(w_i * q_i for i in K) / sum(w_i for i in A)
+```
+
+If K is empty: score null, coverage 0, confidence 0. If A is empty: score null,
+coverage 0, confidence 0 with `no_applicable_dimensions`. Zero-weight and
+not-applicable dimensions are absent from both denominators. An unknown dimension
+is still applicable; a parser must not disguise missing evidence as N/A.
+Quantize final score to 0.01 and confidence/coverage to 0.0001, half-even.
+
+Keep known-score renormalization explicit: a 100 score with 25% coverage is possible
+and is not equivalent evidence to a fully supported 100. Every result/view exposes
+coverage and confidence next to the score; do not multiply confidence into fit.
+Example with active weights .25/.20/.20: scores 100/0/unknown and qualities 1/.8/0
+produce score 55.56, coverage .6923, confidence .6308.
+
+## 7. Evidence quality and stable ordering
+
+Start with existing configurable coefficients: explicit 1, verified .9,
+structured .8, inferred .5, fallback .5, unknown 0. These are support indices,
+not probabilities. Validate unknown=0. Classify the extraction and source basis,
+not merely the presence of a value in a JSON field.
+
+For a dimension requiring several facts, use the minimum quality of its required
+facts. Compensation additionally takes the minimum with FX quality (live/cache
+.9 within the age window, static .5, same-currency identity 1). A quality-zero
+fact cannot establish a known dimension or an exclusion.
+
+Review categories use structured quality multiplied by `min(n/20, 1)` where a
+positive review count `n` is available; otherwise use .5 as the count factor.
+Category observations older than 180 days are unknown for scoring. The scale,
+20-review saturation and 180-day window are versioned policy choices. Reject
+future observations; compute age from the run's evaluation time, never wall time
+during replay. Do not decay captured posting facts automatically in M2; expose
+their capture time. No confidence claim implies factual verification of reviews.
+
+Return separate eligible, review-required and excluded views. Within each scored
+view, order non-null scores descending and then `job_id` ascending; null scores
+come last, ordered by `job_id`. Excluded view sorts by `job_id`. Compare persisted
+quantized Decimal scores, so displayed ties use the documented tie rule. Confidence
+is not an implicit tie breaker. Input permutation must not change ranked order.
+
+## 8. Services and historical replay
+
+Suggested ownership, creating modules only when the corresponding code lands:
+
+```text
+domain/ranking_facts.py       typed facts and evidence validation
+domain/ranking_v2.py          engine config, criteria, dimensions, result/run models
+domain/compensation.py        pure normalization (legacy contract retained)
+domain/ranking_salary.py      conservative Decimal facts parser
+domain/eligibility.py         criterion and route evaluation
+domain/scoring.py             dimensions, quality, aggregate and ordered views
+infra/fx.py                  Frankfurter v2 adapter via HttpClient
+infra/store/                 existing repositories plus version-aware codecs/query
+services/ranking.py           prepare, resolve, evaluate and persist
+services/ranking_history.py   existing exact loading plus replay verification
+```
+
+`evaluate_jobs(profile, jobs, fx, config, evaluation_time)` is pure and returns
+one result per selected job in input order. `rank_jobs(store, ..., build_identity,
+lockfile_digest, evaluation_time)` validates inputs, resolves FX outside the write
+lock, stores/reuses input records, uses the IDs returned by deduplication, evaluates,
+and atomically completes the run through existing repositories. The service
+creates the run ID; the pure evaluator does not. Exactly one version of a job may
+be selected; reject duplicates with a clear error before writing a run.
+
+Inputs may remain after a failed calculation, but no incomplete run becomes visible.
+No current profile/head or listing read is permitted once exact inputs are chosen.
+The caller supplies the Store and job selection, preserving current path ownership.
+
+`replay_run(store, run_id)` loads the exact bundle, dispatches only to a supported
+algorithm implementation, evaluates using the original timestamp, and compares
+canonical results including explanations. It never writes a new run or refreshes
+inputs. Missing old code produces `unsupported_algorithm`, not execution under
+the latest engine. Build identity and lockfile digest identify the required release;
+retain an artifact/source tag for reproducibility. A new configuration or newly
+captured evidence is a new run, even when the listing text is unchanged.
+
+## Semantic commit sequence
+
+Each implementation commit includes focused tests. These subjects are planned;
+none implies M2 functionality already exists.
+
+| Order | Subject | Scope and acceptance |
+| --- | --- | --- |
+| 1 | `docs(plan): specify milestone 2 ranking policies and delivery sequence` | This researched plan and links from earlier documents. |
+| 2 | `feat(ranking): add versioned engine facts and result contracts` | V2 profile/config/FX/result/run models, country registry via `uv add iso3166==3.0.0`, explicit profile/config upgrades, typed evidence, policy validation, golden hashes and v1 compatibility fixtures. Commit manifest and lock together. |
+| 3 | `feat(store): support versioned ranking payloads and fx selection` | Discriminated repository decoding, versioned history bundles, latest eligible cache query, unchanged v1 round trips and SQL guards. Verify schema 3 handles v2 payloads without rewriting rows. |
+| 4 | `feat(compensation): normalize explicit base pay with decimal policies` | Conservative facts parser, open ranges, annualization, FX cross-rates, gross/net handling, representative strategy and provenance. Regression tests retain legacy search parser behavior. |
+| 5 | `feat(fx): resolve ranking snapshots with recorded fallback provenance` | V2 ECB adapter, raw acquisition capture, deterministic cache/static/identity resolution, age/coverage diagnostics, HTTP mock fixtures and no-network replay checks. |
+| 6 | `feat(eligibility): evaluate pay employment and remote constraints` | Structured criteria, three-state aggregation, alternative work routes, exact-floor boundary cases, country restrictions, incomplete and contradictory evidence. |
+| 7 | `feat(ranking): score opportunities with evidence coverage and explanations` | Six policies, captured review adapters, known-only aggregation, independent confidence, freshness rules, stable ordering, source selection and formula fixtures. |
+| 8 | `feat(ranking): persist engine runs and verify offline replay` | New-run orchestration, deduplicated IDs, complete results, atomic completion, version dispatch and deterministic result comparison. Reopen/change-current-input journeys. |
+| 9 | `docs(ranking): document engine policies and validated library workflows` | Working offline library example, explanations/limits, release notes, installed-wheel run/replay exercise and full existing quality gates. Record actual results. |
+
+Keep commits 2–8 individually reviewable and green; split further if necessary.
+Breaking API changes are allowed, but use `!` and a `BREAKING CHANGE:` footer only
+for an actual compatibility break. Versioned additions need not be labeled breaking.
+Do not squeeze an unrelated search FX upgrade or survey CLI into these commits.
+
+## Acceptance matrix and uv workflow
+
+Meaningful fixtures and properties must cover:
+
+- Annual/month/week/day/hour conversions; custom hours/days; open bounds; zero;
+  locale grouping; ambiguous currencies; absent basis/component; total compensation;
+  mismatched gross/net; half-even ties; caller Decimal precision/traps isolation;
+  invalid/extreme numbers and incomplete FX coverage.
+- Same-currency operation offline; one request per batch; malformed/mixed-date
+  HTTP records; provider failure; fresh/stale cache; future dates; explicitly
+  allowed static fallback; identity-only degradation; exact snapshot replay.
+- Floor ranges below/above/straddling/equal; permanent versus full-time contractor;
+  remote worldwide/restricted/unknown; optional modes and multiple viable routes;
+  country mismatches; unknown values never being the sole cause of exclusion.
+- Every score endpoint and null case; fit/confidence independence; zero weights
+  excluded from both denominators but not hard constraints; all unknown/all N/A;
+  known zero; source conflicts; source priority; missing/old review evidence;
+  threshold monotonicity and stable order under input permutations.
+- V1 payload/hash preservation; v2 persistence and duplicate prevention; partial
+  legacy runs versus complete engine runs; nested mutation isolation; failed-run
+  rollback; reopened database; mutated current profile/job/rating/FX/config;
+  missing historical inputs; unsupported algorithm and no-network replay.
+- An installed-wheel offline run/replay, including both pinned registries;
+  architecture rules keeping domain pure and SQL in infrastructure.
+
+Use existing unittest/pytest, Hypothesis, httpx MockTransport, and fixture patterns.
+Do not add a numerical/ML framework for six arithmetic rules. No live API response
+should determine CI success. M2 is ready only after the implementation gates pass:
+
+```console
+uv sync --locked
+uv lock --check
+uv run --frozen ruff check .
+uv run --frozen ruff format --check .
+uv run --frozen pyright
+uv run --frozen pyright --pythonplatform Linux
+uv run --frozen coverage run -m pytest tests -q
+uv run --frozen coverage report
+uv build
+```
+
+Retain the 90% coverage floor, Linux Python 3.10–3.13 and Windows Python 3.12
+matrix, and saved-page browser CI. Document local Chromium skips separately from
+hosted results; do not call hosted CI verified until it has actually run.
+No dependency or runtime code changes were made as part of this planning review.

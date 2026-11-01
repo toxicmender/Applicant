@@ -2,7 +2,9 @@
 
 Reviewed 2026-11-02 against `8512b42` (`Merge pull request #6`).
 Source proposal: [Implementation_plan.md](../Implementation_plan.md).
-This is a review and implementation plan, not an implementation of Milestone 1.
+This began as a review and implementation plan; the progress section records the
+delivered Milestone 1 work. The [Milestone 2 engine plan](milestone-2-plan.md)
+continues from `24b2388` with researched policies and a new semantic commit sequence.
 Breaking API and schema changes are allowed; historical user data must still have
 an explicit migration path. Commit subjects below are proposed, not executed.
 
