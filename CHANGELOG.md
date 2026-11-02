@@ -7,6 +7,10 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Provide deterministic eligible/review/excluded ranked views with rounded Decimal
+  score ties resolved by job ID. Expand coverage of existing ranking contracts and
+  corrupted-history recovery, including contradictory exclusion/score states.
+
 - Compute six explainable ranking dimensions with Decimal utility curves,
   independent confidence/coverage, explicit unknown and disabled states, and
   captured category-rating proxies. Preserve raw company-review payloads alongside

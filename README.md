@@ -587,8 +587,8 @@ half-even rounding to two decimal places. Gross/net and total/base pay are never
 converted into one another. Open bounds remain open: available annual endpoints
 can coexist with an unknown representative salary. Inspect `status` and `warnings`
 before using the result. This pure function performs no FX acquisition or freshness
-selection; it requires explicit run inputs. Eligibility/scoring execution and the
-ranking CLI are still under development.
+selection; it requires explicit run inputs. Eligibility and scoring library APIs
+are described below; the ranking CLI remains in development.
 
 To select and persist rates for a **new** batch, use `resolve_fx`:
 
@@ -664,8 +664,56 @@ from being combined into a false eligible route.
 Conflicts include source labels, timestamps, normalized values, excerpts and a
 verification prompt. `evaluation.decision` can be stored in `JobRankingV2.decision`;
 its conflict details survive offline history recovery. The additional route trace
-is returned separately so existing v2 historical payloads remain unchanged. Scoring,
-run orchestration, engine replay and survey/ranking commands remain in development.
+is returned separately so existing v2 historical payloads remain unchanged. Run
+orchestration, complete engine replay and survey/ranking commands remain in development.
+
+## Ranking scores and views (library)
+
+After eligibility, call `applicant.domain.scoring.score_job` with the job/version
+IDs, profile, captured `RankingFacts` bundles, decision, normalized compensation,
+configuration, evaluation time, and optional selected salary tier. It returns a
+`JobRankingV2` suitable for existing run persistence. Excluded jobs retain their
+decision and have no fit/confidence calculation. Eligible and review-required jobs
+can have known scores, known zero scores, or unknown scores.
+
+Six dimensions cover compensation preference utility, preferred work modes,
+required-technology overlap, culture, career growth, and employee-reported job
+security. Technical tokens use case folding and the configured exact alias map;
+Java and JavaScript remain distinct. Conflicting requirements and unsupported pay
+tiers remain unknown. Company dimensions use captured category ratings, not the
+overall rating, company funding or valuation. Experience/discipline/seniority
+remain context rather than invented title-based requirements in this policy.
+
+The overall score averages known scores using profile weights. Coverage is the
+known applicable weight divided by total applicable weight; confidence additionally
+weights evidence quality. Unknown dimensions lower coverage/confidence, while
+zero-weight and inapplicable dimensions leave both denominators. Zero-weight
+dimensions skip evaluation. Fit is not multiplied by confidence. A high fit with
+limited coverage remains possible: display all three values together. All-unknown
+or all-inapplicable results have no overall score and zero confidence/coverage.
+
+`score_dimensions` in `applicant.domain.dimension_scoring` returns individual
+dimension results. `aggregate_dimensions` in `applicant.domain.scoring` exposes
+aggregation notes and weighted contributions. Dimension scores and overall scores
+round half-even to two decimal places; confidence/coverage round to four. Arithmetic
+uses the recorded fixed context rather than caller Decimal settings.
+
+`applicant.services.ranking_evidence.capture_rating` accepts an existing
+`CompanyRating`, a caller-verified provider company ID, and observation time. It
+returns typed ranking-facts evidence plus a defensive copy of the full raw payload.
+It performs no company-name matching or network requests. Preserve both returned
+evidence records in the job version. Category selection follows configured provider
+priority, latest observation within each provider, then evidence hash. Ratings
+older than the configured age window (default exactly 180 days) are unknown;
+review-count support saturates at 20 by default. Confidence is an evidence-support
+index, not a hiring or solvency probability. Ambiguous company IDs remain unknown.
+
+`applicant.domain.ranking_views.ranked_views(results, config=...)` returns separate
+`eligible`, `review_required`, and `excluded` tuples. Scored groups sort by rounded
+score descending and job ID ascending; unknown scores come last. Excluded jobs
+sort by ID. Confidence never silently breaks ties, and input permutation does not
+change ranked order. These views preserve the original result values and do not
+replace the input order stored in run history.
 
 ## Company ratings
 `applicant reviews` pulls a company's overall rating, its rating count and the pros/cons of

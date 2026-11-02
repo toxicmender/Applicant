@@ -1,6 +1,6 @@
 # Milestone 2: eligibility and ranking engine
 
-Status: contracts, persistence, compensation, FX resolution and eligibility delivered; scoring remains.
+Status: scoring, confidence and ranked views delivered; run orchestration/replay remain.
 Reviewed 2026-11-02 against `24b2388` on `codex/ranking-foundation`.
 This document refines section 17 of [the original proposal](../Implementation_plan.md)
 and follows the [Milestone 1 repository amendments](implementation-plan-review.md).
@@ -364,11 +364,14 @@ domain/ranking_salary.py      conservative Decimal facts parser
 domain/eligibility.py         salary/employment and evidence conflict predicates
 domain/work_routes.py         conflict classification and efficient joint route predicates
 domain/eligibility_engine.py  complete decision and supplementary route-check trace
-domain/scoring.py             dimensions, quality, aggregate and ordered views
+domain/dimension_scoring.py   six dimension utilities and evidence selection
+domain/scoring.py             weighted fit/confidence aggregation and job results
+domain/ranking_views.py       deterministic views partitioned by eligibility
 infra/fx.py                  Frankfurter v2 adapter via HttpClient
 infra/store/                 existing repositories plus version-aware codecs/query
 services/ranking.py           prepare, resolve, evaluate and persist
 services/ranking_fx.py        new-run FX selection/persistence outside write locks
+services/ranking_evidence.py  verified-ID rating capture, typed and complete raw evidence
 services/ranking_history.py   existing exact loading plus replay verification
 ```
 
@@ -482,7 +485,8 @@ now includes v2 engine contracts, provenance/conflict validation, explicit profi
 and configuration upgrades, and reusable compensation fixtures. Country definitions
 are pinned through uv. Existing v1 validation remains available. Decimal salary
 parsing, normalization, FX acquisition/fallback and eligibility are implemented.
-Scoring, run orchestration and engine replay remain to be delivered.
+Scoring, confidence and ranked views are implemented. Run orchestration and complete
+engine replay remain to be delivered.
 
 Initial implementation slices:
 
@@ -579,5 +583,40 @@ captured evidence and reproduces its decision offline. Lint/format, Windows/Linu
 Pyright, lock validation and package build pass. An isolated offline wheel install
 verifies both country exclusion with residual unknown restrictions and an eligible
 onsite alternative. Unknown restrictions do not erase explicit country failures.
-Hosted CI and complete engine replay remain unverified. Next is weighted scoring,
-evidence confidence and deterministic ranked views.
+Hosted CI and complete engine replay remain unverified. Weighted scoring,
+evidence confidence and deterministic ranked views are delivered below.
+
+Scoring delivery starts with `0589ac2`: six dimension utilities, captured category
+rating selection, known-only aggregation, independent confidence/coverage and
+completed job result construction. A second commit adds partitioned ranked views
+and the coverage audit. Fixed-context Decimal arithmetic is used throughout;
+dimension scores are quantized before weighted aggregation so recorded dimension
+values reproduce the aggregate. Contributions preserve full policy precision.
+Selected review windows are exact elapsed days (including microseconds), unlike
+the separately specified calendar-day FX window. Underflowing aggregation weights
+fail explicitly instead of silently producing a misleading zero fit.
+
+Company-rating capture preserves the complete legacy payload and typed categories
+for caller-verified provider company IDs. Float-derived values are identified as
+the legacy stated value, not original provider precision. No live company lookup,
+fuzzy association, overall-rating fallback or financial stability inference is
+introduced. Unknown/conflicting technical or compensation evidence remains distinct
+from zero; hard eligibility continues independently of scoring weights.
+
+Computed-score history tests recover typed and raw evidence and reproduce the
+stored fit/confidence after database reopening with network access forbidden.
+Additional contract/recovery tests reject contradictory exclusion states, duplicate
+job membership, mismatched normalization inputs, non-object metadata and SQL-key
+versus result-payload disagreement. Ranking views compare quantized score keys,
+preserve stored values, and remain invariant under input permutations.
+
+Scoring validation: **1,095 passed, 13 skipped, 1,041 subtests passed** in
+79.25 seconds under coverage. The four new scoring/view/capture modules have
+**100% statement and branch coverage** (246 statements, 108 branches); overall
+coverage remains **98%**. The [coverage review](ranking-coverage.md) records the
+existing v2 contract coverage (99%) and completed-run repository coverage (100%),
+including the one defensive contract guard already preceded by Pydantic rejection.
+Repository lint/format, Windows/Linux Pyright, lock validation and package build
+pass. An isolated offline wheel installation passes the public
+parse/normalize/eligibility/score/view pipeline. Hosted CI, run orchestration and
+complete engine replay remain pending; those are the next implementation slice.
