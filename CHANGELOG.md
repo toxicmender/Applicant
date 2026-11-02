@@ -7,6 +7,11 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Acquire ranking FX through Frankfurter v2's ECB provider, validating dated
+  EUR-based pairs, preserving exact Decimal tokens and response provenance, and
+  disclosing omitted older observations. Provider failures use the shared error
+  hierarchy and one bounded HTTP attempt per batch.
+
 - Add pure Decimal base-pay parsing and annual/currency normalization for ranking,
   with explicit missing-evidence diagnostics, open salary bounds, structured pay
   tiers, fixed arithmetic/rounding policies, and recorded FX/configuration references.
