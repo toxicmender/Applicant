@@ -7,6 +7,12 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Evaluate ranking salary floors and permanent/contract eligibility with explicit
+  pass/fail/unknown outcomes, conservative open-bound handling, tier selection and
+  source/normalization checks. Conflicting supported evidence carries readable
+  explanations, source excerpts and verification prompts instead of silently
+  choosing one assertion.
+
 - Resolve one persisted FX snapshot for each new ranking batch, with deterministic
   fresh-cache selection, explicit static fallback, identity-only degradation and
   missing-currency diagnostics. Cache recapture preserves original observation and
