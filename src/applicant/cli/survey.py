@@ -1,4 +1,4 @@
-"""Noninteractive candidate survey commands."""
+"""Interactive and document-based candidate survey commands."""
 
 import sys
 from pathlib import Path
@@ -9,12 +9,16 @@ from ..errors import ConfigError
 from ..infra.preference_documents import export_preferences, read_preferences
 from ..infra.store.profiles import ProfileNotFound, RevisionConflict
 from ..infra.store.sqlite import DB_NAME
+from ..interaction import Terminal
 from ..services.survey import editable_profile, import_preferences, load_profile
+from ..services.survey_questionnaire import questionnaire
 from .common import positive_int
 
 
 def add_parser(add):
-    command = add('survey', help='validate, import, show or export candidate preferences')
+    command = add(
+        'survey', help='create, edit, validate, import, show or export candidate preferences'
+    )
     modes = command.add_mutually_exclusive_group()
     modes.add_argument('--show', action='store_true', help='show an archived profile')
     modes.add_argument('--export', metavar='PATH', help='export editable preferences')
@@ -28,7 +32,7 @@ def add_parser(add):
         help='check --from-file against the current revision without saving',
     )
     command.add_argument(
-        '--profile', metavar='ID', help='profile to show/export (default: default)'
+        '--profile', metavar='ID', help='profile to edit/show/export (default: default)'
     )
     command.add_argument('--revision', type=positive_int, help='exact revision to show/export')
     command.add_argument('--json', action='store_true', help='canonical archived JSON with --show')
@@ -97,9 +101,21 @@ def run(args) -> int:
                     'Experience, discipline, seniority, regions and timezone are retained but currently do not add ranking signals.'
                 )
         else:
-            raise ConfigError(
-                'use --from-file PATH to save preferences; interactive survey is not implemented yet'
-            )
+            if not sys.stdin.isatty():
+                raise ConfigError('interactive survey requires a terminal; use --from-file PATH')
+            profile_id = (args.profile or 'default').strip()
+            try:
+                initial = editable_profile(load_profile(database, profile_id))
+            except ProfileNotFound:
+                initial = None
+            document = questionnaire(Terminal(), profile_id=profile_id, initial=initial)
+            if document is None:
+                print('survey cancelled; no profile saved')
+            else:
+                result = import_preferences(database, document, updated_at=now())
+                print(
+                    f'saved profile {result.profile_id} revision {result.profile_revision}; database: {database.resolve()}'
+                )
         return 0
     except (ConfigError, RevisionConflict) as error:
         print(f'applicant survey: {error}', file=sys.stderr)

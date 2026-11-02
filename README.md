@@ -666,8 +666,8 @@ Conflicts include source labels, timestamps, normalized values, excerpts and a
 verification prompt. `evaluation.decision` can be stored in `JobRankingV2.decision`;
 its conflict details survive offline history recovery. The additional route trace
 is returned separately so existing v2 historical payloads remain unchanged. Run
-orchestration and replay are described below. The interactive survey and ranking
-commands remain in development; noninteractive profile commands are available.
+orchestration and replay are described below. Interactive and document-based
+surveys are available; ranking commands remain in development.
 
 ## Ranking scores and views (library)
 
@@ -798,8 +798,18 @@ store, it returns an empty tuple. These are library APIs supporting the planned
 
 ## Candidate preferences
 
-The noninteractive survey commands use SQLite profiles with immutable revisions.
-Create an editable `preferences.json` document:
+Survey commands use SQLite profiles with immutable revisions. Run `uv run --frozen
+applicant survey` in a terminal to create or edit the default profile, or add
+`--profile ID` for another profile. The questionnaire asks all editable fields,
+shows current/default values and saves only after confirmation. Enter keeps a
+displayed value; `-` clears an optional field/list. New profiles require experience
+and discipline answers. Lists use commas and deduplicate repeated values. Weights
+are fractions summing to one; invalid salary/weight groups can be corrected.
+
+Declining or EOF saves nothing; Ctrl-C returns exit 130. A concurrent edit causes
+a revision conflict, preserving the other editor's save. Prompts and validation
+feedback go to stderr. Noninteractive stdin requires `--from-file` to avoid waiting
+for input. For file-based use, create an editable `preferences.json` document:
 
 ```json
 {
@@ -842,11 +852,10 @@ editable document. Missing profiles/revisions return exit 4. Invalid documents
 fail before opening a writer. Export writes atomically and cannot target the
 database or its WAL/SHM sidecars.
 
-Use `--profile ID` with show/export and `--database PATH` to select a database.
+Use `--profile ID` with edit/show/export and `--database PATH` to select a database.
 The default database is beside the configured listing. Relative paths resolve
 under `--data-dir`; survey requires `--store sqlite`. Add `--no-log-file` to avoid
-normal CLI log creation. The interactive questionnaire and ranking command remain
-planned; `survey` currently requires one of the explicit modes above.
+normal CLI log creation. The ranking command remains planned.
 
 ## Company ratings
 `applicant reviews` pulls a company's overall rating, its rating count and the pros/cons of

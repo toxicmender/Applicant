@@ -1,6 +1,6 @@
 # Milestone 3: survey and ranking CLI
 
-Status: phases 1–2 delivered locally; interactive survey and ranking CLI phases pending.
+Status: phases 1–3 delivered locally; ranking CLI phases pending.
 Reviewed 2026-11-02 against `d375842` on `codex/ranking-foundation`.
 This document supersedes the M3 command sketch in section 17 of
 [Implementation_plan.md](../Implementation_plan.md). M2 library behavior remains
@@ -347,8 +347,8 @@ Expected revision ownership is enforced atomically by the existing CAS service.
 ProfileNotFound distinguishes absence from corrupt archived data. Historical v1
 exports can create a new v2 revision without modifying their source revision.
 
-The interactive invocation currently returns an actionable usage error pointing
-to --from-file. The questionnaire is phase 3; no prompt implementation is claimed.
+At the phase 2 boundary, interactive invocation returned an actionable usage
+error. Phase 3 below delivers that questionnaire.
 
 Coverage review: the four new survey modules plus the existing profile repository
 have **100% statement and branch coverage: 201 statements, 46 branches**. Added a
@@ -366,7 +366,38 @@ v1-to-v2 edits, two concurrent importers (one save and one conflict), protected
 export targets, failed atomic replacement, path precedence, exit codes and
 corruption that must not become absence.
 
-Next: phase 3 interactive candidate questionnaire.
+## Phase 3 delivery
+
+Implemented an Interaction-based questionnaire covering every editable profile
+field. Existing defaults are shown; new profiles must supply experience and
+discipline. Fields reuse v2 annotations for validation within the fixed arithmetic
+context; complete documents reuse the existing model-level validation. Salary and
+weight groups can be corrected without losing unrelated answers. Comma lists
+deduplicate in input order and reject empty internal items. Enter keeps values;
+minus clears optional values/lists. A summary requires explicit yes to save.
+
+The CLI loads the head once and closes the read owner before asking anything.
+No writer is opened until confirmed completion; save retains that original CAS
+revision. Decline/EOF cancel without a save, interrupts retain exit 130, and
+non-TTY stdin returns exit 2 suggesting --from-file. Prompts/feedback stay on
+stderr; success/cancellation results go to stdout.
+
+Coverage review: the questionnaire and four existing survey modules have **100%
+statement and branch coverage: 253 statements, 62 branches**. Full Windows
+validation reports **1,136 passed, 13 skipped, 1,116 subtests passed** in 75.20
+seconds under coverage; overall branch-enabled coverage remains **98%**. No
+coverage exclusions were added. Tests cover every editable field, valid/invalid
+values, required versus optional clearing, list deduplication, salary/weight
+group correction, hostile ambient Decimal context, confirmation correction,
+decline/EOF/interrupt, concurrent edits during confirmation, the closed reader
+before prompts, and actual Terminal stdout/stderr separation.
+
+Ruff, formatting, Windows/Linux-target Pyright, uv lock --check and uv build pass.
+The wheel's interactive workflow also passed with scripted terminal answers and
+a temporary database in an isolated offline uv environment. Browser/POSIX skips
+remain unchanged; hosted CI is still unverified.
+
+Next: phase 4 create ranking runs from validated CLI inputs.
 
 ## References checked 2026-11-02
 

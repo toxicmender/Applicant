@@ -7,6 +7,11 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Add an interactive candidate questionnaire with explicit hard/soft preference
+  prompts, reusable profile validation, salary/weight correction, confirmation,
+  safe cancellation and concurrent-edit protection. Prompts use stderr and no
+  database connection is held while waiting for answers.
+
 - Add noninteractive `survey` validation, revision-safe imports, dry-run checks,
   historical profile display and atomic editable exports. Preserve Decimal input
   precision and reject malformed/duplicate-key JSON before opening a writer;
