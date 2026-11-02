@@ -1,6 +1,6 @@
 # Milestone 3: survey and ranking CLI
 
-Status: reviewed and ready for implementation; no M3 runtime code delivered yet.
+Status: phase 1 storage APIs delivered locally; survey and ranking CLI phases pending.
 Reviewed 2026-11-02 against `d375842` on `codex/ranking-foundation`.
 This document supersedes the M3 command sketch in section 17 of
 [Implementation_plan.md](../Implementation_plan.md). M2 library behavior remains
@@ -314,6 +314,29 @@ POSIX-only skip. This was a focused review run, not a new full coverage measurem
 The prior M2 baseline is **1,105 passed / 13 skipped and 98% branch-enabled
 coverage**, documented in [ranking-coverage.md](ranking-coverage.md). Hosted gates
 remain unverified. No new dependency is needed; use uv for all project tooling.
+
+## Phase 1 delivery
+
+Implemented Store.open_readonly, explicit read_snapshot transactions, stored
+listing_items_snapshot queries, strict file-first listing_snapshot selection and
+RankingRunRepository.completed enumeration. Existing history/replay services can
+use the read-only Store. No schema migration or dependency change was needed.
+Read callers own the snapshot context when combining queries. Missing database
+and incompatible schemas raise StoreError; the later CLI translates these into
+the command-specific empty/not-found behavior specified above.
+
+Validation: **1,115 passed, 13 skipped, 1,073 subtests passed** in the full Windows
+coverage run; **98%** overall branch-enabled coverage. The listing snapshot module
+and completed-run repository have 100% statement/branch coverage. The existing
+SQLite module is 97%, with no uncovered lines in the new read APIs. Ruff,
+formatting, Windows/Linux-target Pyright and uv lock --check passed. Browser and
+POSIX-only skips remain; hosted CI was not run. Tests cover a concurrent commit
+during a read snapshot, immutable database bytes, permission/migration avoidance,
+missing files/directories, schema rejection/handle release, malformed imports,
+deleted exports, profile filtering, stable ordering and incomplete/corrupt runs.
+
+Next: phase 2 revision-safe preference documents, imports and noninteractive
+survey commands.
 
 ## References checked 2026-11-02
 

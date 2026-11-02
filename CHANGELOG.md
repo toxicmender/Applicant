@@ -7,6 +7,10 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Add read-only ranking storage access with consistent query snapshots, strict
+  listing selection without file synchronization, and validated completed-run
+  enumeration with profile filtering and deterministic date/ID ordering.
+
 - Orchestrate complete ranking batches from exact profile/job/configuration inputs,
   normalize and score every selected job, and atomically publish completed runs.
   Replay frozen engine runs offline with original timestamps and tier selections,

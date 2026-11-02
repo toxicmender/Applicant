@@ -19,6 +19,21 @@ class RankingRunRepository:
     def __init__(self, db: sqlite3.Connection):
         self.db = db
 
+    def completed(self, *, profile_id: str | None = None) -> tuple[Run, ...]:
+        """Validated completed history, newest first with stable ID ties.
+
+        Call within Store.read_snapshot() for consistency across related queries.
+        Decode timestamps rather than sorting offset-bearing JSON as text.
+        """
+        rows = self.db.execute(
+            'SELECT r.ranking_run_id FROM ranking_runs r '
+            'JOIN run_completions c USING(ranking_run_id)'
+            + (' WHERE r.profile_id = ?' if profile_id is not None else ''),
+            () if profile_id is None else (profile_id,),
+        ).fetchall()
+        runs = sorted((self.get(row[0]) for row in rows), key=lambda r: r.ranking_run_id)
+        return tuple(sorted(runs, key=lambda r: r.calculated_at, reverse=True))
+
     def create(self, run: Run) -> Run:
         require_transaction(self.db)
         run = validated(run)

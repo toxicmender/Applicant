@@ -777,6 +777,23 @@ For a runnable temporary-database example, use `examples/ranking_offline.py` wit
 python`. It prints eligibility, fit, confidence, coverage and replay verification
 without network requests. Production callers keep their own persistent Store.
 
+For historical reads, use `Store.open_readonly(database_path)` and wrap related
+queries in `with store.read_snapshot():`. This requires an existing database at
+the current schema and avoids initialization, migration, permission changes and
+listing synchronization. SQLite can still use WAL sidecars. Within the snapshot,
+`RankingRunRepository(store.db).completed(profile_id=...)` returns validated
+completed runs ordered by calculation time descending, then run ID ascending;
+omit the profile ID to include all profiles. Existing history/replay services
+accept this read-only Store.
+
+`applicant.infra.store.listing_snapshots.listing_snapshot(path, store=store)`
+selects an ordinary listing without modifying its file or stored collection.
+A present `{"list": [...]}` file takes precedence; every record must validate,
+and duplicate job identities or malformed input raise `ConfigError`. Only a
+missing file falls back to that collection's stored rows. With neither file nor
+store, it returns an empty tuple. These are library APIs supporting the planned
+[Milestone 3 commands](docs/milestone-3-plan.md).
+
 ## Company ratings
 `applicant reviews` pulls a company's overall rating, its rating count and the pros/cons of
 individual reviews from AmbitionBox and Glassdoor, writing them to `company_reviews.json`.

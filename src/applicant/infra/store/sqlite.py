@@ -166,6 +166,61 @@ class Store:
             raise StoreError(f'could not open {self.path}: {error}') from error
 
     @classmethod
+    def open_readonly(cls, path: str | os.PathLike[str]) -> Store:
+        """Open existing current-schema data without initializing or migrating it.
+
+        SQLite may still use WAL sidecars. Never mark a live database immutable.
+        Missing files raise StoreError rather than creating an empty database.
+        """
+        store = cls.__new__(cls)
+        store.path = Path(path)
+        store.root = store.path.resolve().parent
+        try:
+            store.db = sqlite3.connect(store.path.resolve().as_uri() + '?mode=ro', uri=True)
+            try:
+                store.db.execute('PRAGMA busy_timeout = 5000')
+                store.db.execute('PRAGMA foreign_keys = ON')
+                store.db.execute('PRAGMA query_only = ON')
+                version = store.db.execute('PRAGMA user_version').fetchone()[0]
+                if version < len(MIGRATIONS):
+                    raise StoreError(
+                        f'database schema {version} requires a writable upgrade to {len(MIGRATIONS)}'
+                    )
+                if version > len(MIGRATIONS):
+                    raise StoreError(
+                        f'database schema {version} is newer than supported {len(MIGRATIONS)}'
+                    )
+            except BaseException:
+                store.db.close()
+                raise
+        except (OSError, sqlite3.Error) as error:
+            raise StoreError(f'could not read {store.path}: {error}') from error
+        return store
+
+    @contextmanager
+    def read_snapshot(self) -> Iterator[None]:
+        """Keep related queries on one snapshot, without acquiring a writer lock."""
+        if self.db.in_transaction:
+            raise StoreError('read snapshot requires a connection without an active transaction')
+        try:
+            self.db.execute('BEGIN')
+            yield
+        except sqlite3.Error as error:
+            raise StoreError(f'{self.path}: {error}') from error
+        finally:
+            self.db.rollback()
+
+    def listing_items_snapshot(self, file: str | os.PathLike[str]) -> list[dict]:
+        """Stored collection in input order; never sync, restore or export a file."""
+        try:
+            rows = self.db.execute(
+                'SELECT payload FROM jobs WHERE listing = ? ORDER BY seq', (self.name(file),)
+            ).fetchall()
+            return [json.loads(row[0]) for row in rows]
+        except (sqlite3.Error, ValueError) as error:
+            raise StoreError(f'could not read listing {file}: {error}') from error
+
+    @classmethod
     def beside(cls, file: str | os.PathLike[str]) -> Store:
         """The store for a file: applicant.db in the same directory."""
         return cls(Path(file).resolve().parent / DB_NAME)
