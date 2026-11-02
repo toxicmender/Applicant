@@ -511,8 +511,8 @@ tests/           unittest.TestCase suites, run under pytest
 
 The library can now preserve candidate revisions, job content versions, FX
 snapshots, scoring configurations, and completed runs in SQLite. It supports both
-supplied results and evaluated engine runs. Noninteractive survey commands are
-available; the ranking CLI remains planned.
+supplied results and evaluated engine runs. Survey and ranking creation commands
+are available; historical ranking CLI commands remain planned.
 
 Use an explicit `Store` and the functions in `applicant.services.preferences` and
 `applicant.services.ranking_history`. Save profiles with `expected_revision=0` for
@@ -667,7 +667,7 @@ verification prompt. `evaluation.decision` can be stored in `JobRankingV2.decisi
 its conflict details survive offline history recovery. The additional route trace
 is returned separately so existing v2 historical payloads remain unchanged. Run
 orchestration and replay are described below. Interactive and document-based
-surveys are available; ranking commands remain in development.
+surveys and ranking creation are available; historical ranking commands remain in development.
 
 ## Ranking scores and views (library)
 
@@ -855,7 +855,63 @@ database or its WAL/SHM sidecars.
 Use `--profile ID` with edit/show/export and `--database PATH` to select a database.
 The default database is beside the configured listing. Relative paths resolve
 under `--data-dir`; survey requires `--store sqlite`. Add `--no-log-file` to avoid
-normal CLI log creation. The ranking command remains planned.
+normal CLI log creation.
+
+## Create a ranking run
+
+```console
+uv run --frozen applicant rank --provenance provenance.json --offline
+uv run --frozen applicant rank --provenance provenance.json --input jobs.json --top 10
+uv run --frozen applicant rank --provenance provenance.json --job-versions versions.json --all --json --offline
+```
+
+Create a provenance document with the identity of your retained source/release
+artifact and the SHA-256 digest of its corresponding `uv.lock`. Replace the digest
+placeholder with 64 lowercase hexadecimal characters; the command requires it.
+On PowerShell, `(Get-FileHash uv.lock -Algorithm SHA256).Hash.ToLowerInvariant()`
+prints the digest.
+
+```json
+{
+  "kind": "ranking_provenance",
+  "schema_version": 1,
+  "build_identity": "your-retained-build-id",
+  "lockfile_digest": "<SHA-256 digest of the retained uv.lock>"
+}
+```
+
+These are caller-supplied identifiers, not automatic binary attestation. The
+command freezes the current `default` profile; `--profile ID --revision N` selects
+another exact revision. It reads the configured `{"list": [...]}` listing, or an
+explicit `--input` file. A missing listing falls back to its existing SQLite
+collection without restoring the export. Invalid files fail instead of using old
+rows. Empty inputs create no run. Inputs and documents validate before a writer
+opens or FX acquisition begins.
+
+Use `--job-versions` for a document containing `kind: "ranking_job_versions"`,
+`schema_version: 1`, and an ordered `jobs` array of complete JobVersion payloads.
+This preserves typed evidence and captured times. JSON number types in raw payloads
+retain their hashes; typed Decimal fields should use canonical decimal strings.
+Recognized future-dated facts are rejected during preflight. Ordinary listings are
+captured locally at evaluation time; this does not refresh board observations or
+infer remote work permission. Their incomplete evidence can require review.
+
+`--scoring-config PATH` accepts a full scoring configuration v2 document; `--tiers
+PATH` accepts a JSON map of exact ranking job IDs to nonblank salary-tier names.
+`--offline` uses eligible captured FX or identity fallback with diagnostics. These
+paths follow `--data-dir`. The default database stays beside the configured
+listing even with `--input`; use `--database PATH` to override it. Ranking requires
+the SQLite backend and a saved profile.
+
+Reports group eligibility states separately and show fit, evidence confidence,
+coverage, and review/exclusion reasons. Confidence measures evidence support,
+not a hiring probability; unknown scores display as unscored. `--top N` defaults
+to 20 per group; `--all` displays every result. Display limits never reduce stored
+membership. `--json` prints only a versioned canonical report on stdout, with
+Decimal values as strings and unknown scores as null. Keep the returned run ID.
+Historical display, explanation and replay CLI modes are the next phase; library
+history/replay already supports these newly created runs. Region filtering and
+automatic posting refresh remain deferred.
 
 ## Company ratings
 `applicant reviews` pulls a company's overall rating, its rating count and the pros/cons of

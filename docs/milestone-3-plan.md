@@ -1,6 +1,6 @@
 # Milestone 3: survey and ranking CLI
 
-Status: phases 1–3 delivered locally; ranking CLI phases pending.
+Status: phases 1–4 delivered locally; historical ranking CLI phases pending.
 Reviewed 2026-11-02 against `d375842` on `codex/ranking-foundation`.
 This document supersedes the M3 command sketch in section 17 of
 [Implementation_plan.md](../Implementation_plan.md). M2 library behavior remains
@@ -397,7 +397,42 @@ The wheel's interactive workflow also passed with scripted terminal answers and
 a temporary database in an isolated offline uv environment. Browser/POSIX skips
 remain unchanged; hosted CI is still unverified.
 
-Next: phase 4 create ranking runs from validated CLI inputs.
+## Phase 4 delivery
+
+Implemented strict provenance/version-bundle envelopes, ranking document parsing,
+preflight service orchestration, pure versioned report construction and the rank
+creation command. Listings use the phase 1 non-mutating reader. Input/config/tier
+documents and exact profile selection validate before a writer opens. One injected
+evaluation timestamp freezes ordinary listings with cli-listing-1; raw bundle
+JSON number types retain their content hashes. Prepared typed facts are validated
+before FX or durable inputs. The CLI preflight deliberately rejects all recognized
+future-dated facts, even if a disabled dimension would not consume one; unknown
+evidence formats retain M2's existing ignore/diagnostic policy.
+
+Each batch calls the engine once, then builds a report from the completed run's
+actual config and job IDs. Report schema 1 includes exact run metadata, group
+totals, displayed results with explicit eligibility and nullable scores, captured
+job fields and criterion explanations. Top/all are display-only. Human text
+escapes terminal controls and separates fit, evidence support and coverage.
+Creation modes are delivered; --run/--list-runs/--explain/--replay remain phase 5
+and are not accepted yet. No database migration or dependency change was needed.
+
+Validated 2026-11-03: **1,148 passed, 13 skipped, 1,147 subtests passed** in
+75.81 seconds under coverage. The five new ranking input/report/CLI modules have
+**100% statement and branch coverage: 177 statements, 42 branches**; project-wide
+branch-enabled coverage remains **98%**. No exclusions were added. Tests cover
+strict JSON/Unicode/I/O failures, missing profiles/inputs, future observations,
+duplicate jobs, tier/config validation, raw-number hash preservation, exact
+revision selection after a head change, one evaluation per batch, stored full
+membership behind top limits, terminal escaping, FX fallback diagnostics and
+offline replay of CLI-created runs. Provenance is never inferred from the archive.
+
+Ruff, formatting, Windows/Linux-target Pyright, uv lock --check and uv build pass.
+An isolated offline installed-wheel journey imported a survey profile and created
+a ranking run with a valid JSON report. The 13 browser/POSIX skips are unchanged;
+hosted CI is still unverified.
+
+Next: phase 5 historical display, explanation and replay CLI modes.
 
 ## References checked 2026-11-02
 

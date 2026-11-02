@@ -7,6 +7,12 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Add `rank` run creation from strict listing or frozen-version inputs, explicit
+  artifact provenance, optional configuration/tier documents and offline FX.
+  Validate inputs before opening a writer; report separate eligible/review/excluded
+  groups with fit, confidence, coverage and reasons. Display limits preserve every
+  result in immutable run history, and JSON keeps explicit null scores.
+
 - Add an interactive candidate questionnaire with explicit hard/soft preference
   prompts, reusable profile validation, salary/weight correction, confirmation,
   safe cancellation and concurrent-edit protection. Prompts use stderr and no

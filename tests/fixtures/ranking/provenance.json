@@ -1,0 +1,6 @@
+{
+  "kind": "ranking_provenance",
+  "schema_version": 1,
+  "build_identity": "retained-test-artifact",
+  "lockfile_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
