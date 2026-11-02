@@ -7,6 +7,12 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Add pure Decimal base-pay parsing and annual/currency normalization for ranking,
+  with explicit missing-evidence diagnostics, open salary bounds, structured pay
+  tiers, fixed arithmetic/rounding policies, and recorded FX/configuration references.
+  Golden fixtures and property tests cover cross-currency calculations and numeric
+  boundaries. Existing search salary parsing retains its behavior.
+
 - Add a gated Windows Python 3.12 unit/type-check CI leg alongside Linux Python
   3.10–3.13, with separate report artifacts for each operating system.
 - Enforce private Windows ACLs for new JSON data, browser credentials, log files,

@@ -6,6 +6,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from applicant.domain.preferences import DIMENSIONS
+from applicant.domain.ranking_facts import CompensationFacts
 from applicant.domain.ranking_v2 import (
     CriterionResult,
     DimensionResult,
@@ -19,6 +20,12 @@ FIXTURES = Path(__file__).parent / 'fixtures' / 'ranking'
 
 def compensation_fixture() -> dict:
     return json.loads((FIXTURES / 'compensation.json').read_text(encoding='utf-8'))
+
+
+def compensation_facts(**changes) -> CompensationFacts:
+    fixture = compensation_fixture()
+    data = fixture['cases'][0]['facts'] | {'source': fixture['source']}
+    return CompensationFacts.model_validate(data | changes)
 
 
 def unknown_result(job_id: str = 'job', version_id: str = 'version') -> JobRankingV2:

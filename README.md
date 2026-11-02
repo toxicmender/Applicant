@@ -549,6 +549,47 @@ and completed runs cannot be overwritten or extended. Existing JSON/CSV listing
 edits and deletions do not alter captured job versions. Ranking history requires
 SQLite; existing discovery/application file storage continues to work.
 
+## Ranking compensation (library)
+
+`applicant.domain.ranking_salary.parse_compensation(text, source=...)` extracts
+Decimal salary facts and matched text spans. Supply a `FactSource` with source ID,
+observation time, extractor version, evidence quality and supporting excerpt.
+The returned `SalaryParse` records extraction policy `ranking-salary-1` and reason
+codes for missing/ambiguous information. It accepts explicit currency, pay period,
+gross/net basis and base-pay component; none of those is guessed from location.
+Bare dollar/yen symbols, conflicting units and ambiguous pay tiers need review.
+Pass `structured=(...)` to retain independently supplied `CompensationFacts` tiers
+instead of parsing their combined text. Preserve the parse diagnostics with the
+captured evidence.
+
+Normalize a selected tier using `applicant.domain.normalization.normalize_compensation`:
+
+```python
+from applicant.domain.normalization import normalize_compensation
+from applicant.domain.ranking_v2 import ScoringConfigurationV2
+
+# facts is a selected CompensationFacts; fx is an explicit saved FXSnapshot/V2.
+config = ScoringConfigurationV2()
+pay = normalize_compensation(
+    facts,
+    target_currency='EUR',
+    target_basis='gross',
+    fx=fx,
+    config=config,
+)
+```
+
+Use the configuration returned by `save_config` when composing persisted results,
+so normalization references the stored ID. Annual/month/week factors are 1/12/52;
+hourly/daily assumptions default to 2,080 hours/260 days and are configurable.
+Cross-rates use `amount * annual_factor * target_rate / source_rate`, with final
+half-even rounding to two decimal places. Gross/net and total/base pay are never
+converted into one another. Open bounds remain open: available annual endpoints
+can coexist with an unknown representative salary. Inspect `status` and `warnings`
+before using the result. This pure function performs no FX acquisition or freshness
+selection; it requires explicit run inputs. Eligibility/scoring execution and the
+ranking CLI are still under development.
+
 ## Company ratings
 `applicant reviews` pulls a company's overall rating, its rating count and the pros/cons of
 individual reviews from AmbitionBox and Glassdoor, writing them to `company_reviews.json`.

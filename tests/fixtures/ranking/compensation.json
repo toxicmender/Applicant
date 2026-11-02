@@ -35,6 +35,21 @@
       "id": "staff-tier",
       "facts": {"original_text": "Senior: EUR 80–100k; Staff: EUR 120–140k annual gross base, plus equity", "minimum": "120000", "maximum": "140000", "shape": "range", "currency": "EUR", "period": "annual", "basis": "gross", "component": "base", "tier": "Staff"},
       "expected_eur": {"minimum": "120000.00", "maximum": "140000.00", "midpoint": "130000.00"}
+    },
+    {
+      "id": "half-even-boundaries",
+      "facts": {"original_text": "EUR 1.005–1.015 annual gross base", "minimum": "1.005", "maximum": "1.015", "shape": "range", "currency": "EUR", "period": "annual", "basis": "gross", "component": "base"},
+      "expected_eur": {"minimum": "1.00", "maximum": "1.02", "midpoint": "1.01"}
+    },
+    {
+      "id": "lower-only-offer",
+      "facts": {"original_text": "From EUR 80k annual gross base", "minimum": "80000", "shape": "lower_only", "currency": "EUR", "period": "annual", "basis": "gross", "component": "base"},
+      "expected_eur": {"minimum": "80000.00", "maximum": null, "midpoint": null}
+    },
+    {
+      "id": "base-excludes-bonus",
+      "facts": {"original_text": "EUR 80k annual gross base plus bonus 20k and equity", "minimum": "80000", "maximum": "80000", "shape": "exact", "currency": "EUR", "period": "annual", "basis": "gross", "component": "base"},
+      "expected_eur": {"minimum": "80000.00", "maximum": "80000.00", "midpoint": "80000.00"}
     }
   ]
 }

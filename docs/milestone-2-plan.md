@@ -1,6 +1,6 @@
 # Milestone 2: eligibility and ranking engine
 
-Status: implementation started; versioned engine contracts, fixtures and repository support delivered.
+Status: implementation started; contracts, repository support and compensation normalization delivered.
 Reviewed 2026-11-02 against `24b2388` on `codex/ranking-foundation`.
 This document refines section 17 of [the original proposal](../Implementation_plan.md)
 and follows the [Milestone 1 repository amendments](implementation-plan-review.md).
@@ -356,7 +356,9 @@ Suggested ownership, creating modules only when the corresponding code lands:
 ```text
 domain/ranking_facts.py       typed facts and evidence validation
 domain/ranking_v2.py          engine config, criteria, dimensions, result/run models
-domain/compensation.py        pure normalization (legacy contract retained)
+domain/compensation.py        legacy normalization result contract retained
+domain/normalization.py       pure Decimal base-pay normalization
+domain/ranking_math.py        shared fixed arithmetic context
 domain/ranking_salary.py      conservative Decimal facts parser
 domain/eligibility.py         criterion and route evaluation
 domain/scoring.py             dimensions, quality, aggregate and ordered views
@@ -474,8 +476,9 @@ hosted results; do not call hosted CI verified until it has actually run.
 The original planning review made no dependency or runtime changes. Implementation
 now includes v2 engine contracts, provenance/conflict validation, explicit profile
 and configuration upgrades, and reusable compensation fixtures. Country definitions
-are pinned through uv. Existing v1 validation remains available. Normalization,
-FX acquisition, route evaluation, scoring and replay execution remain to be delivered.
+are pinned through uv. Existing v1 validation remains available. Decimal salary
+parsing and normalization are implemented; FX acquisition, route evaluation,
+scoring and replay execution remain to be delivered.
 
 Initial implementation slices:
 
@@ -492,5 +495,24 @@ Validation of these slices: **1,024 passed, 13 skipped, 835 subtests passed** in
 76.01 seconds under coverage, **97% overall coverage**. Repository lint/format,
 Windows and Linux Pyright targets, uv lock validation and package build pass.
 The skips are nine unavailable-Chromium cases and four POSIX-only cases. Hosted
-CI and installed-wheel acceptance are not claimed by this local run. Next is the
-Decimal normalization/parser slice; no eligibility/scoring execution exists yet.
+CI and installed-wheel acceptance were not claimed by that local run. The
+compensation slice follows; no eligibility/scoring execution exists yet.
+
+The compensation slice adds conservative Decimal prose extraction, explicit
+structured-tier precedence, source spans and diagnostic codes, annualization,
+market cross-rates, static-rate opt-in, open-bound representative strategies and
+fixed-context half-even rounding. Normalization lives in `domain/normalization.py`
+to avoid a circular dependency between the existing compensation result model and
+the v2 configuration that embeds it. Shared arithmetic policy lives in
+`domain/ranking_math.py`. Source amounts exceeding supported precision are rejected
+rather than silently rounded during extraction. Reusable golden fixtures now
+include rounding boundaries, lower-only offers and base-plus-bonus text.
+
+Compensation validation: **1,041 passed, 13 skipped, 913 subtests passed** in
+76.84 seconds under coverage. The three new arithmetic/parser/normalization modules
+have **100% statement and branch coverage** (159 statements, 74 branches); total
+project coverage is **98%**. Bounded Hypothesis properties supplement golden and
+boundary fixtures. Repository lint/format, Windows and Linux Pyright, lock validation
+and package build pass. An isolated offline installation of the built wheel passed
+a parse/normalize journey, yielding EUR 52,800 from the illustrative monthly USD
+range. Hosted CI, live FX acquisition and engine replay remain unverified here.
