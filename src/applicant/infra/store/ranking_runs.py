@@ -6,7 +6,7 @@ import json
 import sqlite3
 
 from ...domain.canonical import canonical_json
-from ...domain.ranking_v2 import RankingRunV2, ScoringConfigurationV2
+from ...domain.ranking_v2 import RankingRunV2, RankingRunV3, ScoringConfigurationV2
 from ...errors import StoreError
 from .job_versions import JobVersionRepository
 from .profiles import ProfileRepository
@@ -25,7 +25,7 @@ class RankingRunRepository:
         ProfileRepository(self.db).get(run.profile_id, run.profile_revision)
         FXSnapshotRepository(self.db).get(run.fx_snapshot_id)
         config = ScoringConfigRepository(self.db).get(run.scoring_config_id)
-        if isinstance(run, RankingRunV2) and (
+        if isinstance(run, (RankingRunV2, RankingRunV3)) and (
             not isinstance(config, ScoringConfigurationV2)
             or config.algorithm_version != run.algorithm_version
         ):

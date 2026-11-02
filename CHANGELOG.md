@@ -7,6 +7,10 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Add run payload schema 3 for frozen per-job salary-tier choices, preserving
+  v1/v2 reads and existing SQLite schema 3. Different run choices reuse the same
+  immutable posting version instead of rewriting its content or hash.
+
 - Provide deterministic eligible/review/excluded ranked views with rounded Decimal
   score ties resolved by job ID. Expand coverage of existing ranking contracts and
   corrupted-history recovery, including contradictory exclusion/score states.

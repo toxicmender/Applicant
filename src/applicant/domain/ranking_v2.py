@@ -268,7 +268,7 @@ class JobRankingV2(EngineContract):
         return self
 
 
-class RankingRunV2(EngineContract):
+class RankingRunFields(VersionedContract):
     ranking_run_id: Identity = Field(default_factory=lambda: str(uuid4()))
     profile_id: Identity
     profile_revision: int = Field(ge=1, strict=True)
@@ -301,4 +301,22 @@ class RankingRunV2(EngineContract):
                 )
             ):
                 raise ValueError('normalization references different run inputs')
+        return self
+
+
+class RankingRunV2(RankingRunFields, EngineContract):
+    """Original complete engine-run contract, preserved for historical reads."""
+
+
+class RankingRunV3(RankingRunFields):
+    """Freeze per-job run choices without changing immutable posting content."""
+
+    schema_version: Literal[3] = 3
+    selected_tiers: dict[Identity, Identity] = Field(default_factory=dict)
+    engine_policy: Literal['frozen-inputs-v1'] = 'frozen-inputs-v1'
+
+    @model_validator(mode='after')
+    def selections(self):
+        if not self.selected_tiers.keys() <= {result.job_id for result in self.results}:
+            raise ValueError('salary tier selection is not a run input')
         return self

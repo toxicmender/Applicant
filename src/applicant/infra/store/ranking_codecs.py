@@ -12,6 +12,7 @@ from ...domain.ranking_v2 import (
     FXSnapshotV2,
     JobRankingV2,
     RankingRunV2,
+    RankingRunV3,
     ScoringConfigurationV2,
 )
 
@@ -19,7 +20,7 @@ Profile = CandidateProfile | CandidateProfileV2
 FX = FXSnapshot | FXSnapshotV2
 Config = ScoringConfiguration | ScoringConfigurationV2
 Result = JobRanking | JobRankingV2
-Run = RankingRun | RankingRunV2
+Run = RankingRun | RankingRunV2 | RankingRunV3
 
 PROFILE_CODEC = TypeAdapter(Annotated[Profile, Field(discriminator='schema_version')])
 FX_CODEC = TypeAdapter(Annotated[FX, Field(discriminator='schema_version')])
