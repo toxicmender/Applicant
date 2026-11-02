@@ -7,6 +7,11 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Resolve one persisted FX snapshot for each new ranking batch, with deterministic
+  fresh-cache selection, explicit static fallback, identity-only degradation and
+  missing-currency diagnostics. Cache recapture preserves original observation and
+  retrieval dates and links to its parent; historical loads never refresh rates.
+
 - Acquire ranking FX through Frankfurter v2's ECB provider, validating dated
   EUR-based pairs, preserving exact Decimal tokens and response provenance, and
   disclosing omitted older observations. Provider failures use the shared error

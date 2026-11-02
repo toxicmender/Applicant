@@ -1,6 +1,6 @@
 # Milestone 2: eligibility and ranking engine
 
-Status: implementation started; contracts, repository support and compensation normalization delivered.
+Status: contracts, repository support, compensation normalization and FX resolution delivered.
 Reviewed 2026-11-02 against `24b2388` on `codex/ranking-foundation`.
 This document refines section 17 of [the original proposal](../Implementation_plan.md)
 and follows the [Milestone 1 repository amendments](implementation-plan-review.md).
@@ -359,12 +359,14 @@ domain/ranking_v2.py          engine config, criteria, dimensions, result/run mo
 domain/compensation.py        legacy normalization result contract retained
 domain/normalization.py       pure Decimal base-pay normalization
 domain/ranking_math.py        shared fixed arithmetic context
+domain/fx_resolution.py       typed selected snapshot and resolution diagnostics
 domain/ranking_salary.py      conservative Decimal facts parser
 domain/eligibility.py         criterion and route evaluation
 domain/scoring.py             dimensions, quality, aggregate and ordered views
 infra/fx.py                  Frankfurter v2 adapter via HttpClient
 infra/store/                 existing repositories plus version-aware codecs/query
 services/ranking.py           prepare, resolve, evaluate and persist
+services/ranking_fx.py        new-run FX selection/persistence outside write locks
 services/ranking_history.py   existing exact loading plus replay verification
 ```
 
@@ -477,8 +479,8 @@ The original planning review made no dependency or runtime changes. Implementati
 now includes v2 engine contracts, provenance/conflict validation, explicit profile
 and configuration upgrades, and reusable compensation fixtures. Country definitions
 are pinned through uv. Existing v1 validation remains available. Decimal salary
-parsing and normalization are implemented; FX acquisition, route evaluation,
-scoring and replay execution remain to be delivered.
+parsing, normalization and FX acquisition/fallback are implemented. Route
+evaluation, scoring and replay execution remain to be delivered.
 
 Initial implementation slices:
 
@@ -516,3 +518,27 @@ boundary fixtures. Repository lint/format, Windows and Linux Pyright, lock valid
 and package build pass. An isolated offline installation of the built wheel passed
 a parse/normalize journey, yielding EUR 52,800 from the illustrative monthly USD
 range. Hosted CI, live FX acquisition and engine replay remain unverified here.
+
+The FX slice uses the documented unblended ECB v2 endpoint (OpenAPI rechecked
+during implementation) through `HttpClient`. It preserves UTF-8 response text,
+SHA-256 digest, Decimal tokens, request URL and provider identity. It rejects
+malformed/nonfinite/duplicate-conflicting/future observations and discloses older
+rows omitted from the latest observation date. Service resolution persists one
+exact snapshot, with explicit offline/supplied/static modes, seven-day default
+freshness, cache lineage and identity-only degradation. Caller-provided batch
+time is used for acquisition/capture metadata. Explicit supplied snapshots must
+meet chronology, freshness and static opt-in policy; they never silently fall back.
+No acquisition occurs while a write transaction is active. Existing historical
+loads remain exact and do not import or invoke the new resolver.
+
+FX delivery is split into two semantic commits: `a3dd624` captures and validates
+ECB responses; the following resolver commit implements selection/persistence and
+documents the public library API. Validation: **1,056 passed, 13 skipped, 940
+subtests passed** in 74.82 seconds under coverage. The new adapter, resolution
+contract and resolver have **100% statement and branch coverage** (162 statements,
+48 branches); total coverage remains **98%**. Lint/format, both platform type
+checks, uv lock validation and package build pass. An isolated offline wheel
+installation passed mocked acquisition and real SQLite cache resolution. Tests use
+no live exchange-rate response. Hosted CI and complete engine replay remain
+unverified; the next implementation slice is three-state eligibility and efficient
+work-route evaluation with readable conflict reasons.

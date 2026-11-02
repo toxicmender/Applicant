@@ -590,6 +590,42 @@ before using the result. This pure function performs no FX acquisition or freshn
 selection; it requires explicit run inputs. Eligibility/scoring execution and the
 ranking CLI are still under development.
 
+To select and persist rates for a **new** batch, use `resolve_fx`:
+
+```python
+from datetime import datetime, timezone
+from applicant.services.ranking_fx import resolve_fx
+from applicant.services.ranking_history import save_config
+
+with Store('data/applicant.db') as store:
+    config = save_config(store, ScoringConfigurationV2())
+    resolution = resolve_fx(
+        store,
+        target_currency='EUR',
+        source_currencies={'USD'},
+        config=config,
+        evaluated_at=datetime.now(timezone.utc),
+        offline=True,
+    )
+    fx = resolution.snapshot
+```
+
+The explicit batch timestamp records acquisition/capture time. Online mode
+(`offline=False`, the default) makes one bounded ECB request before considering
+persisted cache entries. Offline mode selects only existing market snapshots or
+an explicitly supplied static fallback. The default effective-age limit is seven
+calendar days. Use `supplied=snapshot` for an exact input; stale/future supplied
+rates fail explicitly. Use `static=snapshot` with `allow_static_fx=True` to permit
+a versioned static fallback; no static market dataset is bundled.
+
+Inspect `resolution.diagnostics` and `resolution.missing_currencies`. Missing rates
+produce a persisted identity-only snapshot when necessary, allowing same-currency
+normalization while other salaries remain unavailable. Selected partial snapshots
+are never merged across dates/providers. Cached copies keep original retrieval
+and effective dates, response metadata, and a parent snapshot ID. Call this service
+outside an existing write transaction; network work finishes before persistence.
+Historical reads continue to use `load_history` and exact stored IDs.
+
 ## Company ratings
 `applicant reviews` pulls a company's overall rating, its rating count and the pros/cons of
 individual reviews from AmbitionBox and Glassdoor, writing them to `company_reviews.json`.
