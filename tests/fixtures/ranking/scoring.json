@@ -1,0 +1,28 @@
+{
+  "fixture_version": 1,
+  "aggregation": {
+    "weights": {"compensation":"0.25","remote_compatibility":"0.20","technical_fit":"0.20","company_culture":"0.15","career_growth":"0.10","stability":"0.10"},
+    "dimensions": [
+      {"dimension":"compensation","status":"known","score":"100","quality":"1"},
+      {"dimension":"remote_compatibility","status":"known","score":"0","quality":"0.8"},
+      {"dimension":"technical_fit","status":"unknown"},
+      {"dimension":"company_culture","status":"not_applicable"},
+      {"dimension":"career_growth","status":"not_applicable"},
+      {"dimension":"stability","status":"not_applicable"}
+    ],
+    "expected": {"overall_score":"55.56","coverage":"0.6923","confidence":"0.6308"}
+  },
+  "salary_curve": [
+    {"minimum":"100","preferred":"200","pay":"0","score":"0"},
+    {"minimum":"100","preferred":"200","pay":"50","score":"25"},
+    {"minimum":"100","preferred":"200","pay":"100","score":"50"},
+    {"minimum":"100","preferred":"200","pay":"150","score":"75"},
+    {"minimum":"100","preferred":"200","pay":"200","score":"100"},
+    {"minimum":"100","preferred":"200","pay":"300","score":"100"},
+    {"minimum":null,"preferred":"200","pay":"100","score":"50"},
+    {"minimum":"0","preferred":"200","pay":"100","score":"50"},
+    {"minimum":"100","preferred":null,"pay":"99","score":"0"},
+    {"minimum":"100","preferred":null,"pay":"100","score":"100"},
+    {"minimum":"100","preferred":"100","pay":"100","score":"100"}
+  ]
+}

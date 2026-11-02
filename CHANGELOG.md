@@ -7,6 +7,11 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Compute six explainable ranking dimensions with Decimal utility curves,
+  independent confidence/coverage, explicit unknown and disabled states, and
+  captured category-rating proxies. Preserve raw company-review payloads alongside
+  verified-ID facts; never infer culture or stability from an overall rating.
+
 - Evaluate work-mode and remote-location restrictions jointly across alternative
   routes, with conflict classification before safe short-circuiting and explicit
   skipped-check traces. Add three-state job eligibility orchestration, exhaustive
