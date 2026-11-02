@@ -626,6 +626,47 @@ and effective dates, response metadata, and a parent snapshot ID. Call this serv
 outside an existing write transaction; network work finishes before persistence.
 Historical reads continue to use `load_history` and exact stored IDs.
 
+## Ranking eligibility (library)
+
+`applicant.domain.eligibility_engine.evaluate_eligibility` evaluates captured
+`RankingFacts` bundles, a candidate profile, selected normalized compensation,
+the engine configuration, and an explicit evaluation timestamp. It returns an
+`EligibilityEvaluation` with `decision`, `route_checks`, and preference notes.
+The decision is `eligible`, `review_required`, or `excluded`: any explicit failure
+excludes; otherwise any material unknown needs review. All job-wide criteria are
+reported even when one already excludes the job. No fit score is calculated here.
+
+Salary floors compare compatible annual base-pay bounds with the same half-even
+rounding policy. A range wholly below the floor fails; a guaranteed lower bound
+meeting it passes; straddling or insufficient bounds need review. Different pay
+tiers require explicit `selected_tier=...`, and normalized pay must match the
+selected source facts. Hard constraints remain active with zero scoring weight.
+Employment requires supported permanent/contract evidence; `FULL_TIME` alone does
+not establish permanence. Inferred/fallback/zero-support facts cannot establish
+hard eligibility conditions. Future-dated consumed evidence is invalid input.
+
+Work routes combine required modes and geographic permission. Preferred modes
+remain soft; v1 profiles have no mandatory modes or declared work country.
+`Remote` does not imply worldwide permission. Country restrictions apply to a
+considered remote/hybrid route, and unparsed authorization/timezone restrictions
+need review. An acceptable onsite alternative can satisfy the route criterion;
+commutability, relocation and work authorization are not inferred.
+
+Use the same stable `route_id` for assertions about one route across separate
+evidence bundles, and different IDs for genuine alternatives. Supported assertions
+are checked for contradictions before route predicates short-circuit. Route traces
+mark irrelevant checks `not_evaluated`, preserving conflicts on skipped alternatives.
+Missing/incomplete alternatives never produce an exclusion by themselves. Overall
+mode/location eligibility is a joint `work_route` criterion; traces identify the
+individual mode and remote-location checks, preventing unrelated marginal passes
+from being combined into a false eligible route.
+
+Conflicts include source labels, timestamps, normalized values, excerpts and a
+verification prompt. `evaluation.decision` can be stored in `JobRankingV2.decision`;
+its conflict details survive offline history recovery. The additional route trace
+is returned separately so existing v2 historical payloads remain unchanged. Scoring,
+run orchestration, engine replay and survey/ranking commands remain in development.
+
 ## Company ratings
 `applicant reviews` pulls a company's overall rating, its rating count and the pros/cons of
 individual reviews from AmbitionBox and Glassdoor, writing them to `company_reviews.json`.

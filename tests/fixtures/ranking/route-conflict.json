@@ -1,0 +1,25 @@
+{
+  "fixture_version": 1,
+  "assertions": [
+    {
+      "route_id": "remote",
+      "source": {
+        "evidence_id": "structured-location", "source": "structured-posting",
+        "observed_at": "2026-11-01T00:00:00Z", "extractor_version": "fixture-1",
+        "quality": "structured", "excerpt": "Remote work is limited to US applicants."
+      },
+      "mode": "Remote", "remote_scope": "country_list", "allowed_countries": ["US"]
+    },
+    {
+      "route_id": "remote",
+      "source": {
+        "evidence_id": "description-location", "source": "posting-description",
+        "observed_at": "2026-11-01T00:00:00Z", "extractor_version": "fixture-1",
+        "quality": "explicit", "excerpt": "This role can be performed remotely worldwide."
+      },
+      "mode": "Remote", "remote_scope": "worldwide"
+    }
+  ],
+  "expected_status": "review_required",
+  "expected_reason": "conflicting_evidence"
+}

@@ -7,6 +7,11 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Evaluate work-mode and remote-location restrictions jointly across alternative
+  routes, with conflict classification before safe short-circuiting and explicit
+  skipped-check traces. Add three-state job eligibility orchestration, exhaustive
+  reference properties, bounded-work assertions, and offline conflict-history tests.
+
 - Evaluate ranking salary floors and permanent/contract eligibility with explicit
   pass/fail/unknown outcomes, conservative open-bound handling, tier selection and
   source/normalization checks. Conflicting supported evidence carries readable

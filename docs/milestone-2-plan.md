@@ -1,6 +1,6 @@
 # Milestone 2: eligibility and ranking engine
 
-Status: contracts, repository support, compensation normalization and FX resolution delivered.
+Status: contracts, persistence, compensation, FX resolution and eligibility delivered; scoring remains.
 Reviewed 2026-11-02 against `24b2388` on `codex/ranking-foundation`.
 This document refines section 17 of [the original proposal](../Implementation_plan.md)
 and follows the [Milestone 1 repository amendments](implementation-plan-review.md).
@@ -361,7 +361,9 @@ domain/normalization.py       pure Decimal base-pay normalization
 domain/ranking_math.py        shared fixed arithmetic context
 domain/fx_resolution.py       typed selected snapshot and resolution diagnostics
 domain/ranking_salary.py      conservative Decimal facts parser
-domain/eligibility.py         criterion and route evaluation
+domain/eligibility.py         salary/employment and evidence conflict predicates
+domain/work_routes.py         conflict classification and efficient joint route predicates
+domain/eligibility_engine.py  complete decision and supplementary route-check trace
 domain/scoring.py             dimensions, quality, aggregate and ordered views
 infra/fx.py                  Frankfurter v2 adapter via HttpClient
 infra/store/                 existing repositories plus version-aware codecs/query
@@ -479,8 +481,8 @@ The original planning review made no dependency or runtime changes. Implementati
 now includes v2 engine contracts, provenance/conflict validation, explicit profile
 and configuration upgrades, and reusable compensation fixtures. Country definitions
 are pinned through uv. Existing v1 validation remains available. Decimal salary
-parsing, normalization and FX acquisition/fallback are implemented. Route
-evaluation, scoring and replay execution remain to be delivered.
+parsing, normalization, FX acquisition/fallback and eligibility are implemented.
+Scoring, run orchestration and engine replay remain to be delivered.
 
 Initial implementation slices:
 
@@ -541,4 +543,41 @@ checks, uv lock validation and package build pass. An isolated offline wheel
 installation passed mocked acquisition and real SQLite cache resolution. Tests use
 no live exchange-rate response. Hosted CI and complete engine replay remain
 unverified; the next implementation slice is three-state eligibility and efficient
-work-route evaluation with readable conflict reasons.
+work-route evaluation with readable conflict reasons, now delivered below.
+
+Eligibility delivery starts with `fc708a1` for salary/employment predicates and
+supported-evidence conflict explanations, followed by joint work-route evaluation.
+The initial engine trusts explicit/verified/structured facts only when their
+configured support is positive; inferred/fallback evidence remains unknown for
+hard constraints. Distinct salary tiers require explicit selection, and normalized
+pay must match source facts. Missing bounds, incompatible units, incomplete options
+and unstructured regional/timezone preferences do not silently exclude jobs.
+
+Mode/location constraints are represented as one joint `work_route` criterion;
+individual checks appear in a supplemental trace. This refinement prevents mode
+and location passes from different routes combining incorrectly. Repeated route
+IDs across evidence bundles identify assertions about the same route; distinct
+IDs identify alternatives. All assertions are classified once before predicates
+short-circuit. Skipped routes retain their classified conflicts in the trace.
+Decision status is invariant under alternative ordering; the diagnostic trace
+records the actual traversal and skipped work. No Cartesian product is constructed.
+Two stable conflict witnesses suffice, selected in linear work without enumerating
+all pairs. Predicate-count tests cover large alternative sets, and bounded
+Hypothesis cases compare decisions with an independent exhaustive reference.
+
+The pure `evaluate_eligibility` API returns `EligibilityEvaluation`. Its decision
+fits existing `JobRankingV2` payloads, preserving historical v1/v2 schemas; extra
+route-check traces and preference notes are returned separately. A reusable golden
+fixture verifies that US-only/worldwide conflict explanations, source excerpts and
+verification prompts survive a completed run and offline database reopening.
+
+Eligibility validation: **1,072 passed, 13 skipped, 985 subtests passed** in
+67.14 seconds under coverage. The three new eligibility modules have **100%
+statement and branch coverage** (219 statements, 94 branches); total project
+coverage remains **98%**. An additional focused history check recovers the exact
+captured evidence and reproduces its decision offline. Lint/format, Windows/Linux
+Pyright, lock validation and package build pass. An isolated offline wheel install
+verifies both country exclusion with residual unknown restrictions and an eligible
+onsite alternative. Unknown restrictions do not erase explicit country failures.
+Hosted CI and complete engine replay remain unverified. Next is weighted scoring,
+evidence confidence and deterministic ranked views.
