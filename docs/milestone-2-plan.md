@@ -1,6 +1,6 @@
 # Milestone 2: eligibility and ranking engine
 
-Status: scoring, confidence and ranked views delivered; run orchestration/replay remain.
+Status: Milestone 2 library/service implementation delivered; hosted validation remains pending.
 Reviewed 2026-11-02 against `24b2388` on `codex/ranking-foundation`.
 This document refines section 17 of [the original proposal](../Implementation_plan.md)
 and follows the [Milestone 1 repository amendments](implementation-plan-review.md).
@@ -373,6 +373,8 @@ services/ranking.py           prepare, resolve, evaluate and persist
 services/ranking_fx.py        new-run FX selection/persistence outside write locks
 services/ranking_evidence.py  verified-ID rating capture, typed and complete raw evidence
 services/ranking_history.py   existing exact loading plus replay verification
+domain/ranking_engine.py      pure ordered evaluation of exact immutable inputs
+services/ranking_replay.py    read-only replay with artifact identity and result checks
 ```
 
 `evaluate_jobs(profile, jobs, fx, config, evaluation_time)` is pure and returns
@@ -387,7 +389,7 @@ Inputs may remain after a failed calculation, but no incomplete run becomes visi
 No current profile/head or listing read is permitted once exact inputs are chosen.
 The caller supplies the Store and job selection, preserving current path ownership.
 
-`replay_run(store, run_id)` loads the exact bundle, dispatches only to a supported
+`replay_run(store, run_id, build_identity=..., lockfile_digest=...)` loads the exact bundle, dispatches only to a supported
 algorithm implementation, evaluates using the original timestamp, and compares
 canonical results including explanations. It never writes a new run or refreshes
 inputs. Missing old code produces `unsupported_algorithm`, not execution under
@@ -486,7 +488,7 @@ and configuration upgrades, and reusable compensation fixtures. Country definiti
 are pinned through uv. Existing v1 validation remains available. Decimal salary
 parsing, normalization, FX acquisition/fallback and eligibility are implemented.
 Scoring, confidence and ranked views are implemented. Run orchestration and complete
-engine replay remain to be delivered.
+engine replay are now implemented, as recorded below.
 
 Initial implementation slices:
 
@@ -619,4 +621,43 @@ including the one defensive contract guard already preceded by Pydantic rejectio
 Repository lint/format, Windows/Linux Pyright, lock validation and package build
 pass. An isolated offline wheel installation passes the public
 parse/normalize/eligibility/score/view pipeline. Hosted CI, run orchestration and
-complete engine replay remain pending; those are the next implementation slice.
+complete engine replay were pending at that validation point and are delivered below.
+
+Run delivery starts with `1cb82e9`, adding run payload schema 3 for per-job tier
+choices. Existing v1/v2 readers and validators remain available; shared fields
+preserve their original semantics. The new payload uses existing SQLite schema 3
+without DDL changes. Choices remain run-specific, leaving posting hashes unchanged.
+
+The pure evaluator reads only supplied snapshots and returns one result per input
+in membership order. New-run orchestration validates the exact profile revision,
+prepares deterministic captured facts, saves/reuses configuration/job IDs, resolves
+one FX snapshot outside write locks, evaluates, then atomically completes the run.
+Legacy raw fields receive conservative typed extraction only when that category
+is absent. Parser diagnostics and unknown-schema notes remain in the decision.
+Future captures/consumed observations and duplicate identities fail explicitly.
+
+Replay supports the frozen-inputs-v1 schema-3 engine policy and requires the
+retained artifact's build/lock identity. It performs no writes or fallback reads,
+uses original time and choices, compares canonical results including explanations,
+and returns explicit mismatched membership IDs. Older supplied-result formats are
+still loadable but raise unsupported_algorithm for engine replay. Identity checks
+compare caller-supplied metadata; they do not attest a binary or fetch source.
+The corresponding release/source artifact must be retained by the caller.
+
+Acceptance journeys cover mixed eligibility states, empty runs, config/job
+deduplication, independent tier choices with shared job versions, updated current
+profile/rate/config/job state, offline reopening, missing support, mismatch reports,
+calculation failures and a SQL-trigger failure during completion. A three-job mock
+batch asserts one provider request with no write transaction active. The runnable
+`examples/ranking_offline.py` composes the public services in a temporary database.
+
+Final local M2 validation: **1,105 passed, 13 skipped, 1,059 subtests passed** in
+76.77 seconds under branch-enabled coverage. Pure batch evaluation, orchestration
+and replay have **100% statement and branch coverage** (180 statements, 72 branches);
+overall project coverage remains **98%**. Lint/format, Windows/Linux Pyright, uv lock
+validation and package build pass. The offline example ran against the built wheel
+in an isolated uv environment and returned eligible, score 81.48, confidence .4,
+coverage .45 and replay_matches=true. The updated [coverage review](ranking-coverage.md)
+records contract and recovery coverage. Hosted Linux/Windows/browser CI execution
+remains unverified; commits have not been pushed. The M2 library/service workflow
+is implemented locally. Survey interaction and ranking commands remain Milestone 3.

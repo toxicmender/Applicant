@@ -665,7 +665,7 @@ Conflicts include source labels, timestamps, normalized values, excerpts and a
 verification prompt. `evaluation.decision` can be stored in `JobRankingV2.decision`;
 its conflict details survive offline history recovery. The additional route trace
 is returned separately so existing v2 historical payloads remain unchanged. Run
-orchestration, complete engine replay and survey/ranking commands remain in development.
+orchestration and replay are described below. Survey/ranking commands remain in development.
 
 ## Ranking scores and views (library)
 
@@ -714,6 +714,68 @@ score descending and job ID ascending; unknown scores come last. Excluded jobs
 sort by ID. Confidence never silently breaks ties, and input permutation does not
 change ranked order. These views preserve the original result values and do not
 replace the input order stored in run history.
+
+## Complete ranking runs and offline replay (library)
+
+`applicant.services.ranking.rank_jobs` connects the library workflow. Supply an
+explicit `Store`, profile ID/revision, selected `JobVersion` tuple, engine
+configuration, evaluation timestamp, retained build identity and uv.lock SHA-256.
+FX arguments mirror `resolve_fx`: offline, supplied/static snapshots and an
+optional injected provider. It returns a completed `RankingRunV3` in input order.
+Use `ranked_views` separately for sorted views.
+
+```python
+from applicant.services.ranking import rank_jobs
+from applicant.services.ranking_replay import replay_run
+
+run = rank_jobs(
+    store,
+    profile_id=profile.profile_id,
+    profile_revision=profile.profile_revision,
+    jobs=versions,
+    config=config,
+    evaluated_at=evaluation_time,
+    build_identity=release_commit,
+    lockfile_digest=release_lock_sha256,
+    offline=True,
+)
+verification = replay_run(
+    store,
+    run.ranking_run_id,
+    build_identity=release_commit,
+    lockfile_digest=release_lock_sha256,
+)
+assert verification.matches
+```
+
+The service freezes conservative salary/remote/employment facts when typed facts
+are absent. It preserves parser diagnostics; `remote=True` is only an inferred
+mode hint, and `FULL_TIME` is not permanent employment. Structured facts take
+precedence. Unknown evidence schemas remain captured and unconsumed. Duplicate
+job identities and invalid metadata fail before run publication. Network work
+precedes write transactions, returned deduplication IDs are used throughout, and
+excluded/review/unscored jobs retain their membership. Failed calculations can
+leave reusable immutable inputs; they never publish a partial run.
+
+Pass `selected_tiers={job_id: 'Senior'}` to freeze explicit pay-tier choices. These
+choices belong to run payload schema 3, keeping job hashes unchanged across tier
+choices. This is distinct from SQLite schema 3, whose tables need no migration.
+Original v1/v2 history remains readable; legacy supplied-result runs are not
+retroactively treated as replayable frozen-input engine runs.
+
+Replay reads exact inputs, performs no acquisition or writes, uses the original
+timestamp/configuration/choices, and compares canonical results and explanations.
+`ReplayVerification` includes recomputed results and mismatched job-version IDs.
+Older supplied-result formats raise `UnsupportedAlgorithm`; different build/lock
+identities raise `ReplayEnvironmentMismatch`. Corrupt/missing history raises
+`StoreError`, with no fallback. Retain the corresponding source/release artifact:
+the caller supplies its actual identity; the library compares these identifiers
+and does not discover or attest the executing binary automatically.
+
+For a runnable temporary-database example, use `examples/ranking_offline.py` with
+`--build-identity COMMIT` and `--lockfile-digest SHA256` through `uv run --frozen
+python`. It prints eligibility, fit, confidence, coverage and replay verification
+without network requests. Production callers keep their own persistent Store.
 
 ## Company ratings
 `applicant reviews` pulls a company's overall rating, its rating count and the pros/cons of

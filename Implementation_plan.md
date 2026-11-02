@@ -11,7 +11,7 @@
 
 Project: toxicmender/Applicant
 Document: Implementation Plan and Technical Specification
-Status: Milestone 1 implemented; Milestone 2 planned in the linked engine plan
+Status: Milestones 1–2 library implementation delivered; see the linked plan for validation and remaining hosted gates
 Primary language: Python
 Package manager: uv
 Data validation: Pydantic

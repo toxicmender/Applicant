@@ -7,6 +7,11 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Orchestrate complete ranking batches from exact profile/job/configuration inputs,
+  normalize and score every selected job, and atomically publish completed runs.
+  Replay frozen engine runs offline with original timestamps and tier selections,
+  build/lock identity checks, canonical comparison and explicit mismatch reports.
+
 - Add run payload schema 3 for frozen per-job salary-tier choices, preserving
   v1/v2 reads and existing SQLite schema 3. Different run choices reuse the same
   immutable posting version instead of rewriting its content or hash.
