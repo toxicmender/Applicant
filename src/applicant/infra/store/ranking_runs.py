@@ -15,6 +15,10 @@ from .ranking_common import decode_versioned, require_transaction, validated
 from .snapshots import FXSnapshotRepository, ScoringConfigRepository
 
 
+class RankingRunNotFound(StoreError):
+    """The requested completed run is absent, rather than corrupt."""
+
+
 class RankingRunRepository:
     def __init__(self, db: sqlite3.Connection):
         self.db = db
@@ -83,7 +87,7 @@ class RankingRunRepository:
             (run_id,),
         ).fetchone()
         if row is None:
-            raise StoreError(f'completed ranking run not found: {run_id}')
+            raise RankingRunNotFound(f'completed ranking run not found: {run_id}')
         inputs = self.db.execute(
             'SELECT job_version_id FROM run_inputs WHERE ranking_run_id = ? ORDER BY ordinal',
             (run_id,),

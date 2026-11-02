@@ -1,6 +1,6 @@
 # Milestone 3: survey and ranking CLI
 
-Status: phases 1–4 delivered locally; historical ranking CLI phases pending.
+Status: phases 1–5 delivered locally; final journey/coverage audit and hosted gates pending.
 Reviewed 2026-11-02 against `d375842` on `codex/ranking-foundation`.
 This document supersedes the M3 command sketch in section 17 of
 [Implementation_plan.md](../Implementation_plan.md). M2 library behavior remains
@@ -414,8 +414,8 @@ actual config and job IDs. Report schema 1 includes exact run metadata, group
 totals, displayed results with explicit eligibility and nullable scores, captured
 job fields and criterion explanations. Top/all are display-only. Human text
 escapes terminal controls and separates fit, evidence support and coverage.
-Creation modes are delivered; --run/--list-runs/--explain/--replay remain phase 5
-and are not accepted yet. No database migration or dependency change was needed.
+At the phase 4 boundary, creation modes were delivered; historical modes follow
+in phase 5 below. No database migration or dependency change was needed.
 
 Validated 2026-11-03: **1,148 passed, 13 skipped, 1,147 subtests passed** in
 75.81 seconds under coverage. The five new ranking input/report/CLI modules have
@@ -432,7 +432,41 @@ An isolated offline installed-wheel journey imported a survey profile and create
 a ranking run with a valid JSON report. The 13 browser/POSIX skips are unchanged;
 hosted CI is still unverified.
 
-Next: phase 5 historical display, explanation and replay CLI modes.
+## Phase 5 delivery
+
+Implemented --list-runs, --run, --run --explain and --replay with strict option
+separation. Provenance is required only for creation/verification. Profile defaults
+are now resolved by mode: default profile on creation, all profiles on unfiltered
+lists, and no head/profile lookup during exact historical display. Every historical
+read owns a short read-only snapshot and closes before rendering.
+
+Reports support original engine v2 runs alongside v3 runs. Legacy supplied-result
+runs preserve input order and missing results, with an explicit format notice
+instead of modern eligibility groups. Explanations expose complete persisted
+results, conflicts/verification prompts, raw captured job/evidence, profile weights,
+configuration, FX and frozen tier selection; no new route evaluation occurs.
+Replay calls M2's verifier with caller-supplied provenance and reports canonical
+comparison results. Matches return 0; mismatch or unsupported format/environment
+returns 1. Explicit run/job absence returns 4; corrupt history remains a storage
+error. Missing-store lists return empty without creating directories.
+
+Validated 2026-11-03: **1,156 passed, 13 skipped, 1,174 subtests passed** in
+86.59 seconds under coverage. The history CLI/read service, report builder and
+completed-run repository have **100% statement and branch coverage: 244 statements,
+88 branches**; rounded project-wide coverage now reports **99%** against the
+unchanged 90% floor. No coverage exclusions were added. Added tests exercise
+historical reads after profile/listing/provenance changes, zero acquisition or
+evaluation during display, unchanged database bytes, conflicting source excerpts
+and verification prompts, legacy missing results, schema-v2 display, unsupported
+replay, caller build mismatch, valid-but-different replay results, explicit
+absence versus corrupt data, missing-store reads and incompatible option mixes.
+
+Ruff, formatting, Windows/Linux-target Pyright, uv lock --check and uv build pass.
+The installed wheel passed survey import, creation, listing, exact display,
+explanation and replay together in an isolated offline uv environment. Browser
+and POSIX-only skips remain; hosted CI remains unverified.
+
+Next: phase 6 integrated CLI journeys, coverage audit and hosted validation.
 
 ## References checked 2026-11-02
 

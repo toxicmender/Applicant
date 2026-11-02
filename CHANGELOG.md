@@ -7,6 +7,12 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Add read-only ranking run lists, exact historical display, detailed job
+  explanations and offline replay CLI verification with explicit artifact
+  provenance. Show conflicting source assertions and verification prompts;
+  preserve legacy formats without recalculation and distinguish absence from
+  corruption. Historical JSON output has separate versioned envelopes.
+
 - Add `rank` run creation from strict listing or frozen-version inputs, explicit
   artifact provenance, optional configuration/tier documents and offline FX.
   Validate inputs before opening a writer; report separate eligible/review/excluded

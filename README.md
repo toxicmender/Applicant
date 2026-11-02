@@ -512,7 +512,7 @@ tests/           unittest.TestCase suites, run under pytest
 The library can now preserve candidate revisions, job content versions, FX
 snapshots, scoring configurations, and completed runs in SQLite. It supports both
 supplied results and evaluated engine runs. Survey and ranking creation commands
-are available; historical ranking CLI commands remain planned.
+and historical ranking CLI commands are available.
 
 Use an explicit `Store` and the functions in `applicant.services.preferences` and
 `applicant.services.ranking_history`. Save profiles with `expected_revision=0` for
@@ -667,7 +667,7 @@ verification prompt. `evaluation.decision` can be stored in `JobRankingV2.decisi
 its conflict details survive offline history recovery. The additional route trace
 is returned separately so existing v2 historical payloads remain unchanged. Run
 orchestration and replay are described below. Interactive and document-based
-surveys and ranking creation are available; historical ranking commands remain in development.
+surveys, ranking creation and historical ranking commands are available.
 
 ## Ranking scores and views (library)
 
@@ -909,9 +909,33 @@ not a hiring probability; unknown scores display as unscored. `--top N` defaults
 to 20 per group; `--all` displays every result. Display limits never reduce stored
 membership. `--json` prints only a versioned canonical report on stdout, with
 Decimal values as strings and unknown scores as null. Keep the returned run ID.
-Historical display, explanation and replay CLI modes are the next phase; library
-history/replay already supports these newly created runs. Region filtering and
-automatic posting refresh remain deferred.
+Historical display, explanation and verification use the frozen run inputs:
+
+```console
+uv run --frozen applicant rank --list-runs
+uv run --frozen applicant rank --list-runs --profile default --json
+uv run --frozen applicant rank --run RUN_ID --top 10
+uv run --frozen applicant rank --run RUN_ID --explain FULL_RANKING_JOB_ID --json
+uv run --frozen applicant rank --replay RUN_ID --provenance provenance.json
+```
+
+Display and explanation require no provenance file and perform no evaluation or
+network acquisition. Explanation includes captured evidence and conflict excerpts,
+source values/times, verification prompts, pay normalization, FX, dimension terms,
+weights and selected tiers. It does not reconstruct supplemental route traces.
+Replay requires the actual retained artifact's provenance, compares recomputed
+results and returns exit 1 on mismatch or unsupported format/environment. It never
+copies build identifiers from the archive to claim a match. `--json` provides
+versioned run-list, explanation and replay envelopes without human text on stdout.
+
+All historical modes open the database read-only. An absent database lists as empty;
+an explicitly missing run/job returns exit 4. Corrupt data returns a storage error.
+Older supplied-result runs show available fields in original input order with a
+format notice; they cannot be replayed as modern engine runs. Original engine v2
+runs can be displayed, but only v3 frozen-input runs support verification. Creation
+options cannot combine with historical display; replay/list modes reject display
+limits, and explanations require an explicit run and full board-scoped ranking job
+ID. Region filtering and automatic posting refresh remain deferred.
 
 ## Company ratings
 `applicant reviews` pulls a company's overall rating, its rating count and the pros/cons of
