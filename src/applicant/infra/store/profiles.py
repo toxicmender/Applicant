@@ -14,6 +14,10 @@ class RevisionConflict(StoreError):
     """The candidate changed since the caller began editing."""
 
 
+class ProfileNotFound(StoreError):
+    """The requested profile or revision is absent, rather than corrupt."""
+
+
 class ProfileRepository:
     def __init__(self, db: sqlite3.Connection):
         self.db = db
@@ -24,14 +28,14 @@ class ProfileRepository:
                 'SELECT active_revision FROM profile_heads WHERE profile_id = ?', (profile_id,)
             ).fetchone()
             if row is None:
-                raise StoreError(f'profile not found: {profile_id}')
+                raise ProfileNotFound(f'profile not found: {profile_id}')
             revision = row[0]
         row = self.db.execute(
             'SELECT payload FROM candidate_profiles WHERE profile_id = ? AND profile_revision = ?',
             (profile_id, revision),
         ).fetchone()
         if row is None:
-            raise StoreError(f'profile revision not found: {profile_id}/{revision}')
+            raise ProfileNotFound(f'profile revision not found: {profile_id}/{revision}')
         value = decode_versioned(PROFILE_CODEC, row[0], label='CandidateProfile')
         if (value.profile_id, value.profile_revision) != (profile_id, revision):
             raise StoreError('profile identity does not match stored key')

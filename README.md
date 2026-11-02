@@ -510,8 +510,9 @@ tests/           unittest.TestCase suites, run under pytest
 ## Ranking history (library)
 
 The library can now preserve candidate revisions, job content versions, FX
-snapshots, scoring configurations, and completed runs in SQLite. It stores supplied
-results; scoring and survey commands will follow in later milestones.
+snapshots, scoring configurations, and completed runs in SQLite. It supports both
+supplied results and evaluated engine runs. Noninteractive survey commands are
+available; the ranking CLI remains planned.
 
 Use an explicit `Store` and the functions in `applicant.services.preferences` and
 `applicant.services.ranking_history`. Save profiles with `expected_revision=0` for
@@ -665,7 +666,8 @@ Conflicts include source labels, timestamps, normalized values, excerpts and a
 verification prompt. `evaluation.decision` can be stored in `JobRankingV2.decision`;
 its conflict details survive offline history recovery. The additional route trace
 is returned separately so existing v2 historical payloads remain unchanged. Run
-orchestration and replay are described below. Survey/ranking commands remain in development.
+orchestration and replay are described below. The interactive survey and ranking
+commands remain in development; noninteractive profile commands are available.
 
 ## Ranking scores and views (library)
 
@@ -793,6 +795,58 @@ and duplicate job identities or malformed input raise `ConfigError`. Only a
 missing file falls back to that collection's stored rows. With neither file nor
 store, it returns an empty tuple. These are library APIs supporting the planned
 [Milestone 3 commands](docs/milestone-3-plan.md).
+
+## Candidate preferences
+
+The noninteractive survey commands use SQLite profiles with immutable revisions.
+Create an editable `preferences.json` document:
+
+```json
+{
+  "kind": "candidate_preferences",
+  "schema_version": 1,
+  "profile_id": "default",
+  "expected_revision": 0,
+  "preferences": {
+    "experience_years": "5",
+    "primary_discipline": "Software engineering",
+    "salary_currency": "EUR",
+    "minimum_base_salary": "60000",
+    "preferred_base_salary": "90000",
+    "work_country": "IN",
+    "required_work_modes": ["Remote"]
+  }
+}
+```
+
+```console
+uv run --frozen applicant survey --validate preferences.json
+uv run --frozen applicant survey --dry-run --from-file preferences.json
+uv run --frozen applicant survey --from-file preferences.json
+uv run --frozen applicant survey --show
+uv run --frozen applicant survey --show --revision 1 --json
+uv run --frozen applicant survey --export preferences-edit.json
+```
+
+Salary amounts are annual base pay; basis defaults to gross. Required work modes
+constrain eligibility, while preferred modes affect fit. Experience, discipline,
+seniority, regions and timezone are retained without adding current scoring signals.
+Other fields use the v2 profile defaults, including the six default weights.
+
+Revision 0 creates a profile. An export includes all editable fields and its
+expected revision; importing it creates the next revision. A stale document fails
+with exit 2 instead of overwriting concurrent edits. Validate never opens a
+database; dry-run checks the current revision without saving. Show/export use
+read-only access, and `--show --json` emits the archived profile rather than the
+editable document. Missing profiles/revisions return exit 4. Invalid documents
+fail before opening a writer. Export writes atomically and cannot target the
+database or its WAL/SHM sidecars.
+
+Use `--profile ID` with show/export and `--database PATH` to select a database.
+The default database is beside the configured listing. Relative paths resolve
+under `--data-dir`; survey requires `--store sqlite`. Add `--no-log-file` to avoid
+normal CLI log creation. The interactive questionnaire and ranking command remain
+planned; `survey` currently requires one of the explicit modes above.
 
 ## Company ratings
 `applicant reviews` pulls a company's overall rating, its rating count and the pros/cons of

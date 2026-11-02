@@ -1,0 +1,16 @@
+{
+  "kind": "candidate_preferences",
+  "schema_version": 1,
+  "profile_id": "default",
+  "expected_revision": 0,
+  "preferences": {
+    "experience_years": "5.5",
+    "primary_discipline": "Software engineering",
+    "minimum_base_salary": "60000",
+    "preferred_base_salary": "90000",
+    "salary_currency": "EUR",
+    "work_country": "IN",
+    "required_work_modes": ["Remote"],
+    "preferred_work_modes": ["Remote", "Hybrid"]
+  }
+}

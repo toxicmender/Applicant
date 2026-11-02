@@ -32,7 +32,7 @@ from ..errors import (
 )
 from ..log import QUIET, configure, default_file, get
 from ..settings import Settings
-from . import apply, financials, jobs, rates, reviews, search, status
+from . import apply, financials, jobs, rates, reviews, search, status, survey
 from .common import add_filters, filters_from, shared_flags
 
 __all__ = [
@@ -47,6 +47,7 @@ __all__ = [
     'run_reviews',
     'run_search',
     'run_status',
+    'run_survey',
 ]
 
 logger = get(__name__)
@@ -58,6 +59,7 @@ run_reviews = reviews.run
 run_financials = financials.run
 run_rates = rates.run
 run_status = status.run
+run_survey = survey.run
 
 # what an error that reached main() says about the run, for a calling script
 EXIT_CODES: tuple[tuple[type[BaseException], int], ...] = (
@@ -98,6 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     financials.add_parser(add).set_defaults(handler=run_financials)
     rates.add_parser(add).set_defaults(handler=run_rates)
     status.add_parser(add).set_defaults(handler=run_status)
+    survey.add_parser(add).set_defaults(handler=run_survey)
     return parser
 
 

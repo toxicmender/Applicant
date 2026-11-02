@@ -7,6 +7,11 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Add noninteractive `survey` validation, revision-safe imports, dry-run checks,
+  historical profile display and atomic editable exports. Preserve Decimal input
+  precision and reject malformed/duplicate-key JSON before opening a writer;
+  profile edits create new v2 revisions with concurrent-edit protection.
+
 - Add read-only ranking storage access with consistent query snapshots, strict
   listing selection without file synchronization, and validated completed-run
   enumeration with profile filtering and deterministic date/ID ordering.

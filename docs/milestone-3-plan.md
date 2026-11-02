@@ -1,6 +1,6 @@
 # Milestone 3: survey and ranking CLI
 
-Status: phase 1 storage APIs delivered locally; survey and ranking CLI phases pending.
+Status: phases 1–2 delivered locally; interactive survey and ranking CLI phases pending.
 Reviewed 2026-11-02 against `d375842` on `codex/ranking-foundation`.
 This document supersedes the M3 command sketch in section 17 of
 [Implementation_plan.md](../Implementation_plan.md). M2 library behavior remains
@@ -335,8 +335,38 @@ during a read snapshot, immutable database bytes, permission/migration avoidance
 missing files/directories, schema rejection/handle release, malformed imports,
 deleted exports, profile filtering, stable ordering and incomplete/corrupt runs.
 
-Next: phase 2 revision-safe preference documents, imports and noninteractive
-survey commands.
+## Phase 2 delivery
+
+Implemented PreferenceDocument with a strict editable-field boundary and shared
+v2 profile validation, Decimal JSON parsing and arithmetic-context isolation.
+Added survey --validate, --dry-run --from-file, --from-file, --show (including
+--json and exact revisions), and atomic --export. Paths follow Settings;
+--database overrides the database beside the configured listing. Validation
+precedes writer creation; dry-run and history use the phase 1 read-only APIs.
+Expected revision ownership is enforced atomically by the existing CAS service.
+ProfileNotFound distinguishes absence from corrupt archived data. Historical v1
+exports can create a new v2 revision without modifying their source revision.
+
+The interactive invocation currently returns an actionable usage error pointing
+to --from-file. The questionnaire is phase 3; no prompt implementation is claimed.
+
+Coverage review: the four new survey modules plus the existing profile repository
+have **100% statement and branch coverage: 201 statements, 46 branches**. Added a
+corrupt-profile identity case to exercise the existing repository guard; no
+coverage exclusions were added. Full Windows validation reports **1,126 passed,
+13 skipped, 1,108 subtests passed**, with **98%** overall branch-enabled coverage.
+Ruff, formatting, Windows/Linux-target Pyright, uv lock --check and uv build pass.
+The installed wheel's survey validation command passed in an isolated offline uv
+environment. The skips remain browser/POSIX-only; hosted CI is still unverified.
+
+Tests use a reusable golden preference document and cover precision, hostile
+ambient Decimal context, invalid/duplicate-key documents before writer creation,
+missing-store dry-run, imports/exports, stale edits, exact historical reads,
+v1-to-v2 edits, two concurrent importers (one save and one conflict), protected
+export targets, failed atomic replacement, path precedence, exit codes and
+corruption that must not become absence.
+
+Next: phase 3 interactive candidate questionnaire.
 
 ## References checked 2026-11-02
 
