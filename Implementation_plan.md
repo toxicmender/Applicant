@@ -6,8 +6,10 @@
 > That review supersedes conflicting layout, migration, contract, and sequencing
 > details below. The remaining text preserves the original proposal for reference.
 > Milestone 1 is implemented. The [Milestone 2 implementation plan](docs/milestone-2-plan.md)
-> specifies the next engine work against `24b2388`, including researched policies,
-> compatible schema evolution, semantic commits, and acceptance criteria.
+> records the delivered engine work, researched policies, compatible schema
+> evolution, and acceptance criteria. The [Milestone 3 review and implementation
+> plan](docs/milestone-3-plan.md), reviewed against `d375842`, specifies the next
+> survey/CLI work and supersedes the command sketch below.
 
 Project: toxicmender/Applicant
 Document: Implementation Plan and Technical Specification
@@ -1412,6 +1414,11 @@ Unknown information must not automatically exclude an opportunity.
 Zero-weight dimensions must be excluded from both the overall score and confidence denominator.
 
 Milestone 3 — Survey and Ranking CLI
+
+See [the repository-reviewed M3 plan](docs/milestone-3-plan.md) for the command
+contract, profile concurrency, input/provenance formats, read-only history,
+conflict reporting, scope amendments, semantic commits and coverage gates.
+The commands below are the original proposal, not the finalized interface.
 
 Proposed commands:
 

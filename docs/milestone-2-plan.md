@@ -1,6 +1,8 @@
 # Milestone 2: eligibility and ranking engine
 
 Status: Milestone 2 library/service implementation delivered; hosted validation remains pending.
+Next: [Milestone 3 survey and ranking CLI review](milestone-3-plan.md), evaluated
+against the completed engine at `d375842`.
 Reviewed 2026-11-02 against `24b2388` on `codex/ranking-foundation`.
 This document refines section 17 of [the original proposal](../Implementation_plan.md)
 and follows the [Milestone 1 repository amendments](implementation-plan-review.md).
