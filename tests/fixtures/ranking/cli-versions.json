@@ -1,0 +1,252 @@
+{
+  "kind": "ranking_job_versions",
+  "schema_version": 1,
+  "jobs": [
+    {
+      "job_version_id": "golden-eligible",
+      "captured_at": "2026-11-02T00:00:00Z",
+      "parser_version": "golden-cli-1",
+      "job_data": {
+        "source": "fixture",
+        "id": "eligible",
+        "title": "Engineer eligible",
+        "company": "Fixture Ltd"
+      },
+      "evidence": [
+        {
+          "source": "fixture-employer",
+          "observed_at": "2026-11-01T00:00:00Z",
+          "extractor_version": "golden-cli-1",
+          "payload": {
+            "kind": "ranking_facts",
+            "compensation": [
+              {
+                "source": {
+                  "evidence_id": "eligible-pay",
+                  "source": "fixture-employer",
+                  "observed_at": "2026-11-01T00:00:00Z",
+                  "extractor_version": "golden-1",
+                  "quality": "explicit",
+                  "excerpt": "Annual EUR gross base salary."
+                },
+                "original_text": "EUR 90000 gross base per year",
+                "minimum": "90000",
+                "maximum": "90000",
+                "shape": "exact",
+                "currency": "EUR",
+                "period": "annual",
+                "basis": "gross",
+                "component": "base"
+              }
+            ],
+            "routes": [
+              {
+                "route_id": "remote",
+                "source": {
+                  "evidence_id": "worldwide",
+                  "source": "fixture-employer",
+                  "observed_at": "2026-11-01T00:00:00Z",
+                  "extractor_version": "golden-1",
+                  "quality": "explicit",
+                  "excerpt": "This role can be performed remotely worldwide."
+                },
+                "mode": "Remote",
+                "remote_scope": "worldwide"
+              }
+            ],
+            "routes_complete": true,
+            "employment": [
+              {
+                "source": {
+                  "evidence_id": "eligible-employment",
+                  "source": "fixture-employer",
+                  "observed_at": "2026-11-01T00:00:00Z",
+                  "extractor_version": "golden-1",
+                  "quality": "explicit",
+                  "excerpt": "Permanent employment."
+                },
+                "arrangements": [
+                  "permanent"
+                ],
+                "complete": true
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "job_version_id": "golden-review",
+      "captured_at": "2026-11-02T00:00:00Z",
+      "parser_version": "golden-cli-1",
+      "job_data": {
+        "source": "fixture",
+        "id": "review",
+        "title": "Engineer review",
+        "company": "Fixture Ltd"
+      },
+      "evidence": [
+        {
+          "source": "fixture-employer",
+          "observed_at": "2026-11-01T00:00:00Z",
+          "extractor_version": "golden-cli-1",
+          "payload": {
+            "kind": "ranking_facts",
+            "compensation": [
+              {
+                "source": {
+                  "evidence_id": "review-pay",
+                  "source": "fixture-employer",
+                  "observed_at": "2026-11-01T00:00:00Z",
+                  "extractor_version": "golden-1",
+                  "quality": "explicit",
+                  "excerpt": "Annual EUR gross base salary."
+                },
+                "original_text": "EUR 90000 gross base per year",
+                "minimum": "90000",
+                "maximum": "90000",
+                "shape": "exact",
+                "currency": "EUR",
+                "period": "annual",
+                "basis": "gross",
+                "component": "base"
+              }
+            ],
+            "routes": [
+              {
+                "route_id": "remote",
+                "source": {
+                  "evidence_id": "worldwide",
+                  "source": "fixture-employer",
+                  "observed_at": "2026-11-01T00:00:00Z",
+                  "extractor_version": "golden-1",
+                  "quality": "explicit",
+                  "excerpt": "This role can be performed remotely worldwide."
+                },
+                "mode": "Remote",
+                "remote_scope": "worldwide"
+              }
+            ],
+            "routes_complete": true,
+            "employment": [
+              {
+                "source": {
+                  "evidence_id": "review-employment",
+                  "source": "fixture-employer",
+                  "observed_at": "2026-11-01T00:00:00Z",
+                  "extractor_version": "golden-1",
+                  "quality": "explicit",
+                  "excerpt": "Permanent employment."
+                },
+                "arrangements": [
+                  "permanent"
+                ],
+                "complete": true
+              }
+            ]
+          }
+        },
+        {
+          "source": "fixture-employer",
+          "observed_at": "2026-11-01T00:00:00Z",
+          "extractor_version": "golden-cli-1",
+          "payload": {
+            "kind": "ranking_facts",
+            "routes": [
+              {
+                "route_id": "remote",
+                "source": {
+                  "evidence_id": "country-limited",
+                  "source": "fixture-employer",
+                  "observed_at": "2026-11-01T00:00:00Z",
+                  "extractor_version": "golden-1",
+                  "quality": "explicit",
+                  "excerpt": "Remote work is limited to US applicants."
+                },
+                "mode": "Remote",
+                "remote_scope": "country_list",
+                "allowed_countries": [
+                  "US"
+                ]
+              }
+            ],
+            "routes_complete": true
+          }
+        }
+      ]
+    },
+    {
+      "job_version_id": "golden-excluded",
+      "captured_at": "2026-11-02T00:00:00Z",
+      "parser_version": "golden-cli-1",
+      "job_data": {
+        "source": "fixture",
+        "id": "excluded",
+        "title": "Engineer excluded",
+        "company": "Fixture Ltd"
+      },
+      "evidence": [
+        {
+          "source": "fixture-employer",
+          "observed_at": "2026-11-01T00:00:00Z",
+          "extractor_version": "golden-cli-1",
+          "payload": {
+            "kind": "ranking_facts",
+            "compensation": [
+              {
+                "source": {
+                  "evidence_id": "excluded-pay",
+                  "source": "fixture-employer",
+                  "observed_at": "2026-11-01T00:00:00Z",
+                  "extractor_version": "golden-1",
+                  "quality": "explicit",
+                  "excerpt": "Annual EUR gross base salary."
+                },
+                "original_text": "EUR 100 gross base per year",
+                "minimum": "100",
+                "maximum": "100",
+                "shape": "exact",
+                "currency": "EUR",
+                "period": "annual",
+                "basis": "gross",
+                "component": "base"
+              }
+            ],
+            "routes": [
+              {
+                "route_id": "remote",
+                "source": {
+                  "evidence_id": "worldwide",
+                  "source": "fixture-employer",
+                  "observed_at": "2026-11-01T00:00:00Z",
+                  "extractor_version": "golden-1",
+                  "quality": "explicit",
+                  "excerpt": "This role can be performed remotely worldwide."
+                },
+                "mode": "Remote",
+                "remote_scope": "worldwide"
+              }
+            ],
+            "routes_complete": true,
+            "employment": [
+              {
+                "source": {
+                  "evidence_id": "excluded-employment",
+                  "source": "fixture-employer",
+                  "observed_at": "2026-11-01T00:00:00Z",
+                  "extractor_version": "golden-1",
+                  "quality": "explicit",
+                  "excerpt": "Permanent employment."
+                },
+                "arrangements": [
+                  "permanent"
+                ],
+                "complete": true
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

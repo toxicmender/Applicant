@@ -1,0 +1,10 @@
+{
+  "fixture_version": 1,
+  "group_counts": {"eligible": 1, "review_required": 1, "excluded": 1},
+  "eligible_score": "100",
+  "review_reason": "conflicting_evidence",
+  "excluded_reason": "salary_below_floor",
+  "original_revision": 1,
+  "current_revision": 2,
+  "replay_matches": true
+}

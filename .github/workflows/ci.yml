@@ -184,6 +184,11 @@ jobs:
             exit "$code"
           fi
 
+      # An isolated, non-editable install uses the frozen lock and exercises
+      # packaging plus real subprocess CLI boundaries on every gated unit leg.
+      - name: Installed ranking CLI journey
+        run: uv run --frozen --isolated --no-editable --python ${{ matrix.python }} python tools/smoke_ranking.py --require-installed
+
       # proves the suite still runs on the stdlib runner alone, which is what a
       # contributor has before installing anything
       - name: unittest discover

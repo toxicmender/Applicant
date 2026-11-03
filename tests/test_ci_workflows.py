@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = ROOT / '.github' / 'workflows'
 
 # `python .github/scripts/thing.py`, `bash foo/bar.sh`, and so on
-SCRIPT_CALL = re.compile(r'(?:python3?|bash|sh)\s+(\.github/[\w./-]+\.(?:py|sh))')
+SCRIPT_CALL = re.compile(r'(?:python3?|bash|sh)\s+((?:\.github|tools)/[\w./-]+\.(?:py|sh))')
 
 
 def tracked_files() -> set[str]:
@@ -114,6 +114,15 @@ class GateTest(unittest.TestCase):
         self.assertIn('uv run --frozen pyright', unit)
         self.assertIn('name: junit-${{ matrix.os }}-${{ matrix.python }}', unit)
         self.assertIn('--junitxml="junit-${{ matrix.os }}-${{ matrix.python }}.xml"', unit)
+
+    def test_installed_ranking_journey_gates_every_unit_platform(self):
+        unit = self.text.split('\n  unit:\n', 1)[1].split('\n  coverage:\n', 1)[0]
+        command = 'uv run --frozen --isolated --no-editable --python ${{ matrix.python }} python tools/smoke_ranking.py --require-installed'
+        self.assertIn(command, unit)
+        step = unit.split('- name: Installed ranking CLI journey', 1)[1].split('- name:', 1)[0]
+        self.assertNotIn('continue-on-error', step)
+        self.assertNotIn('|| true', step)
+        self.assertNotIn('if:', step)
 
     def test_the_coverage_floor_is_set_where_a_local_run_reads_it(self):
         if sys.version_info >= (3, 11):
