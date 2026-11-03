@@ -6,6 +6,7 @@ from ..domain.benchmarks import BenchmarkProvider, BenchmarkQuery
 from ..errors import ConfigError
 from ..infra.bls import BLSProvider
 from ..infra.eurostat import EurostatProvider
+from ..infra.mospi import MoSPIProvider
 from ..infra.store.ranking_common import validated
 from .benchmarks import import_snapshot
 
@@ -15,7 +16,9 @@ def provider(name: str) -> BenchmarkProvider:
         return EurostatProvider()
     if name == 'bls':
         return BLSProvider()
-    raise ConfigError('supported benchmark providers: eurostat, bls')
+    if name == 'mospi':
+        return MoSPIProvider()
+    raise ConfigError('supported benchmark providers: eurostat, bls, mospi')
 
 
 def discover_benchmarks(name: str) -> dict:

@@ -1,0 +1,12 @@
+{
+  "data": {
+    "year_type": [{"description": "Calendar Year", "year_type_code": 2}, {"description": "Agriculture Year", "year_type_code": 1}],
+    "year": [{"year": "2025"}, {"year": "2024"}, {"year": "2024-25"}, {"year": "2023-24"}],
+    "quarter": [{"description": "Jul-Sep", "quarter_code": 2}, {"description": "Oct-Dec", "quarter_code": 3}, {"description": "Jan-Mar", "quarter_code": 4}, {"description": "Apr-Jun", "quarter_code": 5}],
+    "gender": [{"description": "male", "gender_code": 1}, {"description": "female", "gender_code": 2}, {"description": "person", "gender_code": 3}],
+    "sector": [{"description": "rural", "sector_code": 1}, {"description": "urban", "sector_code": 2}, {"description": "rural + urban", "sector_code": 3}],
+    "state": [{"state_code": 99, "description": "All India"}, {"state_code": 1, "description": "Andhra Pradesh"}]
+  },
+  "msg": "Data fetched successfully",
+  "statusCode": true
+}

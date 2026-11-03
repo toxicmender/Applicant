@@ -7,6 +7,13 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Add MoSPI PLFS regular salaried earnings discovery and bounded paginated
+  acquisition, with archived code/label mappings, precise monthly INR values,
+  Agriculture/Calendar Year distinctions and separate survey-design cohorts.
+  Incomplete pages, API errors and hidden cohort changes fail before persistence.
+  Keep default TLS verification; live default acquisition currently encounters
+  the upstream legacy-renegotiation incompatibility.
+
 - Add BLS OEWS discovery and bounded annual wage acquisition using official
   code tables and the public time-series API. Preserve source footnotes,
   suppression, censoring, annual measure definitions and exact metadata/data

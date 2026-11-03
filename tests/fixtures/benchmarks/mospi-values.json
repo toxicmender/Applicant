@@ -1,0 +1,11 @@
+{
+  "data": [
+    {"year_type": "Agriculture Year", "year": "2023-24", "frequency": "Annually", "indicator": "Average wage/salary earnings (Rs. 0.00) during the preceding calendar month from regular wage/salaried employment", "state": "All India", "gender": "person", "sector": "rural + urban", "quarter": "Jul-Sep", "month": null, "value": "20000.125", "unit": "₹"},
+    {"year_type": "Agriculture Year", "year": "2023-24", "frequency": "Annually", "indicator": "Average wage/salary earnings (Rs. 0.00) during the preceding calendar month from regular wage/salaried employment", "state": "All India", "gender": "person", "sector": "rural + urban", "quarter": "Oct-Dec", "month": null, "value": "21000.25", "unit": "₹"},
+    {"year_type": "Agriculture Year", "year": "2023-24", "frequency": "Annually", "indicator": "Average wage/salary earnings (Rs. 0.00) during the preceding calendar month from regular wage/salaried employment", "state": "All India", "gender": "person", "sector": "rural + urban", "quarter": "Jan-Mar", "month": null, "value": "22000.5", "unit": "₹"},
+    {"year_type": "Agriculture Year", "year": "2023-24", "frequency": "Annually", "indicator": "Average wage/salary earnings (Rs. 0.00) during the preceding calendar month from regular wage/salaried employment", "state": "All India", "gender": "person", "sector": "rural + urban", "quarter": "Apr-Jun", "month": null, "value": "23000.75", "unit": "₹"}
+  ],
+  "meta_data": {"page": 1, "totalRecords": 4, "totalPages": 1, "recordPerPage": 100},
+  "msg": "Data fetched successfully",
+  "statusCode": true
+}

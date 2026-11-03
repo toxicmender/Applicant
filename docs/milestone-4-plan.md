@@ -91,6 +91,10 @@ Delivered locally:
 - BLS OEWS discovery and acquisition, official code-table selection, bounded
   explicit-year requests and retained annual wage definitions/quality markers.
   No schema change; see the live-access limitation below.
+- MoSPI PLFS discovery and bounded paginated regular salaried earnings, exact
+  metadata-to-row label validation, retained quarter/year distinctions and the
+  January 2025 methodology break. No schema change; default live TLS remains
+  incompatible with the upstream legacy handshake, as detailed below.
 
 The first three phases' full branch-enabled run passed 1,173 tests with 13 environment skips
 and 1,206 subtests. Overall coverage reports 98%; the 11 new runtime modules have
@@ -157,7 +161,34 @@ unfiltered API probe also demonstrated missing-year messages alongside a returne
 value; the adapter's explicit-year and strict completeness policies prevent such
 messages from silently producing partial snapshots. CI uses synthetic fixtures.
 
-Still pending: MoSPI (next); verified company
+Phase 7 validation on Windows, 2026-11-04: **1,213 tests passed**, with **13
+environment skips** and **1,400 subtests**. Reusable synthetic PLFS discovery,
+query and earnings fixtures cover quarterly/annual observations, exact Decimals,
+suppression/censoring, year classification, survey-design changes, strict cohort
+validation, multi-page completion, changing totals, duplicate cohorts and
+acquisition-before-write. Code/label lookup tables are built once; selection
+coverage counts observed tuples without expanding a Cartesian grid. No runtime
+dependencies, coverage exclusions or schema migrations were added.
+The two new MoSPI modules and expanded provider registry have **100% statement
+and branch coverage** (260 statements, 110 branches); overall coverage is **99%**.
+Ruff, formatting, Windows/Linux Pyright, uv lock validation and sdist/wheel build
+passed. A freshly rebuilt isolated installed package passed **41 tests**: all
+40 benchmark/provider tests plus the subprocess survey/ranking journey.
+
+Live validation is **partial**. Default verified HTTPS fails with OpenSSL
+`UNSAFE_LEGACY_RENEGOTIATION_DISABLED`; normal discovery/acquisition is currently
+**unavailable** in this environment. A separate research-only SSL context enabled
+the legacy server handshake while retaining certificate and hostname checks.
+With that injected client, the adapter decoded all four 2023-24 Agriculture Year
+quarters and the 2025 Calendar Year aggregate from live metadata/data responses.
+The live metadata uses Agriculture Year (July-June), rather than the swagger's
+financial-year terminology. Calendar-year aggregates have a null quarter and
+retain monthly earnings units. These probes do not establish default-client TLS
+compatibility. The runtime adapter uses the shared client's unchanged TLS defaults;
+it does not import the upstream SDK, disable verification, or opt into legacy
+renegotiation. CI uses synthetic responses and requires no live MoSPI access.
+
+Still pending: verified company
 associations/snapshots/enrichment; the full M4 installed CLI
 journey and remaining hosted/provider validation (including BLS metadata access);
 final complete-milestone coverage audit.

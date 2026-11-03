@@ -1,0 +1,9 @@
+{
+  "data": [
+    {"indicator_code": 6, "description": "Average wage/salary earnings (Rs. 0.00) during the preceding calendar month from regular wage/salaried employment", "viz": "line,vbar,hbar,map"},
+    {"indicator_code": 7, "description": "Average casual labour wage earnings per day"}
+  ],
+  "count": 2,
+  "msg": "Data fetched successfully",
+  "statusCode": true
+}

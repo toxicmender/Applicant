@@ -1,7 +1,7 @@
 # Benchmark imports, acquisition and comparisons
 
 Milestone 4 phase 4 adds schema 6 and the provider-independent foundation.
-Phase 5 adds Eurostat acquisition; phase 6 adds BLS OEWS. MoSPI follows separately. No new
+Phase 5 adds Eurostat acquisition; phase 6 adds BLS OEWS; phase 7 adds MoSPI PLFS. No new
 runtime dependencies are required. All commands below use the configured SQLite
 database, or an explicit `--database PATH`.
 
@@ -163,6 +163,92 @@ References: [BLS series and mapping layout](https://download.bls.gov/pub/time.se
 [OEWS definitions](https://www.bls.gov/oes/current/oes_tec.htm).
 Fixtures prefixed `bls-` are synthetic and do not assert published wage values.
 
+## MoSPI salaried earnings
+
+```powershell
+uv run applicant benchmark discover --provider mospi --export plfs-dimensions.json
+uv run applicant benchmark fetch --query plfs-query.json --export acquired-plfs.json
+```
+
+For example, after confirming these codes with discovery:
+
+```json
+{
+  "kind": "benchmark_query",
+  "schema_version": 1,
+  "provider": "mospi",
+  "dataset": "plfs",
+  "filters": {
+    "year_type": ["1"], "year": ["2023-24"],
+    "state": ["99"], "gender": ["3"], "sector": ["3"]
+  }
+}
+```
+
+The `mospi-plfs-1` policy selects indicator **6** (regular wage/salaried monthly
+earnings) in frequency family **1**. Casual daily earnings and self-employment
+gross earnings are different indicators and outside this initial adapter. The
+annual indicator family includes historical quarterly observations; selecting
+frequency 2 would not retrieve these wage series.
+
+Discovery captures `getIndicatorListByFrequency` and `getFilterByIndicatorId`
+responses from `https://api.mospi.gov.in/api/plfs/`. Fetch repeats discovery and
+validates every selected code. Explicit year, year type, state, gender and sector
+are required. There are no implicit demographic or geography defaults. Optional
+`quarter` selects published quarter codes. Unknown filters, unrecognized row
+dimensions, changed indicator definitions and ambiguous discovery labels fail.
+The API returns labels in data rows, so the adapter resolves them only through
+the captured code tables, with exact label matches rather than name inference.
+
+The live metadata calls year type 1 **Agriculture Year**, covering July–June
+(`YYYY-YY`); year type 2 is **Calendar Year** (`YYYY`). This corrects the swagger's
+financial-year terminology without changing source labels. Quarter codes are
+2=Jul–Sep, 3=Oct–Dec, 4=Jan–Mar and 5=Apr–Jun. For Agriculture Year 2023-24, the
+last two quarters belong to 2024. A null quarter is an annual reference-period
+aggregate, not a guessed quarter. With no quarter filter, all returned quarterly
+or annual observations are retained individually; they are never averaged into
+a new value. A requested quarter cannot be replaced by an annual aggregate.
+Only ended reference periods are accepted. The January 2025 redesign has its
+own methodology identifier; any aggregate straddling that break fails explicitly.
+
+Each value remains a monthly mean in INR over its source reference period.
+The original decimal text/number is parsed without binary float conversion.
+Explicit `*` suppression, `-`/`..`/`NA`/null missing values and numeric `+` censoring
+are preserved; unknown markers fail. Optional source flags and notes remain
+visible. These synthetic marker/annotation cases are defensive contract tests,
+not claims that the live API currently publishes every marker. Source bytes
+remain authoritative. Zero remains zero. No gross/net basis is inferred.
+Normalization multiplies by 12 only as an annualized equivalent; the quarterly
+or annual observation period is unchanged. Aggregated occupations, industries
+and unspecified working-time scope remain explicit. Earnings do not become
+posting base pay, a seniority estimate, or a ranking input.
+
+Requests are bounded to 1,000 possible quarterly cells before network access.
+Two metadata requests precede at most ten 100-record pages. Each response is
+limited to 4 MB. `meta_data.page`, `totalRecords`, `totalPages` and `recordPerPage`
+must be consistent, with exact expected page lengths and unchanged totals.
+Duplicate cohorts across pages or omitted explicitly selected cohorts/quarters
+fail. Coverage checks count observed selection tuples without expanding a
+Cartesian grid; discovered label lookups are built once per acquisition.
+A bare `No Data Found` response lacks
+completion metadata and cannot become a completed snapshot. There is no fallback
+to another year, cohort or endpoint. All responses and observations validate
+before any database writer opens; a later page failure leaves history unchanged.
+No migration beyond schema 6 or new runtime dependency is needed.
+
+Shared HTTP retries, pacing, source errors and **default TLS verification** apply.
+On 2026-11-04, default live acquisition failed with OpenSSL
+`UNSAFE_LEGACY_RENEGOTIATION_DISABLED`. The official SDK disables certificate and
+hostname verification; this adapter does not copy that behavior or enable legacy
+renegotiation. A separate research probe kept certificate/hostname checks enabled
+and opted into the legacy server handshake to inspect live response shapes.
+That does not establish compatibility with the adapter's default TLS settings.
+CI uses synthetic `mospi-` fixtures; they do not assert published earnings values.
+
+References: [official PLFS API specification](https://raw.githubusercontent.com/nso-india/esankhyiki-mcp/main/swagger/swagger_user_plfs.yaml),
+[official SDK source](https://github.com/nso-india/mospi-esankhyiki/blob/main/esankhyiki/client.py),
+[January 2025 survey changes](https://www.mospi.gov.in/sites/default/files/publication_reports/PLFS_Changes-in-2025_rev.pdf).
+
 ## Snapshot document
 
 The complete synthetic example is [snapshot.json](../tests/fixtures/benchmarks/snapshot.json).
@@ -182,7 +268,7 @@ for explicit imports and future adapters. An import is a caller assertion about
 the source; it does not independently verify provider authenticity or pagination.
 Acquisition adapters must complete and validate all requested pages before
 constructing a snapshot. The `BenchmarkProvider` protocol exposes `discover()`
-and `fetch(query)`; current implementations are Eurostat and BLS.
+and `fetch(query)`; current implementations are Eurostat, BLS and MoSPI.
 
 Each response preserves `source_url`, exact `body_base64`, and the SHA-256 of the
 decoded bytes in `body_sha256`. Its `response_id` is the canonical content hash
