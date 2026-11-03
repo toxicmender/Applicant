@@ -1,7 +1,7 @@
 # Benchmark imports, acquisition and comparisons
 
 Milestone 4 phase 4 adds schema 6 and the provider-independent foundation.
-Phase 5 adds Eurostat acquisition. BLS and MoSPI follow separately. No new
+Phase 5 adds Eurostat acquisition; phase 6 adds BLS OEWS. MoSPI follows separately. No new
 runtime dependencies are required. All commands below use the configured SQLite
 database, or an explicit `--database PATH`.
 
@@ -87,6 +87,82 @@ References: [Eurostat Statistics API](https://ec.europa.eu/eurostat/web/user-gui
 [JSON-stat specification](https://json-stat.org/format/),
 [SES definitions](https://ec.europa.eu/eurostat/cache/metadata/en/earn_ses2022_esms.htm).
 
+## BLS occupational wages
+
+```powershell
+uv run applicant benchmark discover --provider bls --export bls-dimensions.json
+uv run applicant benchmark fetch --query bls-query.json --export acquired-bls.json
+```
+
+For example:
+
+```json
+{
+  "kind": "benchmark_query",
+  "schema_version": 1,
+  "provider": "bls",
+  "dataset": "oews",
+  "filters": {
+    "area": ["N:0000000"],
+    "occupation": ["151252"],
+    "year": ["2025"],
+    "statistic": ["mean", "median"]
+  }
+}
+```
+
+Use discovery to select area keys (`areatype_code:area_code`), six-digit occupation
+codes and selectable industry codes. National, state and metropolitan/nonmetropolitan
+scopes retain the source area classification. Industry defaults to `000000`
+(cross-industry) and statistic to `median`. A query must supply one explicit
+reference year from 2021 through the current UTC year. This initial policy uses
+SOC-2018 and the OEWS MB3 methodology; earlier estimates require separate imports.
+Unavailable reference years never fall back to a newer year.
+
+The adapter reads the official `oe.area`, `oe.occupation`, `oe.industry` and
+`oe.datatype` TSV tables. It validates selected codes and selectability, then
+constructs series IDs with the documented OEWS layout. Initial statistics are
+annual mean (04), p10 (11), p25 (12), median (13), p75 (14), and p90 (15).
+Datatype descriptions must still identify the selected annual measure. Industry
+range codes retain their publisher spelling. Percentiles are wage-distribution
+statistics and do not represent job seniority levels.
+
+The Cartesian selection is capped at **25 series** before any HTTP request.
+Four bounded metadata requests precede one POST to the public time-series API,
+with identical start/end years. This uses the unregistered request signature
+supported by the v2 endpoint and adds no credentials or registration workflow.
+It does not download the large `oe.series` inventory or full data files, split
+queries silently, request catalog data, or infer a year from the machine date.
+The existing shared HTTP retries, pacing and TLS verification apply. Each
+accepted response is capped at 4 MB. Both metadata and wage bytes are retained.
+
+Returned series IDs must exactly cover the selection, with one A01 observation
+for the requested year per series. Numeric source text is parsed as Decimal.
+Nonempty API messages, missing/duplicate series, changed years/periods and malformed
+responses fail before persistence, including HTTP-200 API failures. An unavailable
+or invalid series is not silently omitted to create a partial snapshot.
+
+Published `*` markers or explicit unreleased/suppressed footnotes become suppressed
+observations, with null amounts. `-`/`...` become unavailable. `#`, numeric `+`
+thresholds, or explicit equal-to-or-greater-than/top-coded footnotes are censored;
+published numeric thresholds remain context-only. Footnote codes/text are
+preserved. A numeric zero stays zero. No threshold is substituted for a missing
+amount and no suppression is treated as a wage of zero.
+
+The cohort retains BLS geography/industry codes, SOC-2018 occupation, full/part-time
+employee scope, May reference period and the annual statistic. Annual values are
+wage rates at that reference period, not realized annual income. Wage definition
+is `oews_straight_time_gross_wages_including_incentive_pay`, kept distinct from
+posting base pay. Published currency is USD. Publication time remains unknown;
+the release label identifies the explicitly requested May reference year.
+No schema change is needed beyond benchmark schema 6.
+
+References: [BLS series and mapping layout](https://download.bls.gov/pub/time.series/oe/oe.txt),
+[API request signatures](https://www.bls.gov/developers/api_signature_v2.htm),
+[API limits and response warnings](https://www.bls.gov/developers/api_faqs.htm),
+[OEWS definitions](https://www.bls.gov/oes/current/oes_tec.htm).
+Fixtures prefixed `bls-` are synthetic and do not assert published wage values.
+
 ## Snapshot document
 
 The complete synthetic example is [snapshot.json](../tests/fixtures/benchmarks/snapshot.json).
@@ -106,7 +182,7 @@ for explicit imports and future adapters. An import is a caller assertion about
 the source; it does not independently verify provider authenticity or pagination.
 Acquisition adapters must complete and validate all requested pages before
 constructing a snapshot. The `BenchmarkProvider` protocol exposes `discover()`
-and `fetch(query)`; the first implementation is Eurostat.
+and `fetch(query)`; current implementations are Eurostat and BLS.
 
 Each response preserves `source_url`, exact `body_base64`, and the SHA-256 of the
 decoded bytes in `body_sha256`. Its `response_id` is the canonical content hash

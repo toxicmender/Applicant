@@ -88,6 +88,9 @@ Delivered locally:
   [benchmark contracts](benchmark-contracts.md) and reusable synthetic fixtures.
 - Eurostat SES 2022 discovery and acquisition, explicit resolved query defaults,
   bounded JSON-stat decoding and exact raw-response retention. No schema change.
+- BLS OEWS discovery and acquisition, official code-table selection, bounded
+  explicit-year requests and retained annual wage definitions/quality markers.
+  No schema change; see the live-access limitation below.
 
 The first three phases' full branch-enabled run passed 1,173 tests with 13 environment skips
 and 1,206 subtests. Overall coverage reports 98%; the 11 new runtime modules have
@@ -132,9 +135,32 @@ Acquisition errors/asynchronous responses were separately verified to leave no
 new database and to preserve existing history. See the contract guide for API,
 JSON-stat and SES definition references and the initial EUR/ERN/GE10 policy.
 
-Still pending: BLS (next) and MoSPI provider adapters; verified company
+Phase 6 validation on Windows, 2026-11-04: **1,200 tests passed**, with **13
+environment skips** and **1,323 subtests**. The fresh isolated installed package
+passed all **27** BLS/Eurostat/foundation tests. Ruff, formatting, Windows/Linux
+Pyright targets, uv lock validation and the sdist/wheel build passed. Fixtures
+cover source code layouts, six annual statistics, suppression, censoring, missing
+observations, incomplete API responses, Decimal preservation, bounded selection,
+offline history and acquisition-before-write. The full suite also enforces the
+domain boundary; TSV parsing uses literal in-memory text without I/O imports.
+The two new BLS modules and expanded acquisition service have **100% statement
+and branch coverage** (219 statements, 98 branches); overall coverage reports
+**99%**. No exclusions or runtime dependencies were added.
+
+Live validation is partial: the explicit-year public wage API and decoder passed
+for annual mean and median Software Developer series. Official code-table
+downloads returned **HTTP 403**, including a full service-level acquisition
+attempt. That attempt created no database. Full live BLS discovery/acquisition
+therefore remains **unverified**, and requires accessible official metadata.
+There is no hidden fallback to guessed or vendored classifications. The initial
+unfiltered API probe also demonstrated missing-year messages alongside a returned
+value; the adapter's explicit-year and strict completeness policies prevent such
+messages from silently producing partial snapshots. CI uses synthetic fixtures.
+
+Still pending: MoSPI (next); verified company
 associations/snapshots/enrichment; the full M4 installed CLI
-journey and remaining hosted/provider validation; final complete-milestone coverage audit.
+journey and remaining hosted/provider validation (including BLS metadata access);
+final complete-milestone coverage audit.
 This is a partial delivery and does not mark Milestone 4 complete.
 
 Ruff, formatting, both platform Pyright targets, uv lock validation, build and

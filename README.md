@@ -90,7 +90,11 @@ uv run applicant benchmark fetch --query eurostat-query.json --export acquired.j
 
 The query selects `provider: eurostat`, `dataset: earn_ses22_28` and explicit
 `geo`/`isco08` filters; see the contract guide for defaults and a complete example.
-BLS and MoSPI adapters are subsequent phases. Benchmark
+BLS discovery and acquisition use the same commands with `--provider bls` and
+a query selecting `provider: bls`, `dataset: oews`, explicit `area`, `occupation`
+and `year` filters. Annual mean and wage percentiles are supported, capped at
+25 series per query. See the guide for the complete example and source access
+requirements. MoSPI is the next provider phase. Benchmark
 reports preserve incompatible earnings definitions as context and use the run's
 archived FX; they do not alter ranking or candidate preferences.
 

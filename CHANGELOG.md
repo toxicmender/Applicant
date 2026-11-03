@@ -7,6 +7,11 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Add BLS OEWS discovery and bounded annual wage acquisition using official
+  code tables and the public time-series API. Preserve source footnotes,
+  suppression, censoring, annual measure definitions and exact metadata/data
+  responses; reject incomplete or warning-bearing responses before persistence.
+
 - Add Eurostat SES 2022 discovery/fetch through shared HTTP, bounded JSON-stat
   decoding with sparse/dense and reordered-dimension support, preserved source
   flags and confidentiality, and immutable raw discovery/selection responses.

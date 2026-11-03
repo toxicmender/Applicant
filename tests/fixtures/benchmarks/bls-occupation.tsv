@@ -1,0 +1,4 @@
+occupation_code	occupation_name	display_level	selectable	sort_sequence
+151252	Software Developers	4	T	1
+152051	Data Scientists	4	T	2
+000000	All occupations	0	F	0

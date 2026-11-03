@@ -1,0 +1,3 @@
+industry_code	industry_name	display_level	selectable	sort_sequence
+000000	Cross-industry	0	T	1
+999999	Unselectable example	1	F	2

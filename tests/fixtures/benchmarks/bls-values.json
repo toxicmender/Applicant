@@ -1,0 +1,16 @@
+{
+  "status": "REQUEST_SUCCEEDED",
+  "message": [],
+  "Results": {
+    "series": [
+      {
+        "seriesID": "OEUN000000000000015125204",
+        "data": [{"year": "2025", "period": "A01", "periodName": "Annual", "value": "100000.25", "footnotes": [{}]}]
+      },
+      {
+        "seriesID": "OEUN000000000000015125213",
+        "data": [{"year": "2025", "period": "A01", "periodName": "Annual", "value": "95000", "footnotes": [{"code": "P", "text": "Synthetic provisional observation"}]}]
+      }
+    ]
+  }
+}

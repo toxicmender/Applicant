@@ -4,15 +4,18 @@ from pathlib import Path
 
 from ..domain.benchmarks import BenchmarkProvider, BenchmarkQuery
 from ..errors import ConfigError
+from ..infra.bls import BLSProvider
 from ..infra.eurostat import EurostatProvider
 from ..infra.store.ranking_common import validated
 from .benchmarks import import_snapshot
 
 
 def provider(name: str) -> BenchmarkProvider:
-    if name != 'eurostat':
-        raise ConfigError('supported benchmark provider: eurostat')
-    return EurostatProvider()
+    if name == 'eurostat':
+        return EurostatProvider()
+    if name == 'bls':
+        return BLSProvider()
+    raise ConfigError('supported benchmark providers: eurostat, bls')
 
 
 def discover_benchmarks(name: str) -> dict:

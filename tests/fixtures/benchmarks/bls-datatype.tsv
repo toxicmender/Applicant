@@ -1,0 +1,7 @@
+datatype_code	datatype_name
+04	Annual mean wage
+11	Annual 10th percentile wage
+12	Annual 25th percentile wage
+13	Annual median wage
+14	Annual 75th percentile wage
+15	Annual 90th percentile wage

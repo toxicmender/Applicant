@@ -1,0 +1,12 @@
+{
+  "kind": "benchmark_query",
+  "schema_version": 1,
+  "provider": "bls",
+  "dataset": "oews",
+  "filters": {
+    "area": ["N:0000000"],
+    "occupation": ["151252"],
+    "year": ["2025"],
+    "statistic": ["mean", "median"]
+  }
+}
