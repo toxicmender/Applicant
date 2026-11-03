@@ -7,6 +7,9 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Add offline historical ranking comparisons and descriptive feedback evaluation
+  with frozen cutoffs, judgment coverage, precision bounds and atomic JSON exports.
+
 - Add append-only candidate feedback with exact ranking membership, revision
   checks, retry-safe event IDs, strict batch imports, read-only historical
   cutoffs and dry runs. Add an explicit database upgrade command for schema 4.

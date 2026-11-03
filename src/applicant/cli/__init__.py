@@ -32,7 +32,19 @@ from ..errors import (
 )
 from ..log import QUIET, configure, default_file, get
 from ..settings import Settings
-from . import apply, feedback, financials, jobs, rank, rates, reviews, search, status, survey
+from . import (
+    apply,
+    evaluate,
+    feedback,
+    financials,
+    jobs,
+    rank,
+    rates,
+    reviews,
+    search,
+    status,
+    survey,
+)
 from .common import add_filters, filters_from, shared_flags
 
 __all__ = [
@@ -42,6 +54,7 @@ __all__ = [
     'main',
     'run_apply',
     'run_database',
+    'run_evaluate',
     'run_feedback',
     'run_financials',
     'run_jobs',
@@ -65,6 +78,7 @@ run_status = status.run
 run_survey = survey.run
 run_rank = rank.run
 run_feedback = feedback.run
+run_evaluate = evaluate.run
 run_database = feedback.run_upgrade
 
 # what an error that reached main() says about the run, for a calling script
@@ -109,6 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
     survey.add_parser(add).set_defaults(handler=run_survey)
     rank.add_parser(add).set_defaults(handler=run_rank)
     feedback.add_parser(add).set_defaults(handler=run_feedback)
+    evaluate.add_parser(add).set_defaults(handler=run_evaluate)
     feedback.add_database_parser(add).set_defaults(handler=run_database)
     return parser
 

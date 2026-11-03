@@ -33,6 +33,23 @@ where each event contains `event_id`, `run_id`, `job_id`, `expected_revision`,
 unsupported reasons, stale writes and invalid batches fail without saving events.
 Notes are limited to 2,000 characters. `--dry-run` validates on an in-memory copy.
 
+Completed runs also support descriptive evaluation and historical comparison:
+
+```powershell
+uv run applicant evaluate --run RUN_ID --top 20 --export evaluation.json
+uv run applicant evaluate --run RUN_ID --feedback-through SEQUENCE --json
+uv run applicant rank --compare BASE_RUN CANDIDATE_RUN --json
+```
+
+Evaluation counts eligible candidates and explicit judgments. Unjudged or cleared
+jobs remain unknown: precision is null until every displayed job is judged, with
+lower/upper bounds shown meanwhile. Recall requires a fully judged eligible set
+and at least one shortlist. Review-required and excluded judgments are reported
+separately. Exports retain the event IDs, cutoff, metric policy and input digest.
+These are descriptive metrics subject to selection bias. Comparisons require the
+same profile ID and disclose changed versions, membership, positions, results and
+archived inputs; they do not attribute score changes solely to weights.
+
 ## Setup
 The project is managed with [uv](https://docs.astral.sh/uv/):
 

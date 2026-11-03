@@ -11,6 +11,7 @@ from ..errors import ConfigError
 from ..infra.ranking_documents import read_ranking_document
 from ..infra.store.ranking_runs import RankingRunNotFound
 from ..infra.store.sqlite import DB_NAME
+from ..services.evaluation import compare_history
 from ..services.ranking_cli import create_ranking_run
 from ..services.ranking_read import RankingJobNotFound, list_runs, read_run
 from .common import positive_int
@@ -36,6 +37,12 @@ def add_parser(add):
     inputs = command.add_mutually_exclusive_group()
     modes = command.add_mutually_exclusive_group()
     modes.add_argument('--run', metavar='RUN_ID', help='display an exact completed run offline')
+    modes.add_argument(
+        '--compare',
+        nargs=2,
+        metavar=('BASE_RUN', 'CANDIDATE_RUN'),
+        help='compare exact historical runs offline',
+    )
     modes.add_argument(
         '--replay', metavar='RUN_ID', help='verify original inputs offline using --provenance'
     )
@@ -114,6 +121,24 @@ def _render(report: dict, database: Path) -> None:
 
 
 def _validate(args) -> None:
+    if args.compare is not None:
+        if any(
+            (
+                args.provenance,
+                args.profile,
+                args.revision,
+                args.explain,
+                args.input,
+                args.job_versions,
+                args.scoring_config,
+                args.tiers,
+                args.offline,
+                args.top is not None,
+                args.all,
+            )
+        ) or not all(v.strip() for v in args.compare):
+            raise ConfigError('--compare accepts only database and JSON options')
+        return
     for name in ('profile', 'run', 'replay', 'explain'):
         value = getattr(args, name)
         if value is not None and not value.strip():
@@ -157,7 +182,7 @@ def _display(report: dict, database: Path) -> None:
                     f'{item["ranking_run_id"]}: {item["profile_id"]}/{item["profile_revision"]} at {item["calculated_at"]} ({item["job_count"]} jobs)'
                 )
             )
-    elif report['kind'] == 'ranking_explanation':
+    elif report['kind'] in ('ranking_explanation', 'ranking_comparison'):
         for line in json.dumps(
             json.loads(canonical_json(report)), ensure_ascii=False, indent=2
         ).splitlines():
@@ -189,7 +214,9 @@ def run(args) -> int:
         def path(value):
             return None if value is None else Path(settings.path(value))
 
-        if args.list_runs:
+        if args.compare is not None:
+            report = compare_history(database, *args.compare)
+        elif args.list_runs:
             report = list_runs(
                 database, profile_id=None if args.profile is None else args.profile.strip()
             )
@@ -236,7 +263,7 @@ def run(args) -> int:
             if report['kind'] == 'ranking_replay_report' and not report['verification']['matches']
             else 0
         )
-    except ConfigError as error:
+    except (ValueError, ConfigError) as error:
         print(f'applicant rank: {error}', file=sys.stderr)
         return 2
     except (RankingRunNotFound, RankingJobNotFound) as error:
