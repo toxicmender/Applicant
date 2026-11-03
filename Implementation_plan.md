@@ -13,6 +13,9 @@
 > [Milestone 3 coverage audit](docs/milestone-3-coverage.md) for local validation
 > and remaining hosted gates.
 
+The accepted [Milestone 4 plan](docs/milestone-4-plan.md) defines personalization,
+evaluation, benchmark adapters and verified company evidence.
+
 Project: toxicmender/Applicant
 Document: Implementation Plan and Technical Specification
 Status: Milestones 1–3 implemented and validated locally; hosted CI remains unverified
