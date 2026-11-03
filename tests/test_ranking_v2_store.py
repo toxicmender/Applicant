@@ -18,7 +18,7 @@ from applicant.domain.ranking_v2 import (
 from applicant.errors import StoreError
 from applicant.infra.store.profiles import ProfileRepository
 from applicant.infra.store.snapshots import FXSnapshotRepository
-from applicant.infra.store.sqlite import Store
+from applicant.infra.store.sqlite import MIGRATIONS, Store
 from applicant.services.preferences import save_profile
 from applicant.services.ranking_history import (
     capture_jobs,
@@ -82,7 +82,9 @@ class EngineHistoryTest(unittest.TestCase):
             self.assertEqual(
                 canonical_json(ProfileRepository(reopened.db).get(legacy.profile_id, 1)), original
             )
-            self.assertEqual(reopened.db.execute('PRAGMA user_version').fetchone()[0], 3)
+            self.assertEqual(
+                reopened.db.execute('PRAGMA user_version').fetchone()[0], len(MIGRATIONS)
+            )
 
     def test_engine_run_rejects_legacy_configuration_atomically(self):
         save_profile(self.store, profile(), expected_revision=0)

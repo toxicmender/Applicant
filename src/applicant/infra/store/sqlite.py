@@ -41,6 +41,7 @@ from ...errors import StoreError
 from ...files import read_document, write_document
 from ...permissions import make_private
 from ...storage import APPLIED_COLUMNS, PROVISIONAL, ApplicationLog, plan_rows, write_rows
+from .feedback import FEEDBACK_MIGRATION
 from .ranking_schema import RANKING_MIGRATION
 
 logger = logging.getLogger(__name__)
@@ -117,6 +118,7 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         'CREATE INDEX financial_history ON financial_snapshots (key, recorded_at)',
     ),
     RANKING_MIGRATION,
+    FEEDBACK_MIGRATION,
 )
 
 
@@ -184,7 +186,7 @@ class Store:
                 version = store.db.execute('PRAGMA user_version').fetchone()[0]
                 if version < len(MIGRATIONS):
                     raise StoreError(
-                        f'database schema {version} requires a writable upgrade to {len(MIGRATIONS)}'
+                        f'database schema {version} requires a writable upgrade to {len(MIGRATIONS)}; run applicant db upgrade --database PATH'
                     )
                 if version > len(MIGRATIONS):
                     raise StoreError(

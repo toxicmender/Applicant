@@ -7,6 +7,10 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Add append-only candidate feedback with exact ranking membership, revision
+  checks, retry-safe event IDs, strict batch imports, read-only historical
+  cutoffs and dry runs. Add an explicit database upgrade command for schema 4.
+
 - Add repeatable subprocess and installed-package survey/ranking journeys with
   golden mixed-job fixtures. Gate the installed journey on each Linux/Windows CI
   unit leg and record the completed Milestone 3 delivery/coverage audit.

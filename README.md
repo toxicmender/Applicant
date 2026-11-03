@@ -2,6 +2,37 @@
 It is a dynamic web scraper which gets the posted jobs which are applicable from within the site and don't redirect to another site. It then applies to them automatically with your stored (Latest) Resume.
 > _**Note: Filter operation hasn't been implemented yet for jobs**_
 
+## Candidate feedback
+
+Milestone 4 begins with explicit candidate judgments on completed rankings.
+Upgrade an existing database before using the new schema:
+
+```powershell
+uv run applicant db upgrade --database applicant.db
+uv run applicant feedback record --run RUN_ID --job JOB_ID --event-id EVENT_ID --expected-revision 0 --decision shortlist
+uv run applicant feedback record --run RUN_ID --job JOB_ID --event-id NEXT_EVENT_ID --expected-revision 1 --decision dismiss --reason compensation --importance compensation=more_important
+uv run applicant feedback list --run RUN_ID --history --json
+uv run applicant feedback import --from-file feedback.json --dry-run
+```
+
+Use full ranking job IDs from `rank --run RUN_ID --all --json`. A dismissal is
+the candidate's decision and requires a reason; application outcomes are separate.
+Supported reasons are the six scoring dimensions plus `location`,
+`employment_arrangement`, `missing_evidence`, `conflicting_evidence`, `timing`,
+`closed_role`, and `other`. Importance directions are explicitly `more_important`
+or `less_important`; reasons alone do not imply weight changes.
+
+Each edit replaces the effective state and appends a revision. `--decision clear`
+removes the effective judgment and must omit reasons, importance and notes.
+`--expected-revision` is zero initially, then the last revision for that run/job.
+Reusing an event ID with identical input is safe; different input is rejected.
+`list --feedback-through SEQUENCE` selects historical feedback. JSON imports use
+`{"kind":"candidate_feedback_import","schema_version":1,"events":[...]}`,
+where each event contains `event_id`, `run_id`, `job_id`, `expected_revision`,
+`decision`, and optional `reasons`, `importance`, and `notes`. Duplicate JSON keys,
+unsupported reasons, stale writes and invalid batches fail without saving events.
+Notes are limited to 2,000 characters. `--dry-run` validates on an in-memory copy.
+
 ## Setup
 The project is managed with [uv](https://docs.astral.sh/uv/):
 
