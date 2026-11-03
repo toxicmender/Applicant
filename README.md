@@ -50,6 +50,25 @@ These are descriptive metrics subject to selection bias. Comparisons require the
 same profile ID and disclose changed versions, membership, positions, results and
 archived inputs; they do not attribute score changes solely to weights.
 
+Explicit importance directions can also produce bounded weight suggestions:
+
+```powershell
+uv run applicant personalize suggest --run RUN_ID --json
+uv run applicant personalize show --suggestion SUGGESTION_ID --json
+uv run applicant personalize accept --suggestion SUGGESTION_ID --json
+```
+
+The run's profile revision must still be current. At least three eligible jobs
+with known scores must support increasing one dimension and decreasing another.
+Suggestions transfer at most 0.05 weight, preserve zero weights and hard
+constraints, and preview the archived scores in deterministic eligibility groups.
+Generating a suggestion saves a proposal; `accept` explicitly creates a profile
+revision and an audit link in one transaction. Profile or feedback changes make
+an unaccepted proposal stale. Repeating acceptance returns the recorded revision.
+Insufficient feedback returns an explanation without saving a proposal. This
+policy implements explicit importance adjustments rather than statistical learning.
+Existing databases require `db upgrade` to schema 5 for these commands.
+
 ## Setup
 The project is managed with [uv](https://docs.astral.sh/uv/):
 

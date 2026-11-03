@@ -7,6 +7,10 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Add bounded, explicit weight suggestions from dimension-importance feedback,
+  deterministic archived-score previews, and atomic revision-safe acceptance
+  with an immutable audit link (database schema 5).
+
 - Add offline historical ranking comparisons and descriptive feedback evaluation
   with frozen cutoffs, judgment coverage, precision bounds and atomic JSON exports.
 

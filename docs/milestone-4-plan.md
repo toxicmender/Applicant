@@ -78,4 +78,25 @@ uncovered branches explicitly.
 
 ## Delivery status
 
-Plan recorded. Feature phases pending.
+Delivered locally:
+
+- Feedback and explicit database upgrade (`8024b32`, schema 4).
+- Historical comparison and descriptive evaluation (`be114d0`).
+- Bounded suggestions, grouped previews and atomic profile adoption (schema 5).
+
+The latest full branch-enabled run passed 1,173 tests with 13 environment skips
+and 1,206 subtests. Overall coverage reports 98%; the 11 new runtime modules have
+98% combined statement/branch coverage (523 statements, 122 branches), with each
+at least 90%. Remaining gaps are the no-export CLI branch, feedback cutoff
+rejection through the report service, irrelevant importance feedback, a legacy
+suggestion rejection, generation-time profile race, and corrupted acceptance
+metadata guards. Existing validation tests cover the underlying revision and
+integrity policies; no coverage exclusions were added.
+
+Still pending: benchmark contracts/storage/normalization and all three provider
+adapters; verified company associations/snapshots/enrichment; M4 installed CLI
+journey and hosted/live validation; final complete-milestone coverage audit.
+This is a partial delivery and does not mark Milestone 4 complete.
+
+Ruff, formatting, both platform Pyright targets, uv lock validation, build and
+the existing isolated installed-package ranking journey passed locally.

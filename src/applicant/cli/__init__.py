@@ -38,6 +38,7 @@ from . import (
     feedback,
     financials,
     jobs,
+    personalize,
     rank,
     rates,
     reviews,
@@ -58,6 +59,7 @@ __all__ = [
     'run_feedback',
     'run_financials',
     'run_jobs',
+    'run_personalize',
     'run_rank',
     'run_rates',
     'run_reviews',
@@ -79,6 +81,7 @@ run_survey = survey.run
 run_rank = rank.run
 run_feedback = feedback.run
 run_evaluate = evaluate.run
+run_personalize = personalize.run
 run_database = feedback.run_upgrade
 
 # what an error that reached main() says about the run, for a calling script
@@ -124,6 +127,7 @@ def build_parser() -> argparse.ArgumentParser:
     rank.add_parser(add).set_defaults(handler=run_rank)
     feedback.add_parser(add).set_defaults(handler=run_feedback)
     evaluate.add_parser(add).set_defaults(handler=run_evaluate)
+    personalize.add_parser(add).set_defaults(handler=run_personalize)
     feedback.add_database_parser(add).set_defaults(handler=run_database)
     return parser
 
