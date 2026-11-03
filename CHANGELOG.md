@@ -7,6 +7,11 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Add the benchmark foundation: versioned query/cohort/observation contracts,
+  exact raw-response retention, immutable completed snapshots in schema 6,
+  Decimal annualization with explicit FX, strict imports/dry runs, and offline
+  cohort reports and job comparisons. Provider acquisition follows separately.
+
 - Add bounded, explicit weight suggestions from dimension-importance feedback,
   deterministic archived-score previews, and atomic revision-safe acceptance
   with an immutable audit link (database schema 5).

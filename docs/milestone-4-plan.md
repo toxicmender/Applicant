@@ -83,8 +83,11 @@ Delivered locally:
 - Feedback and explicit database upgrade (`8024b32`, schema 4).
 - Historical comparison and descriptive evaluation (`be114d0`).
 - Bounded suggestions, grouped previews and atomic profile adoption (schema 5).
+- Benchmark contracts, immutable raw-response/observation storage, normalization,
+  strict imports and offline CLI reports/comparisons (schema 6). See the
+  [benchmark contracts](benchmark-contracts.md) and reusable synthetic fixtures.
 
-The latest full branch-enabled run passed 1,173 tests with 13 environment skips
+The first three phases' full branch-enabled run passed 1,173 tests with 13 environment skips
 and 1,206 subtests. Overall coverage reports 98%; the 11 new runtime modules have
 98% combined statement/branch coverage (523 statements, 122 branches), with each
 at least 90%. Remaining gaps are the no-export CLI branch, feedback cutoff
@@ -93,8 +96,24 @@ suggestion rejection, generation-time profile race, and corrupted acceptance
 metadata guards. Existing validation tests cover the underlying revision and
 integrity policies; no coverage exclusions were added.
 
-Still pending: benchmark contracts/storage/normalization and all three provider
-adapters; verified company associations/snapshots/enrichment; M4 installed CLI
+Phase 4 validation on Windows, 2026-11-04: the full branch-enabled suite passed
+**1,184 tests**, with **13 environment skips** and **1,238 subtests**. The focused
+benchmark suite passed **11 tests** (including Hypothesis equivalence checks and
+additional corruption probes). The five new runtime modules have **100% statement
+and branch coverage**, combined **339 statements and 100 branches**. Overall
+coverage reports **99%** (rounded), above the unchanged 90% floor. No exclusions
+or runtime dependencies were added. Validation includes all five prior schema
+versions, migration rollback, strict input and source-digest checks, immutable
+completion, shared raw responses, fixed FX and report reproducibility.
+Ruff, formatting, Windows/Linux Pyright targets, uv lock validation and the
+sdist/wheel build passed. All 11 benchmark tests also passed against a freshly
+rebuilt isolated non-editable installation. That check used
+`uv run --frozen --isolated --no-editable --refresh-package applicant --reinstall-package applicant`
+to avoid reusing an earlier local-project wheel; the initial cached installation
+did not contain the new modules. The built wheel was inspected for all five.
+
+Still pending: all three provider adapters (Eurostat next); verified company
+associations/snapshots/enrichment; the full M4 installed CLI
 journey and hosted/live validation; final complete-milestone coverage audit.
 This is a partial delivery and does not mark Milestone 4 complete.
 

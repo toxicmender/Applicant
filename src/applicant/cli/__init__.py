@@ -34,6 +34,7 @@ from ..log import QUIET, configure, default_file, get
 from ..settings import Settings
 from . import (
     apply,
+    benchmark,
     evaluate,
     feedback,
     financials,
@@ -54,6 +55,7 @@ __all__ = [
     'filters_from',
     'main',
     'run_apply',
+    'run_benchmark',
     'run_database',
     'run_evaluate',
     'run_feedback',
@@ -73,6 +75,7 @@ logger = get(__name__)
 run_jobs = jobs.run
 run_search = search.run
 run_apply = apply.run
+run_benchmark = benchmark.run
 run_reviews = reviews.run
 run_financials = financials.run
 run_rates = rates.run
@@ -119,6 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
     jobs.add_parser(add).set_defaults(handler=run_jobs)
     search.add_parser(add).set_defaults(handler=run_search)
     apply.add_parser(add).set_defaults(handler=run_apply)
+    benchmark.add_parser(add).set_defaults(handler=run_benchmark)
     reviews.add_parser(add).set_defaults(handler=run_reviews)
     financials.add_parser(add).set_defaults(handler=run_financials)
     rates.add_parser(add).set_defaults(handler=run_rates)

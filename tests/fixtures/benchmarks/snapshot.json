@@ -1,0 +1,134 @@
+{
+  "adapter_version": "fixture-1",
+  "currency_registry": "iso4217-1.16.20260101",
+  "kind": "benchmark_snapshot",
+  "observations": [
+    {
+      "amount": "1000",
+      "cohort": {
+        "basis": "gross",
+        "currency_registry": "iso4217-1.16.20260101",
+        "dimensions": {
+          "sex": "total"
+        },
+        "geography_code": "DE",
+        "geography_system": "ISO3166-1",
+        "industry_code": "all",
+        "industry_system": "fixture-industry-v1",
+        "methodology": "synthetic-v1",
+        "occupation_code": "software",
+        "occupation_system": "fixture-occupation-v1",
+        "population": "employees",
+        "reference_end": "2022-12-31",
+        "reference_start": "2022-01-01",
+        "schema_version": 1,
+        "statistic": "mean",
+        "wage_definition": "base_pay",
+        "working_time": "full_time"
+      },
+      "currency": "EUR",
+      "currency_registry": "iso4217-1.16.20260101",
+      "flags": [],
+      "notes": [],
+      "observation_id": "base",
+      "period": "monthly",
+      "response_id": "ce0a0cf9657f83c206a799e6a09424e8c46d8592a6f9b4f3f5cfe35e044a2973",
+      "schema_version": 1,
+      "status": "available"
+    },
+    {
+      "amount": "1500",
+      "cohort": {
+        "basis": "gross",
+        "currency_registry": "iso4217-1.16.20260101",
+        "dimensions": {
+          "sex": "total"
+        },
+        "geography_code": "DE",
+        "geography_system": "ISO3166-1",
+        "industry_code": "all",
+        "industry_system": "fixture-industry-v1",
+        "methodology": "synthetic-v1",
+        "occupation_code": "software",
+        "occupation_system": "fixture-occupation-v1",
+        "population": "employees",
+        "reference_end": "2022-12-31",
+        "reference_start": "2022-01-01",
+        "schema_version": 1,
+        "statistic": "mean",
+        "wage_definition": "earnings_including_bonuses",
+        "working_time": "full_time"
+      },
+      "currency": "EUR",
+      "currency_registry": "iso4217-1.16.20260101",
+      "flags": [],
+      "notes": [],
+      "observation_id": "earnings",
+      "period": "monthly",
+      "response_id": "ce0a0cf9657f83c206a799e6a09424e8c46d8592a6f9b4f3f5cfe35e044a2973",
+      "schema_version": 1,
+      "status": "available"
+    },
+    {
+      "amount": null,
+      "cohort": {
+        "basis": "gross",
+        "currency_registry": "iso4217-1.16.20260101",
+        "dimensions": {
+          "sex": "total"
+        },
+        "geography_code": "FR",
+        "geography_system": "ISO3166-1",
+        "industry_code": "all",
+        "industry_system": "fixture-industry-v1",
+        "methodology": "synthetic-v1",
+        "occupation_code": "software",
+        "occupation_system": "fixture-occupation-v1",
+        "population": "employees",
+        "reference_end": "2022-12-31",
+        "reference_start": "2022-01-01",
+        "schema_version": 1,
+        "statistic": "mean",
+        "wage_definition": "base_pay",
+        "working_time": "full_time"
+      },
+      "currency": "EUR",
+      "currency_registry": "iso4217-1.16.20260101",
+      "flags": [
+        "confidential"
+      ],
+      "notes": [],
+      "observation_id": "suppressed",
+      "period": "annual",
+      "response_id": "ce0a0cf9657f83c206a799e6a09424e8c46d8592a6f9b4f3f5cfe35e044a2973",
+      "schema_version": 1,
+      "status": "suppressed"
+    }
+  ],
+  "query": {
+    "currency_registry": "iso4217-1.16.20260101",
+    "dataset": "wages",
+    "filters": {
+      "year": [
+        "2022"
+      ]
+    },
+    "kind": "benchmark_query",
+    "provider": "synthetic",
+    "schema_version": 1
+  },
+  "release_label": "synthetic-2022",
+  "released_at": null,
+  "responses": [
+    {
+      "body_base64": "eyJtb250aGx5X2Jhc2UiOjEwMDAsImVhcm5pbmdzIjoxNTAwfQ==",
+      "body_sha256": "4989eccedcffdea8caf3e35a2ec61b3aa48c94748c95bd2cac3136e493434256",
+      "currency_registry": "iso4217-1.16.20260101",
+      "schema_version": 1,
+      "source_url": "https://example.invalid/wages?release=2022"
+    }
+  ],
+  "retrieved_at": "2026-11-02T00:00:00.000000Z",
+  "schema_version": 1,
+  "snapshot_id": "golden-wages"
+}

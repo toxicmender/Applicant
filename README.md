@@ -69,6 +69,22 @@ Insufficient feedback returns an explanation without saving a proposal. This
 policy implements explicit importance adjustments rather than statistical learning.
 Existing databases require `db upgrade` to schema 5 for these commands.
 
+The benchmark foundation supports strict imports and offline cohort reports:
+
+```powershell
+uv run applicant db upgrade --database applicant.db
+uv run applicant benchmark import --from-file snapshot.json --dry-run
+uv run applicant benchmark import --from-file snapshot.json
+uv run applicant benchmark show --snapshot RELEASE_ID --json
+uv run applicant benchmark compare --run RUN_ID --selections selections.json --export comparison.json
+```
+
+See [benchmark contracts and examples](docs/benchmark-contracts.md) for schema 6,
+raw-response provenance, explicit job/cohort mappings and normalization rules.
+The Eurostat, BLS and MoSPI acquisition adapters are subsequent phases. Benchmark
+reports preserve incompatible earnings definitions as context and use the run's
+archived FX; they do not alter ranking or candidate preferences.
+
 ## Setup
 The project is managed with [uv](https://docs.astral.sh/uv/):
 

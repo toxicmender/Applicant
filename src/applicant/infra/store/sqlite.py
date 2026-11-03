@@ -41,6 +41,7 @@ from ...errors import StoreError
 from ...files import read_document, write_document
 from ...permissions import make_private
 from ...storage import APPLIED_COLUMNS, PROVISIONAL, ApplicationLog, plan_rows, write_rows
+from .benchmarks import BENCHMARK_MIGRATION
 from .feedback import FEEDBACK_MIGRATION
 from .personalization import PERSONALIZATION_MIGRATION
 from .ranking_schema import RANKING_MIGRATION
@@ -121,6 +122,7 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
     RANKING_MIGRATION,
     FEEDBACK_MIGRATION,
     PERSONALIZATION_MIGRATION,
+    BENCHMARK_MIGRATION,
 )
 
 
