@@ -7,6 +7,10 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Add repeatable subprocess and installed-package survey/ranking journeys with
+  golden mixed-job fixtures. Gate the installed journey on each Linux/Windows CI
+  unit leg and record the completed Milestone 3 delivery/coverage audit.
+
 - Add read-only ranking run lists, exact historical display, detailed job
   explanations and offline replay CLI verification with explicit artifact
   provenance. Show conflicting source assertions and verification prompts;

@@ -1,6 +1,7 @@
 # Milestone 3: survey and ranking CLI
 
-Status: phases 1–5 delivered locally; final journey/coverage audit and hosted gates pending.
+Status: all six implementation phases delivered and validated locally; hosted gates remain unverified.
+Final evidence: [Milestone 3 delivery and coverage audit](milestone-3-coverage.md).
 Reviewed 2026-11-02 against `d375842` on `codex/ranking-foundation`.
 This document supersedes the M3 command sketch in section 17 of
 [Implementation_plan.md](../Implementation_plan.md). M2 library behavior remains
@@ -466,7 +467,21 @@ The installed wheel passed survey import, creation, listing, exact display,
 explanation and replay together in an isolated offline uv environment. Browser
 and POSIX-only skips remain; hosted CI remains unverified.
 
-Next: phase 6 integrated CLI journeys, coverage audit and hosted validation.
+## Phase 6 delivery
+
+Committed repeatable subprocess and installed-package journeys, golden mixed-job
+inputs and expected output projections, and gated installation checks in every
+existing Linux/Windows unit leg. Each subprocess starts outside the checkout with
+isolated Applicant settings. Explicit matrix Python selection preserves the
+claimed 3.10–3.13 coverage. Workflow reference tests now include tools/ scripts.
+
+Final local validation: **1,158 passed, 13 skipped, 1,176 subtests passed**; overall
+coverage **99%** rounded. All 12 M3 modules have **100% statement/branch coverage**
+(596 statements, 174 branches), with the same 90% floor and no added exclusions.
+Static checks, build, locked installed-project journey and actual built-wheel
+journey pass. See [the final audit](milestone-3-coverage.md) for commands, remaining
+legacy gaps and limits. All local M3 implementation work is delivered. Hosted
+Linux/Windows/browser validation remains pending a future pushed workflow run.
 
 ## References checked 2026-11-02
 

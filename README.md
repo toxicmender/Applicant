@@ -33,6 +33,18 @@ CI runs unit tests on Linux with Python 3.10–3.13 and on Windows with Python 3
 The Windows leg also runs Pyright. Permission tests inspect native Windows ACLs
 or POSIX mode bits; the saved-page browser tier runs separately on Linux.
 
+Each unit leg also runs a locked, isolated installed-package survey/ranking
+journey. Reproduce it locally with:
+
+```console
+uv run --frozen --isolated --no-editable python tools/smoke_ranking.py --require-installed
+```
+
+It uses temporary data and golden fixtures, runs separate CLI processes, and
+checks mixed eligibility, conflict evidence, profile edits, historical stability
+and offline replay. The [Milestone 3 coverage audit](docs/milestone-3-coverage.md)
+records the final local results and remaining hosted validation.
+
 The sources that drive a browser are tested twice. `tests/fakes.py` has a scripted
 page that their own code runs against - paging, limits, bot checks, sign in - in
 milliseconds. `tests/test_live_pages.py` runs the same flows in a real Chromium

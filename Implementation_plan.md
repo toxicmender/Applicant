@@ -8,12 +8,14 @@
 > Milestone 1 is implemented. The [Milestone 2 implementation plan](docs/milestone-2-plan.md)
 > records the delivered engine work, researched policies, compatible schema
 > evolution, and acceptance criteria. The [Milestone 3 review and implementation
-> plan](docs/milestone-3-plan.md), reviewed against `d375842`, specifies the next
-> survey/CLI work and supersedes the command sketch below.
+> plan](docs/milestone-3-plan.md), reviewed against `d375842`, records delivered
+> survey/CLI work and supersedes the command sketch below. See the final
+> [Milestone 3 coverage audit](docs/milestone-3-coverage.md) for local validation
+> and remaining hosted gates.
 
 Project: toxicmender/Applicant
 Document: Implementation Plan and Technical Specification
-Status: Milestones 1–2 library implementation delivered; see the linked plan for validation and remaining hosted gates
+Status: Milestones 1–3 implemented and validated locally; hosted CI remains unverified
 Primary language: Python
 Package manager: uv
 Data validation: Pydantic

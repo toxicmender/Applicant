@@ -1,5 +1,8 @@
 # Ranking engine coverage review
 
+This records the M2 engine baseline. The final M3 CLI suite and coverage results
+are in [the Milestone 3 audit](milestone-3-coverage.md).
+
 Validated 2026-11-02 on `codex/ranking-foundation`, including scoring commit
 `0589ac2`, the ranked-view/coverage audit, and the run/replay slice following `1cb82e9`.
 
