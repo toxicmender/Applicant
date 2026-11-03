@@ -7,6 +7,11 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Add Eurostat SES 2022 discovery/fetch through shared HTTP, bounded JSON-stat
+  decoding with sparse/dense and reordered-dimension support, preserved source
+  flags and confidentiality, and immutable raw discovery/selection responses.
+  Acquisition completes before any database writer opens.
+
 - Add the benchmark foundation: versioned query/cohort/observation contracts,
   exact raw-response retention, immutable completed snapshots in schema 6,
   Decimal annualization with explicit FX, strict imports/dry runs, and offline

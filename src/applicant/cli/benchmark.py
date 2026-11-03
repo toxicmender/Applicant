@@ -4,20 +4,23 @@ import json
 import sys
 from pathlib import Path
 
-from ..domain.benchmarks import BenchmarkComparisonDocument, BenchmarkSnapshot
+from ..domain.benchmarks import BenchmarkComparisonDocument, BenchmarkQuery, BenchmarkSnapshot
 from ..domain.canonical import canonical_json
 from ..errors import ConfigError, StoreError
 from ..files import write_document
 from ..infra.ranking_documents import read_ranking_document
 from ..infra.store.benchmarks import BenchmarkNotFound
 from ..infra.store.ranking_runs import RankingRunNotFound
+from ..services.benchmark_acquisition import discover_benchmarks, fetch_benchmarks
 from ..services.benchmarks import compare_benchmarks, import_snapshot, show_snapshots
 from .feedback import database_path
 
 
 def add_parser(add):
     command = add('benchmark', help='import and compare immutable wage benchmark cohorts offline')
-    command.add_argument('action', choices=('import', 'show', 'compare'))
+    command.add_argument('action', choices=('import', 'show', 'compare', 'discover', 'fetch'))
+    command.add_argument('--provider')
+    command.add_argument('--query')
     command.add_argument('--database')
     command.add_argument('--from-file')
     command.add_argument('--snapshot', action='append', default=[])
@@ -38,7 +41,31 @@ def run(args) -> int:
             *(Path(str(database) + s).resolve() for s in ('-wal', '-shm')),
         }:
             raise ConfigError('export must not replace database or sidecars')
-        if args.action == 'import':
+        if args.action in ('discover', 'fetch'):
+            if (
+                args.from_file
+                or args.snapshot
+                or args.run is not None
+                or args.selections
+                or args.dry_run
+            ):
+                raise ConfigError(
+                    'acquisition cannot combine with offline input or dry-run options'
+                )
+            if args.action == 'discover':
+                if not args.provider or args.query:
+                    raise ConfigError('discover requires --provider without --query')
+                report = discover_benchmarks(args.provider)
+            else:
+                if not args.query or args.provider is not None:
+                    raise ConfigError('fetch requires --query; provider is defined by the query')
+                query = BenchmarkQuery.model_validate(
+                    read_ranking_document(Path(args.settings.path(args.query)), decimal=True)
+                )
+                report = fetch_benchmarks(database, query)
+        elif args.provider is not None or args.query is not None:
+            raise ConfigError('--provider/--query require discover/fetch')
+        elif args.action == 'import':
             if not args.from_file or args.snapshot or args.run is not None or args.selections:
                 raise ConfigError('import requires --from-file without snapshot/run/selections')
             snapshot = BenchmarkSnapshot.model_validate(

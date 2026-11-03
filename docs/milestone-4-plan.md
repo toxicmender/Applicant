@@ -86,6 +86,8 @@ Delivered locally:
 - Benchmark contracts, immutable raw-response/observation storage, normalization,
   strict imports and offline CLI reports/comparisons (schema 6). See the
   [benchmark contracts](benchmark-contracts.md) and reusable synthetic fixtures.
+- Eurostat SES 2022 discovery and acquisition, explicit resolved query defaults,
+  bounded JSON-stat decoding and exact raw-response retention. No schema change.
 
 The first three phases' full branch-enabled run passed 1,173 tests with 13 environment skips
 and 1,206 subtests. Overall coverage reports 98%; the 11 new runtime modules have
@@ -112,9 +114,27 @@ rebuilt isolated non-editable installation. That check used
 to avoid reusing an earlier local-project wheel; the initial cached installation
 did not contain the new modules. The built wheel was inspected for all five.
 
-Still pending: all three provider adapters (Eurostat next); verified company
+Phase 5 validation on Windows, 2026-11-04: **1,192 tests passed**, with **13
+environment skips** and **1,271 subtests**. The three new Eurostat/acquisition
+modules plus the expanded benchmark CLI have **100% statement and branch
+coverage** (273 statements, 106 branches). Overall coverage reports **99%**.
+Ruff, formatting, Windows/Linux Pyright targets, lock validation and sdist/wheel
+build passed. A fresh isolated non-editable installation passed all **19**
+Eurostat/foundation tests. Synthetic discovery, sparse-cube and query fixtures
+drive CI; Hypothesis dimension permutations preserve exact cell meaning.
+
+Live validation also passed: the public SES endpoint supplied discovery metadata
+and four explicitly selected DE/FR, OC1/OC2 observations. Both raw responses were
+stored in a temporary schema-6 database and recovered successfully. The returned
+dataset update label was `2026-02-09T23:00:00+0100`. One initial DNS failure was
+followed by a successful explicit retry; live availability is not a CI gate.
+Acquisition errors/asynchronous responses were separately verified to leave no
+new database and to preserve existing history. See the contract guide for API,
+JSON-stat and SES definition references and the initial EUR/ERN/GE10 policy.
+
+Still pending: BLS (next) and MoSPI provider adapters; verified company
 associations/snapshots/enrichment; the full M4 installed CLI
-journey and hosted/live validation; final complete-milestone coverage audit.
+journey and remaining hosted/provider validation; final complete-milestone coverage audit.
 This is a partial delivery and does not mark Milestone 4 complete.
 
 Ruff, formatting, both platform Pyright targets, uv lock validation, build and

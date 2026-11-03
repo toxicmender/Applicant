@@ -81,7 +81,16 @@ uv run applicant benchmark compare --run RUN_ID --selections selections.json --e
 
 See [benchmark contracts and examples](docs/benchmark-contracts.md) for schema 6,
 raw-response provenance, explicit job/cohort mappings and normalization rules.
-The Eurostat, BLS and MoSPI acquisition adapters are subsequent phases. Benchmark
+Eurostat acquisition is available explicitly:
+
+```powershell
+uv run applicant benchmark discover --provider eurostat --export eurostat-dimensions.json
+uv run applicant benchmark fetch --query eurostat-query.json --export acquired.json
+```
+
+The query selects `provider: eurostat`, `dataset: earn_ses22_28` and explicit
+`geo`/`isco08` filters; see the contract guide for defaults and a complete example.
+BLS and MoSPI adapters are subsequent phases. Benchmark
 reports preserve incompatible earnings definitions as context and use the run's
 archived FX; they do not alter ranking or candidate preferences.
 

@@ -1,0 +1,144 @@
+{
+  "version": "2.0",
+  "class": "dataset",
+  "updated": "2026-02-09T23:00:00+0100",
+  "id": [
+    "geo",
+    "time",
+    "unit",
+    "isco08",
+    "age",
+    "sex",
+    "sizeclas",
+    "indic_se",
+    "freq"
+  ],
+  "size": [
+    2,
+    1,
+    1,
+    2,
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "dimension": {
+    "geo": {
+      "label": "geo",
+      "category": {
+        "index": {
+          "DE": 0,
+          "FR": 1
+        },
+        "label": {
+          "DE": "DE",
+          "FR": "FR"
+        }
+      }
+    },
+    "time": {
+      "label": "time",
+      "category": {
+        "index": {
+          "2022": 0
+        },
+        "label": {
+          "2022": "2022"
+        }
+      }
+    },
+    "unit": {
+      "label": "unit",
+      "category": {
+        "index": {
+          "EUR": 0
+        },
+        "label": {
+          "EUR": "EUR"
+        }
+      }
+    },
+    "isco08": {
+      "label": "isco08",
+      "category": {
+        "index": {
+          "OC1": 0,
+          "OC2": 1
+        },
+        "label": {
+          "OC1": "OC1",
+          "OC2": "OC2"
+        }
+      }
+    },
+    "age": {
+      "label": "age",
+      "category": {
+        "index": {
+          "TOTAL": 0
+        },
+        "label": {
+          "TOTAL": "TOTAL"
+        }
+      }
+    },
+    "sex": {
+      "label": "sex",
+      "category": {
+        "index": {
+          "T": 0
+        },
+        "label": {
+          "T": "T"
+        }
+      }
+    },
+    "sizeclas": {
+      "label": "sizeclas",
+      "category": {
+        "index": {
+          "GE10": 0
+        },
+        "label": {
+          "GE10": "GE10"
+        }
+      }
+    },
+    "indic_se": {
+      "label": "indic_se",
+      "category": {
+        "index": {
+          "ERN": 0
+        },
+        "label": {
+          "ERN": "ERN"
+        }
+      }
+    },
+    "freq": {
+      "label": "freq",
+      "category": {
+        "index": {
+          "A": 0
+        },
+        "label": {
+          "A": "A"
+        }
+      }
+    }
+  },
+  "value": {
+    "0": 50000.125,
+    "1": 73798.125,
+    "3": 0
+  },
+  "status": {
+    "2": "|C",
+    "3": "u"
+  },
+  "extension": {
+    "id": "EARN_SES22_28"
+  }
+}

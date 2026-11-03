@@ -1,0 +1,16 @@
+{
+  "kind": "benchmark_query",
+  "schema_version": 1,
+  "provider": "eurostat",
+  "dataset": "earn_ses22_28",
+  "filters": {
+    "geo": [
+      "DE",
+      "FR"
+    ],
+    "isco08": [
+      "OC1",
+      "OC2"
+    ]
+  }
+}

@@ -1,7 +1,7 @@
-# Benchmark imports and offline comparisons
+# Benchmark imports, acquisition and comparisons
 
 Milestone 4 phase 4 adds schema 6 and the provider-independent foundation.
-Eurostat, BLS and MoSPI acquisition adapters follow in separate phases. No new
+Phase 5 adds Eurostat acquisition. BLS and MoSPI follow separately. No new
 runtime dependencies are required. All commands below use the configured SQLite
 database, or an explicit `--database PATH`.
 
@@ -19,8 +19,73 @@ consistency; these commands always emit JSON. Read-only commands require an
 existing current-schema database. Dry-run imports validate without creating a
 database or modifying an existing one. Reimporting identical inputs is idempotent;
 reusing a snapshot ID for different inputs fails. Exports are atomic/private and
-cannot replace the database or WAL/SHM sidecars. The commands never acquire FX or
-refresh providers. With `--no-log-file`, reports do not write a log file either.
+cannot replace the database or WAL/SHM sidecars. Import/show/compare never acquire
+FX or refresh providers. Network work requires explicit discover/fetch commands.
+With `--no-log-file`, reports do not write a log file either.
+
+## Eurostat acquisition
+
+```powershell
+uv run applicant benchmark discover --provider eurostat --export eurostat-dimensions.json
+uv run applicant benchmark fetch --query eurostat-query.json --export acquired.json
+```
+
+An initial query can be:
+
+```json
+{
+  "kind": "benchmark_query",
+  "schema_version": 1,
+  "provider": "eurostat",
+  "dataset": "earn_ses22_28",
+  "filters": {"geo": ["DE", "FR"], "isco08": ["OC2"]}
+}
+```
+
+Select geography and ISCO-08 codes explicitly from discovery. `OC2` is the broad
+Professionals group, not a software-role or seniority classification. Discovery
+returns the source dimension labels, codes, update label, retrieval time and exact
+raw response. It creates no database. Fetch validates against fresh discovery,
+then sends one selected-data request; repeated filter parameters select multiple
+codes. Both raw responses are retained in the immutable snapshot. Existing
+databases require schema 6; no additional migration is introduced by the adapter.
+
+The `eurostat-ses-1` policy fixes annual frequency A, gross earnings ERN, enterprises
+with 10+ employees GE10, EUR and reference year 2022. Defaults are sex T (total)
+and age TOTAL; callers may select other discovered sex/age codes. The query saved
+in the snapshot includes all resolved defaults. Unsupported categories and policy
+overrides fail explicitly. The API contains bonuses and purchasing-power units
+alongside earnings; those alternatives are outside this initial adapter policy.
+
+The Statistics API supplies JSON-stat datasets. The decoder validates dimension
+positions and cardinalities, handles array/object category indexes, dense/sparse
+values and per-cell/global status strings, and maps cells in row-major order.
+Missing values remain unavailable. Confidential observations (legacy c or
+restricted confidentiality flags after `|`, including `|C`) are suppressed, with
+null amounts; raw flags and bytes remain archived. Other flags such as estimates
+or low reliability are preserved. Unexpected dimension sets, truncated vectors,
+out-of-range indexes, changed selected categories, provider error/warning bodies
+and asynchronous responses fail before persistence. A subsequent explicit fetch
+can retry an asynchronous extraction; this adapter does not poll indefinitely.
+
+Accepted responses are limited to 8 MB and cubes to 1,000,000 cells. Selected
+fetches are limited to 10,000 cells. Shared HTTP retry/pacing and TLS verification
+apply; no browser, new dependency, live fallback or implicit refresh is used.
+All provider work finishes before a database writer opens. Failed acquisitions
+leave no partial snapshot. HTTP failures retain the existing source exit codes;
+invalid provider payloads return exit 5 and invalid selections return exit 2.
+
+Eurostat annual earnings include irregular payments. The adapter retains these
+as `gross_annual_earnings_including_irregular_pay`, with source GEO and ISCO-08
+codes, NACE Rev.2 B-S excluding O coverage, enterprise size, sex/age and reference
+period. Values are published EUR amounts, preserved without an extra FX step.
+They appear as context when compared with a posting's base pay. Dataset `updated`
+is retained as a release label, not asserted as a publication timestamp; actual
+`released_at` remains unknown. Historical reports use stored inputs only.
+
+References: [Eurostat Statistics API](https://ec.europa.eu/eurostat/web/user-guides/data-browser/api-data-access/api-detailed-guidelines/api-statistics),
+[JSON-stat specification](https://json-stat.org/format/),
+[SES definitions](https://ec.europa.eu/eurostat/cache/metadata/en/earn_ses2022_esms.htm).
 
 ## Snapshot document
 
@@ -41,7 +106,7 @@ for explicit imports and future adapters. An import is a caller assertion about
 the source; it does not independently verify provider authenticity or pagination.
 Acquisition adapters must complete and validate all requested pages before
 constructing a snapshot. The `BenchmarkProvider` protocol exposes `discover()`
-and `fetch(query)`; no live implementation is included in this phase.
+and `fetch(query)`; the first implementation is Eurostat.
 
 Each response preserves `source_url`, exact `body_base64`, and the SHA-256 of the
 decoded bytes in `body_sha256`. Its `response_id` is the canonical content hash
