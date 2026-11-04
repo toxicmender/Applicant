@@ -5,14 +5,26 @@ from __future__ import annotations
 import argparse
 import sys
 
+from ..domain.job import Job
 from ..log import get
-from .common import add_filters, file_arg, filters_from
+from ..settings import FilterOptions, Settings
+from .dispatch import AddParser, Request
+from .common import add_filters, configured_path, filters_from
 from .render import shown, terminal
 
 logger = get(__name__)
 
 
-def add_parser(add) -> argparse.ArgumentParser:
+class Apply(FilterOptions, Request):
+    input: str | None = None
+    log: str | None = None
+    cookies: str | None = None
+    dry_run: bool = False
+    show: bool = False
+    yes: bool = False
+
+
+def add_parser(add: AddParser) -> argparse.ArgumentParser:
     apply_ = add('apply', help='apply to stored jobs and log them for a spreadsheet')
     apply_.add_argument(
         '-i',
@@ -47,12 +59,14 @@ def add_parser(add) -> argparse.ArgumentParser:
     return apply_
 
 
-def run(args) -> int:
+def run(args: Apply, settings: Settings) -> int:
     from ..search import Jobs
     from ..services.apply import worklist
 
-    settings = args.settings
-    source, log = file_arg(args, 'input', 'listing'), file_arg(args, 'log', 'applications')
+    source, log = (
+        configured_path(settings, args.input, settings.files.listing),
+        configured_path(settings, args.log, settings.files.applications),
+    )
     work = worklist(source, filters_from(args), settings.store)
     if not work.read:
         print('no jobs to apply to in {}'.format(source))
@@ -65,9 +79,9 @@ def run(args) -> int:
     logger.info(
         f'apply: {len(work.matching)} job(s) to {log}' + (' (dry run)' if args.dry_run else '')
     )
-    declined = []
+    declined: list[Job] = []
 
-    def confirm(targets) -> bool:
+    def confirm(targets: list[Job]) -> bool:
         if args.yes:
             return True
         print('about to submit {} application(s) in your name:'.format(len(targets)))
@@ -85,7 +99,7 @@ def run(args) -> int:
             declined.extend(targets)
         return answered
 
-    session = file_arg(args, 'cookies', 'cookies')
+    session = configured_path(settings, args.cookies, settings.files.cookies)
     with Jobs(headless=not args.show, backend=settings.store, session=session) as board:
         board.apply(work.matching, log=log, dry_run=args.dry_run, confirm=confirm)
     if declined:

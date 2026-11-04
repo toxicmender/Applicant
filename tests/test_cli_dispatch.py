@@ -17,6 +17,20 @@ class DispatchTest(unittest.TestCase):
         self.assertIn('--unexpected', str(caught.exception))
         self.assertNotIn('sensitive-input', str(caught.exception))
 
+    def test_negative_filters_fail_before_creating_a_log(self):
+        from applicant.cli import main
+        from contextlib import redirect_stderr
+        from pathlib import Path
+        import io
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as root:
+            for command in (['search', 'python'], ['apply']):
+                for flag in ('--experience', '--min-salary'):
+                    with self.subTest(command=command, flag=flag), redirect_stderr(io.StringIO()):
+                        self.assertEqual(main(['--data-dir', root, *command, flag, '-1']), 2)
+            self.assertEqual(list(Path(root).iterdir()), [])
+
     def test_status_keeps_the_json_filename(self):
         args: argparse.Namespace = build_parser().parse_args(['status', '--json', 'out.json'])
         self.assertEqual(args.json, 'out.json')

@@ -103,11 +103,11 @@ class ParserTest(unittest.TestCase):
     def test_search_defaults(self):
         """Unset flags parse as None - so a saved search can fill them - and
         take their defaults when the search is resolved."""
-        from applicant.cli.search import resolve
+        from applicant.cli.search import Search
 
         args = self.parser.parse_args(['search', 'python developer'])
         self.assertIsNone(args.limit)
-        resolved = resolve(args, {})
+        resolved = Search.model_validate({'keywords': args.keywords})
         self.assertEqual(resolved.keywords, 'python developer')
         self.assertEqual(resolved.source, ['all'])
         self.assertEqual(resolved.limit, 25)

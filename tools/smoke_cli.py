@@ -15,6 +15,7 @@ from applicant.cli import main
 
 # argv, exit code, required output, forbidden output
 CASES = [
+    (['search', '--help'], 0, '--list-saved', '--database'),
     (['rank', '--list-runs'], 2, 'usage: applicant rank', ''),
     (['survey', '--from-file', 'unused'], 2, 'usage: applicant survey', ''),
     (['evaluate', '--help'], 0, '--feedback-through', '--decision'),

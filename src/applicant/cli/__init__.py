@@ -125,8 +125,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # the names are read here, at call time, so a patched run_* is the one bound
     jobs.add_parser(add).set_defaults(handler=run_jobs)
-    search.add_parser(add).set_defaults(handler=run_search)
-    apply.add_parser(add).set_defaults(handler=run_apply)
+    bind(search.add_parser(add), search.Search, run_search)
+    bind(apply.add_parser(add), apply.Apply, run_apply)
     benchmark.add_parser(add)
     company_evidence.add_parser(add)
     reviews.add_parser(add).set_defaults(handler=run_reviews)

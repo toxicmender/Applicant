@@ -67,7 +67,7 @@ def bind(
     def prepare(args: argparse.Namespace, settings: Settings) -> Callable[[], int]:
         values = {name: value for name, value in vars(args).items() if name not in PLUMBING}
         try:
-            request = model.model_validate(values)
+            request = model.model_validate(values, context=settings)
         except ValidationError as error:
             # User inputs may include credentials. Render only field names and constraints.
             details = ', '.join(

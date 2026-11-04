@@ -74,7 +74,22 @@ class Files(BaseModel):
     tracxn_profile: str = '.tx_profile'
 
 
-class SavedSearch(BaseModel):
+class FilterOptions(BaseModel):
+    """Shared constraints for saved searches and live CLI filters."""
+
+    location: str | None = None
+    title: list[str] | None = None
+    company: list[str] | None = None
+    min_salary: float | None = Field(default=None, ge=0)
+    currency: str | None = None
+    salary_basis: Literal['ppp', 'market', 'strict'] | None = None
+    experience: float | None = Field(default=None, ge=0)
+    posted_within: int | None = Field(default=None, gt=0)
+    strict: bool | None = None
+    strict_published: bool | None = None
+
+
+class SavedSearch(FilterOptions):
     """A standing `applicant search`, kept in applicant.toml under [searches.<name>].
 
     Every field is a search flag, named as its long option (`--posted-within`
@@ -92,7 +107,6 @@ class SavedSearch(BaseModel):
     model_config = ConfigDict(frozen=True, extra='forbid')
 
     keywords: str | None = None
-    location: str | None = None
     source: list[SourceName] | None = None
     # counts are 1 or more, as on the command line: `want = 0` is a typo
     limit: int | None = Field(default=None, gt=0)
@@ -101,15 +115,6 @@ class SavedSearch(BaseModel):
     output: str | None = None
     enrich: bool | None = None
     enrich_limit: int | None = Field(default=None, gt=0)
-    title: list[str] | None = None
-    company: list[str] | None = None
-    min_salary: float | None = Field(default=None, ge=0)
-    currency: str | None = None
-    salary_basis: Literal['ppp', 'market', 'strict'] | None = None
-    experience: float | None = Field(default=None, ge=0)
-    posted_within: int | None = Field(default=None, gt=0)
-    strict: bool | None = None
-    strict_published: bool | None = None
 
     @field_validator('source', 'title', 'company', mode='before')
     @classmethod

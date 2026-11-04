@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import argparse
-import sys
+from typing import Any, get_args
 
+from pydantic import Field, PositiveInt, ValidationInfo, model_validator
+
+from ..errors import ConfigError
 from ..log import get
 from ..services.search import SOURCES
-from .common import add_filters, file_arg, filters_from, positive_int
+from ..settings import FilterOptions, SavedSearch, Settings, SourceName
+from .common import add_filters, configured_path, filters_from, positive_int
+from .dispatch import AddParser, Request
 
 logger = get(__name__)
 
 
-def add_parser(add) -> argparse.ArgumentParser:
+def add_parser(add: AddParser) -> argparse.ArgumentParser:
     search = add('search', help='search job boards without signing in')
     search.add_argument(
         'keywords',
@@ -33,7 +38,7 @@ def add_parser(add) -> argparse.ArgumentParser:
         '-s',
         '--source',
         nargs='+',
-        choices=[*SOURCES, 'all'],
+        choices=get_args(SourceName),
         help='which boards to search',
     )
     search.add_argument(
@@ -82,66 +87,67 @@ def add_parser(add) -> argparse.ArgumentParser:
     return search
 
 
-# what an unset search flag means, once any saved search has had its say
-DEFAULTS = {
-    'location': '',
-    'source': ['all'],
-    'limit': 25,
-    'max_rounds': 4,
-    'enrich': False,
-    'enrich_limit': 25,
-}
+class Overrides(SavedSearch, Request):
+    saved: str | None = None
+    list_saved: bool = False
+    show: bool = False
 
 
-class UsageError(Exception):
-    """A search that cannot run as asked: exit 2, like argparse's own errors."""
+class Search(FilterOptions, Request):
+    location: str | None = ''
+    keywords: str = ''
+    saved: str | None = None
+    list_saved: bool = False
+    show: bool = False
+    source: list[SourceName] = Field(default_factory=lambda: ['all'])
+    limit: PositiveInt = 25
+    want: PositiveInt | None = None
+    max_rounds: PositiveInt = 4
+    enrich: bool = False
+    enrich_limit: PositiveInt = 25
+    output: str | None = None
+
+    @model_validator(mode='before')
+    @classmethod
+    def resolve(cls, raw: dict[str, Any], info: ValidationInfo) -> dict[str, Any]:
+        overrides = Overrides.model_validate(raw)
+        values: dict[str, Any] = {}
+        if overrides.saved is not None and not overrides.list_saved:
+            settings = info.context
+            if not isinstance(settings, Settings):
+                raise ValueError('saved search requires settings')
+            saved = settings.searches.get(overrides.saved)
+            if saved is None:
+                known = (
+                    ', '.join(sorted(settings.searches))
+                    or 'none - add [searches.<name>] to applicant.toml'
+                )
+                raise ConfigError(f'no saved search {overrides.saved!r}; saved: {known}')
+            values = saved.model_dump(exclude_none=True)
+        values.update(overrides.model_dump(exclude_none=True))
+        if not overrides.list_saved and not values.get('keywords'):
+            raise ConfigError('search needs keywords, or --saved NAME for a search that has them')
+        return values
 
 
-def resolve(args, saved: dict) -> argparse.Namespace:
-    """The search to run: the command line, then the saved search, then defaults.
-
-    A flag left unset is None, so "not given" can be told from "given"; only
-    those are filled from `--saved`, and only then from DEFAULTS.
-    """
-    values = vars(args).copy()
-    if args.saved is not None:
-        if args.saved not in saved:
-            known = ', '.join(sorted(saved)) or 'none - add [searches.<name>] to applicant.toml'
-            raise UsageError(f'no saved search {args.saved!r}; saved: {known}')
-        for field, value in saved[args.saved].model_dump(exclude_none=True).items():
-            if values.get(field) is None:
-                values[field] = value
-    for field, value in DEFAULTS.items():
-        if values.get(field) is None:
-            values[field] = value
-    if not values.get('keywords'):
-        raise UsageError('search needs keywords, or --saved NAME for a search that has them')
-    return argparse.Namespace(**values)
-
-
-def list_saved(saved: dict) -> int:
+def list_saved(saved: dict[str, SavedSearch]) -> int:
     if not saved:
         print('no saved searches - add [searches.<name>] tables to applicant.toml')
         return 0
     for name, search in sorted(saved.items()):
         fields = search.model_dump(exclude_none=True)
+        if search.keywords is not None:
+            fields = {'keywords': search.keywords, **fields}
         print('{}: {}'.format(name, ', '.join(f'{key}={value!r}' for key, value in fields.items())))
     return 0
 
 
-def run(args) -> int:
+def run(args: Search, settings: Settings) -> int:
     from ..search import Jobs
     from ..services.search import store
 
-    settings = args.settings
     if args.list_saved:
         return list_saved(settings.searches)
-    try:
-        args = resolve(args, settings.searches)
-    except UsageError as error:
-        print('applicant search: {}'.format(error), file=sys.stderr)
-        return 2
-
     wanted = SOURCES if 'all' in args.source else args.source
     logger.info(
         f'search: {args.keywords!r} on {", ".join(wanted)}, up to {args.limit} per board'
@@ -163,7 +169,9 @@ def run(args) -> int:
         print('nothing matched')
         return 1
 
-    stored = store(found, file_arg(args, 'output', 'listing'), settings.store)
+    stored = store(
+        found, configured_path(settings, args.output, settings.files.listing), settings.store
+    )
     print(
         '{} jobs written to {} ({} stored in total)'.format(stored.saved, stored.path, stored.total)
     )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 
 from ..filters import JobFilter
+from ..settings import FilterOptions, Settings
 
 
 def positive_int(text: str) -> int:
@@ -84,6 +85,10 @@ def shared_flags(*, suppress: bool) -> argparse.ArgumentParser:
     return flags
 
 
+def configured_path(settings: Settings, value: str | None, fallback: str) -> str:
+    return settings.path(fallback if value is None else value)
+
+
 def file_arg(args, name: str, field: str) -> str:
     """The path a file flag names, or else the one `[files] <field>` names.
 
@@ -95,7 +100,7 @@ def file_arg(args, name: str, field: str) -> str:
     return settings.path(value if value is not None else getattr(settings.files, field))
 
 
-def add_filters(command) -> None:
+def add_filters(command: argparse.ArgumentParser) -> None:
     command.add_argument(
         '-t',
         '--title',
@@ -148,7 +153,7 @@ def add_filters(command) -> None:
     )
 
 
-def filters_from(args) -> JobFilter:
+def filters_from(args: FilterOptions) -> JobFilter:
     """The JobFilter the filter flags describe.
 
     Flags left unset are None - so a saved search can tell them from a value
