@@ -15,6 +15,8 @@ from applicant.cli import main
 
 # argv, exit code, required output, forbidden output
 CASES = [
+    (['benchmark', 'fetch', '--query', 'unused', '--snapshot', 'bad'], 2, '--snapshot', ''),
+    (['benchmark', 'fetch', '--help'], 0, '--query', '--snapshot'),
     ([], 2, 'usage: applicant', ''),
     (['--help'], 0, '--version', ''),
     (['status', '--help'], 0, '--json', ''),

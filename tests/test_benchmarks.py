@@ -437,7 +437,9 @@ class BenchmarkCliTest(unittest.TestCase):
             ('import', '--from-file', str(self.input), '--run', 'x'),
             ('compare', '--run', 'x', '--selections', 'x', '--snapshot', 'x'),
         ):
-            self.assertEqual(self.cli(*options)[0], 2)
+            with self.subTest(options=options), self.assertRaises(SystemExit) as stopped:
+                self.cli(*options)
+            self.assertEqual(stopped.exception.code, 2)
         self.assertEqual(self.cli('show', '--snapshot', 'x', '--database', 'absent.db')[0], 4)
         self.assertEqual(self.cli('show', '--snapshot', 'missing')[0], 4)
         self.input.write_text('{"kind":1,"kind":2}', encoding='utf-8')

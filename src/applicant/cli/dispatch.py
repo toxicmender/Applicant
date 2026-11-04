@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from ..errors import ConfigError
 from ..settings import Settings
+from .common import shared_flags
 
 
 class AddParser(Protocol):
@@ -19,6 +20,16 @@ class AddParser(Protocol):
 
 class Request(BaseModel):
     model_config = ConfigDict(strict=True, extra='forbid', frozen=True, validate_default=True)
+
+
+def actions(group: argparse.ArgumentParser) -> AddParser:
+    commands = group.add_subparsers(dest='action', required=True)
+    shared = shared_flags(suppress=True)
+
+    def add(name: str, *, help: str) -> argparse.ArgumentParser:
+        return commands.add_parser(name, help=help, description=help, parents=[shared])
+
+    return add
 
 
 R = TypeVar('R', bound=Request)

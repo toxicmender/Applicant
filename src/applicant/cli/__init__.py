@@ -126,7 +126,7 @@ def build_parser() -> argparse.ArgumentParser:
     jobs.add_parser(add).set_defaults(handler=run_jobs)
     search.add_parser(add).set_defaults(handler=run_search)
     apply.add_parser(add).set_defaults(handler=run_apply)
-    benchmark.add_parser(add).set_defaults(handler=run_benchmark)
+    benchmark.add_parser(add)
     company_evidence.add_parser(add).set_defaults(handler=run_company_evidence)
     reviews.add_parser(add).set_defaults(handler=run_reviews)
     financials.add_parser(add).set_defaults(handler=run_financials)

@@ -71,7 +71,7 @@ pythonVersion = "3.10"
 venvPath = "."
 venv = ".venv"
 typeCheckingMode = "basic"
-strict = ["src/applicant/cli/dispatch.py", "src/applicant/cli/status.py"]
+strict = ["src/applicant/cli/dispatch.py", "src/applicant/cli/status.py", "src/applicant/cli/benchmark.py", "src/applicant/cli/database.py"]
 reportMissingImports = "error"
 
 [tool.ruff]

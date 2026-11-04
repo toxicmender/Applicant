@@ -1,8 +1,13 @@
 """Strict benchmark imports and offline cohort reports."""
 
+import argparse
 import json
 import sys
 from pathlib import Path
+
+from typing import Annotated, Literal, get_args
+
+from pydantic import Field, StringConstraints
 
 from ..domain.benchmarks import BenchmarkComparisonDocument, BenchmarkQuery, BenchmarkSnapshot
 from ..domain.canonical import canonical_json
@@ -14,11 +19,20 @@ from ..infra.store.ranking_runs import RankingRunNotFound
 from ..services.benchmark_acquisition import discover_benchmarks, fetch_benchmarks
 from ..services.benchmarks import compare_benchmarks, import_snapshot, show_snapshots
 from ..settings import Settings
-from .dispatch import Request
-from .feedback import database_path
+from .database import database_path, export_path
+from .dispatch import AddParser, Request, actions, bind
 
 
-class ImportSnapshot(Request):
+Identifier = Annotated[str, StringConstraints(pattern=r'\S')]
+
+
+class BenchmarkRequest(Request):
+    database: str | None = None
+    export: str | None = None
+    json_output: bool = Field(default=False, alias='json')
+
+
+class ImportSnapshot(BenchmarkRequest):
     from_file: str
     dry_run: bool = False
 
@@ -41,16 +55,16 @@ def require_database(database: Path) -> None:
         raise BenchmarkNotFound(f'database not found: {database}') from None
 
 
-class ShowSnapshots(Request):
-    snapshot: list[str]
+class ShowSnapshots(BenchmarkRequest):
+    snapshot: list[Identifier]
 
     def report(self, database: Path, settings: Settings) -> dict[str, object]:
         require_database(database)
         return show_snapshots(database, tuple(self.snapshot))
 
 
-class CompareSnapshots(Request):
-    run: str
+class CompareSnapshots(BenchmarkRequest):
+    run: Identifier
     selections: str
 
     def report(self, database: Path, settings: Settings) -> dict[str, object]:
@@ -61,80 +75,64 @@ class CompareSnapshots(Request):
         return compare_benchmarks(database, self.run, document)
 
 
-def add_parser(add):
-    command = add('benchmark', help='import and compare immutable wage benchmark cohorts offline')
-    command.add_argument('action', choices=('import', 'show', 'compare', 'discover', 'fetch'))
-    command.add_argument('--provider')
-    command.add_argument('--query')
-    command.add_argument('--database')
-    command.add_argument('--from-file')
-    command.add_argument('--snapshot', action='append', default=[])
-    command.add_argument('--run')
-    command.add_argument('--selections')
+Provider = Literal['bls', 'eurostat', 'mospi']
+
+
+class Discover(BenchmarkRequest):
+    provider: Provider
+
+    def report(self, database: Path, settings: Settings) -> dict[str, object]:
+        return discover_benchmarks(self.provider)
+
+
+class Fetch(BenchmarkRequest):
+    query: str
+
+    def report(self, database: Path, settings: Settings) -> dict[str, object]:
+        query = BenchmarkQuery.model_validate(
+            read_ranking_document(Path(settings.path(self.query)), decimal=True)
+        )
+        return fetch_benchmarks(database, query)
+
+
+Benchmark = ImportSnapshot | ShowSnapshots | CompareSnapshots | Discover | Fetch
+
+
+def add_parser(add: AddParser) -> None:
+    group = add('benchmark', help='import and compare wage benchmark cohorts')
+    action = actions(group)
+
+    def leaf(name: str, help: str) -> argparse.ArgumentParser:
+        command = action(name, help=help)
+        command.add_argument('--database')
+        command.add_argument('--export')
+        command.add_argument('--json', action='store_true')
+        return command
+
+    command = leaf('import', 'import an immutable benchmark snapshot')
+    command.add_argument('--from-file', required=True)
     command.add_argument('--dry-run', action='store_true')
-    command.add_argument('--export')
-    command.add_argument('--json', action='store_true')
-    return command
+    bind(command, ImportSnapshot, run)
+    command = leaf('show', 'display stored benchmark snapshots')
+    command.add_argument('--snapshot', action='append', required=True)
+    bind(command, ShowSnapshots, run)
+    command = leaf('compare', 'compare a ranking run against selected benchmarks')
+    command.add_argument('--run', required=True)
+    command.add_argument('--selections', required=True)
+    bind(command, CompareSnapshots, run)
+    command = leaf('discover', 'discover available provider datasets')
+    command.add_argument('--provider', required=True, choices=get_args(Provider))
+    bind(command, Discover, run)
+    command = leaf('fetch', 'fetch the observations specified by a query document')
+    command.add_argument('--query', required=True)
+    bind(command, Fetch, run)
 
 
-def run(args) -> int:
+def run(args: Benchmark, settings: Settings) -> int:
     try:
-        database = database_path(args)
-        target = Path(args.settings.path(args.export)).resolve() if args.export else None
-        if target in {
-            database.resolve(),
-            *(Path(str(database) + s).resolve() for s in ('-wal', '-shm')),
-        }:
-            raise ConfigError('export must not replace database or sidecars')
-        if args.action in ('discover', 'fetch'):
-            if (
-                args.from_file
-                or args.snapshot
-                or args.run is not None
-                or args.selections
-                or args.dry_run
-            ):
-                raise ConfigError(
-                    'acquisition cannot combine with offline input or dry-run options'
-                )
-            if args.action == 'discover':
-                if not args.provider or args.query:
-                    raise ConfigError('discover requires --provider without --query')
-                report = discover_benchmarks(args.provider)
-            else:
-                if not args.query or args.provider is not None:
-                    raise ConfigError('fetch requires --query; provider is defined by the query')
-                query = BenchmarkQuery.model_validate(
-                    read_ranking_document(Path(args.settings.path(args.query)), decimal=True)
-                )
-                report = fetch_benchmarks(database, query)
-        elif args.provider is not None or args.query is not None:
-            raise ConfigError('--provider/--query require discover/fetch')
-        elif args.action == 'import':
-            if not args.from_file or args.snapshot or args.run is not None or args.selections:
-                raise ConfigError('import requires --from-file without snapshot/run/selections')
-            report = ImportSnapshot(from_file=args.from_file, dry_run=args.dry_run).report(
-                database, args.settings
-            )
-        else:
-            if args.from_file or args.dry_run:
-                raise ConfigError('--from-file and --dry-run require import')
-            if args.action == 'show':
-                if (
-                    not args.snapshot
-                    or any(not v.strip() for v in args.snapshot)
-                    or args.run is not None
-                    or args.selections
-                ):
-                    raise ConfigError('show requires --snapshot without run/selections')
-            elif not args.run or not args.run.strip() or not args.selections or args.snapshot:
-                raise ConfigError('compare requires --run --selections without --snapshot')
-            request = (
-                ShowSnapshots(snapshot=args.snapshot)
-                if args.action == 'show'
-                else CompareSnapshots(run=args.run, selections=args.selections)
-            )
-            report = request.report(database, args.settings)
+        database = database_path(settings, args.database)
+        target = export_path(settings, database, args.export)
+        report = args.report(database, settings)
         if target is not None:
             try:
                 write_document(

@@ -339,7 +339,9 @@ class EurostatAcquisitionTest(unittest.TestCase):
                 ('discover', '--provider', 'eurostat', '--query', str(qpath)),
                 ('fetch', '--query', str(qpath), '--provider', 'eurostat'),
             ):
-                self.assertEqual(cli(*args)[0], 2)
+                with self.subTest(args=args), self.assertRaises(SystemExit) as stopped:
+                    cli(*args)
+                self.assertEqual(stopped.exception.code, 2)
             with self.assertRaises(ConfigError):
                 discover_benchmarks('unknown')
             wrong = saved.model_copy(

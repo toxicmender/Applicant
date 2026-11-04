@@ -1,6 +1,7 @@
 """Explicit benchmark acquisition; persist only a validated completed response."""
 
 from pathlib import Path
+from typing import Any
 
 from ..domain.benchmarks import BenchmarkProvider, BenchmarkQuery
 from ..errors import ConfigError
@@ -21,11 +22,11 @@ def provider(name: str) -> BenchmarkProvider:
     raise ConfigError('supported benchmark providers: eurostat, bls, mospi')
 
 
-def discover_benchmarks(name: str) -> dict:
+def discover_benchmarks(name: str) -> dict[str, Any]:
     return provider(name).discover()
 
 
-def fetch_benchmarks(database: Path, query: BenchmarkQuery) -> dict:
+def fetch_benchmarks(database: Path, query: BenchmarkQuery) -> dict[str, Any]:
     query = validated(query)
     snapshot = validated(provider(query.provider).fetch(query))
     if (

@@ -7,6 +7,13 @@ change bumps the minor version.
 
 ## Unreleased
 
+### CLI migration
+
+| Previous invocation | 0.3.0 invocation | Change |
+| --- | --- | --- |
+| `benchmark --query PATH fetch` | `benchmark fetch --query PATH` | Action options follow the verb. |
+
+
 - Record the M4 delivery/coverage audit and fresh public-provider validation
   ledger. Local implementation and gates are delivered; BLS metadata access,
   MoSPI default-TLS acquisition and hosted/live acceptance remain open.

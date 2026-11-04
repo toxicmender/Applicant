@@ -2,6 +2,7 @@
 
 from decimal import localcontext
 from pathlib import Path
+from typing import Any
 
 from ..domain.benchmark_normalization import cohort_groups, normalize_observation
 from ..domain.benchmarks import BenchmarkComparisonDocument, BenchmarkSnapshot
@@ -27,7 +28,7 @@ def import_snapshot(
         return BenchmarkRepository(writer.db).put(snapshot)
 
 
-def show_snapshots(database: Path, snapshot_ids: tuple[str, ...]) -> dict:
+def show_snapshots(database: Path, snapshot_ids: tuple[str, ...]) -> dict[str, Any]:
     if not snapshot_ids or len(set(snapshot_ids)) != len(snapshot_ids):
         raise ValueError('select unique benchmark snapshot IDs')
     with Store.open_readonly(database) as reader, reader.read_snapshot():
@@ -41,7 +42,7 @@ def show_snapshots(database: Path, snapshot_ids: tuple[str, ...]) -> dict:
     }
 
 
-def compare_benchmarks(database: Path, run_id: str, document: BenchmarkComparisonDocument) -> dict:
+def compare_benchmarks(database: Path, run_id: str, document: BenchmarkComparisonDocument) -> dict[str, Any]:
     document = validated(document)
     with Store.open_readonly(database) as reader, reader.read_snapshot():
         history = load_history(reader, run_id)
