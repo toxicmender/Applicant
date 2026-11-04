@@ -16,7 +16,48 @@ from ..services.company_evidence import (
     import_company_evidence,
     show_company_evidence,
 )
+from ..settings import Settings
+from .dispatch import Request
 from .feedback import database_path
+
+
+class ImportEvidence(Request):
+    from_file: str
+    dry_run: bool = False
+
+    def document(self, settings: Settings) -> CompanyEvidenceImport:
+        data = read_ranking_document(Path(settings.path(self.from_file)), decimal=True)
+        return CompanyEvidenceImport.model_validate(data)
+
+    def report(self, database: Path, settings: Settings) -> dict[str, object]:
+        return import_company_evidence(database, self.document(settings), dry_run=self.dry_run)
+
+
+class Associate(ImportEvidence):
+    def document(self, settings: Settings) -> CompanyEvidenceImport:
+        data = read_ranking_document(Path(settings.path(self.from_file)), decimal=True)
+        return CompanyEvidenceImport(associations=(CompanyAssociation.model_validate(data),))
+
+
+class Enrich(Request):
+    from_file: str
+    export: str
+
+    def report(self, database: Path, settings: Settings) -> dict[str, object]:
+        data = read_ranking_document(Path(settings.path(self.from_file)), decimal=True)
+        return enrich_company_evidence(
+            database, CompanyEnrichment.model_validate(data)
+        ).model_dump()
+
+
+class ShowEvidence(Request):
+    association: list[str]
+    snapshot: list[str]
+
+    def report(self, database: Path, settings: Settings) -> dict[str, object]:
+        return show_company_evidence(
+            database, association_ids=tuple(self.association), snapshot_ids=tuple(self.snapshot)
+        )
 
 
 def add_parser(add):
@@ -53,18 +94,13 @@ def run(args):
                 )
             if args.action == 'enrich' and (args.dry_run or target is None):
                 raise ConfigError('enrich requires --export without --dry-run')
-            data = read_ranking_document(Path(args.settings.path(args.from_file)), decimal=True)
             if args.action == 'enrich':
-                report = enrich_company_evidence(
-                    database, CompanyEnrichment.model_validate(data)
-                ).model_dump()
+                request = Enrich(from_file=args.from_file, export=args.export)
+            elif args.action == 'associate':
+                request = Associate(from_file=args.from_file, dry_run=args.dry_run)
             else:
-                document = (
-                    CompanyEvidenceImport(associations=(CompanyAssociation.model_validate(data),))
-                    if args.action == 'associate'
-                    else CompanyEvidenceImport.model_validate(data)
-                )
-                report = import_company_evidence(database, document, dry_run=args.dry_run)
+                request = ImportEvidence(from_file=args.from_file, dry_run=args.dry_run)
+            report = request.report(database, args.settings)
         else:
             if (
                 args.from_file
@@ -76,10 +112,8 @@ def run(args):
                     'show/capture/refresh require explicit IDs without --from-file/--dry-run'
                 )
             if args.action == 'show':
-                report = show_company_evidence(
-                    database,
-                    association_ids=tuple(args.association),
-                    snapshot_ids=tuple(args.snapshot),
+                report = ShowEvidence(association=args.association, snapshot=args.snapshot).report(
+                    database, args.settings
                 )
             else:
                 if args.snapshot:
