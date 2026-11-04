@@ -1,5 +1,8 @@
 """Explicit capture/import and offline enrichment; ranking never refreshes sources."""
 
+from collections.abc import Callable
+from typing import Any
+
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -22,6 +25,7 @@ from ..infra.store.job_versions import JobVersionRepository
 from ..infra.store.ranking_common import validated, write_transaction
 from ..infra.store.sqlite import Store
 from ..reviews.models import CompanyRating, Review
+from ..settings import Settings
 from .ranking_evidence import capture_rating
 
 
@@ -72,7 +76,9 @@ def validate_payload(snapshot: CompanyEvidenceSnapshot):
         CompanyFinancials.model_validate(data)
 
 
-def import_company_evidence(database: Path, document: CompanyEvidenceImport, *, dry_run=False):
+def import_company_evidence(
+    database: Path, document: CompanyEvidenceImport, *, dry_run: bool = False
+) -> dict[str, Any]:
     document = validated(document)
     for snapshot in document.snapshots:
         validate_payload(snapshot)
@@ -133,11 +139,11 @@ def capture_company_evidence(
     database: Path,
     association_ids: tuple[str, ...],
     *,
-    settings,
-    clock=now,
+    settings: Settings,
+    clock: Callable[[], datetime] = now,
     observed_at: datetime | None = None,
-    observation_note='Source observation date unknown',
-):
+    observation_note: str = 'Source observation date unknown',
+) -> dict[str, Any]:
     if not association_ids or len(set(association_ids)) != len(association_ids):
         raise ValueError('select unique company association IDs')
     with Store.open_readonly(database) as store, store.read_snapshot():
@@ -188,7 +194,9 @@ def capture_company_evidence(
     }
 
 
-def show_company_evidence(database: Path, *, association_ids=(), snapshot_ids=()):
+def show_company_evidence(
+    database: Path, *, association_ids: tuple[str, ...] = (), snapshot_ids: tuple[str, ...] = ()
+) -> dict[str, Any]:
     with Store.open_readonly(database) as store, store.read_snapshot():
         repo = CompanyEvidenceRepository(store.db)
         associations = tuple(repo.association(key) for key in association_ids)
@@ -207,7 +215,7 @@ def show_company_evidence(database: Path, *, association_ids=(), snapshot_ids=()
 
 
 def enrich_company_evidence(
-    database: Path, document: CompanyEnrichment, *, clock=now
+    database: Path, document: CompanyEnrichment, *, clock: Callable[[], datetime] = now
 ) -> JobVersionBundle:
     document = validated(document)
     with Store.open_readonly(database) as store, store.read_snapshot():

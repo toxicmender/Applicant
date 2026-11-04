@@ -5,9 +5,9 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable
 from functools import partial
-from typing import Protocol, TypeVar
+from typing import Annotated, Protocol, TypeVar
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 from ..errors import ConfigError
 from ..settings import Settings
@@ -20,6 +20,14 @@ class AddParser(Protocol):
 
 class Request(BaseModel):
     model_config = ConfigDict(strict=True, extra='forbid', frozen=True, validate_default=True)
+
+
+Identifier = Annotated[str, StringConstraints(pattern=r'\S')]
+
+
+class DatabaseRequest(Request):
+    database: str | None = None
+    json_output: bool = Field(default=False, alias='json')
 
 
 def actions(group: argparse.ArgumentParser) -> AddParser:

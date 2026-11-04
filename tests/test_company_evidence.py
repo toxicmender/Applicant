@@ -571,7 +571,7 @@ class CompanyStoreTest(unittest.TestCase):
             'applicant.services.company_evidence.company_client', side_effect=self.fake_factory
         ):
             report = capture_company_evidence(
-                self.path, tuple(IDS), settings=None, clock=lambda: NOW
+                self.path, tuple(IDS), settings=Settings(), clock=lambda: NOW
             )
         self.assertTrue(report['success'])
         self.assertEqual(len(report['outcomes']), 4)
@@ -580,7 +580,7 @@ class CompanyStoreTest(unittest.TestCase):
             'applicant.services.company_evidence.company_client', side_effect=self.fake_factory
         ):
             refreshed = capture_company_evidence(
-                self.path, ('glassdoor',), settings=None, clock=lambda: NOW
+                self.path, ('glassdoor',), settings=Settings(), clock=lambda: NOW
             )
         self.assertNotEqual(
             refreshed['outcomes'][0]['snapshot']['snapshot_id'],
@@ -594,13 +594,13 @@ class CompanyStoreTest(unittest.TestCase):
 
         with mock.patch('applicant.services.company_evidence.company_client', side_effect=partial):
             result = capture_company_evidence(
-                self.path, ('glassdoor', 'crunchbase'), settings=None, clock=lambda: NOW
+                self.path, ('glassdoor', 'crunchbase'), settings=Settings(), clock=lambda: NOW
             )
         self.assertFalse(result['success'])
         self.assertEqual([o['status'] for o in result['outcomes']], ['failed', 'captured'])
         for ids in ((), ('glassdoor', 'glassdoor')):
             with self.assertRaises(ValueError):
-                capture_company_evidence(self.path, ids, settings=None)
+                capture_company_evidence(self.path, ids, settings=Settings())
 
         def wrong(a, recorder, *, settings):
             client = self.fake_factory(a, recorder, settings=settings)
@@ -610,7 +610,7 @@ class CompanyStoreTest(unittest.TestCase):
         with mock.patch('applicant.services.company_evidence.company_client', side_effect=wrong):
             self.assertFalse(
                 capture_company_evidence(
-                    self.path, ('glassdoor',), settings=None, clock=lambda: NOW
+                    self.path, ('glassdoor',), settings=Settings(), clock=lambda: NOW
                 )['success']
             )
 
@@ -761,11 +761,16 @@ class CompanyJourneyTest(unittest.TestCase):
             json.loads(exported.read_text(encoding='utf-8'))['kind'], 'ranking_job_versions'
         )
         for options in (
-            ('show',),
             ('show', '--from-file', str(document)),
             ('capture', '--snapshot', 'x'),
             ('associate', '--association', 'x'),
             ('enrich', '--from-file', str(selected)),
+        ):
+            with self.subTest(options=options), self.assertRaises(SystemExit) as stopped:
+                self.cli(*options)
+            self.assertEqual(stopped.exception.code, 2)
+        for options in (
+            ('show',),
             ('show', '--snapshot', ' '),
             ('show', '--snapshot', 'x', '--export', str(self.path)),
         ):

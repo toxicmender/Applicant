@@ -1,8 +1,11 @@
 """Explicit verified company capture, strict imports and offline enrichment."""
 
+import argparse
 import json
 import sys
 from pathlib import Path
+
+from pydantic import Field, model_validator
 
 from ..domain.canonical import canonical_json
 from ..domain.company_evidence import CompanyAssociation, CompanyEnrichment, CompanyEvidenceImport
@@ -17,11 +20,15 @@ from ..services.company_evidence import (
     show_company_evidence,
 )
 from ..settings import Settings
-from .dispatch import Request
-from .feedback import database_path
+from .database import database_path, export_path
+from .dispatch import AddParser, DatabaseRequest, Identifier, actions, bind
 
 
-class ImportEvidence(Request):
+class EvidenceRequest(DatabaseRequest):
+    export: str | None = None
+
+
+class ImportEvidence(EvidenceRequest):
     from_file: str
     dry_run: bool = False
 
@@ -39,7 +46,7 @@ class Associate(ImportEvidence):
         return CompanyEvidenceImport(associations=(CompanyAssociation.model_validate(data),))
 
 
-class Enrich(Request):
+class Enrich(DatabaseRequest):
     from_file: str
     export: str
 
@@ -50,9 +57,15 @@ class Enrich(Request):
         ).model_dump()
 
 
-class ShowEvidence(Request):
-    association: list[str]
-    snapshot: list[str]
+class ShowEvidence(EvidenceRequest):
+    association: list[Identifier] = Field(default_factory=list)
+    snapshot: list[Identifier] = Field(default_factory=list)
+
+    @model_validator(mode='after')
+    def require_selection(self):
+        if not self.association and not self.snapshot:
+            raise ValueError('supply --association or --snapshot')
+        return self
 
     def report(self, database: Path, settings: Settings) -> dict[str, object]:
         return show_company_evidence(
@@ -60,67 +73,58 @@ class ShowEvidence(Request):
         )
 
 
-def add_parser(add):
-    command = add('company-evidence', help='associate, capture and enrich exact company evidence')
-    command.add_argument(
-        'action', choices=('associate', 'import', 'capture', 'refresh', 'show', 'enrich')
+class Capture(EvidenceRequest):
+    association: list[Identifier]
+
+    def report(self, database: Path, settings: Settings) -> dict[str, object]:
+        return capture_company_evidence(database, tuple(self.association), settings=settings)
+
+
+Evidence = ImportEvidence | ShowEvidence | Enrich | Capture
+
+
+def add_parser(add: AddParser) -> None:
+    action = actions(
+        add('company-evidence', help='associate, capture and enrich exact company evidence')
     )
-    command.add_argument('--database')
-    command.add_argument('--from-file')
+
+    def leaf(name: str, help: str) -> argparse.ArgumentParser:
+        command = action(name, help=help)
+        command.add_argument('--database')
+        command.add_argument('--export', required=name == 'enrich')
+        command.add_argument('--json', action='store_true')
+        return command
+
+    for name, model in (('associate', Associate), ('import', ImportEvidence)):
+        command = leaf(
+            name,
+            'import a company association'
+            if name == 'associate'
+            else 'import an evidence document',
+        )
+        command.add_argument('--from-file', required=True)
+        command.add_argument('--dry-run', action='store_true')
+        bind(command, model, run)
+    command = leaf('enrich', 'export job versions enriched with selected company evidence')
+    command.add_argument('--from-file', required=True)
+    bind(command, Enrich, run)
+    command = leaf('show', 'read selected company evidence offline')
     command.add_argument('--association', action='append', default=[])
     command.add_argument('--snapshot', action='append', default=[])
-    command.add_argument('--dry-run', action='store_true')
-    command.add_argument('--export')
-    command.add_argument('--json', action='store_true')
-    command.add_argument('--crunchbase-key')
-    command.add_argument('--tracxn-key')
-    return command
+    bind(command, ShowEvidence, run)
+    for name in ('capture', 'refresh'):
+        command = leaf(name, 'capture verified evidence for selected associations')
+        command.add_argument('--association', action='append', required=True)
+        command.add_argument('--crunchbase-key')
+        command.add_argument('--tracxn-key')
+        bind(command, Capture, run)
 
 
-def run(args):
+def run(args: Evidence, settings: Settings) -> int:
     try:
-        database = database_path(args)
-        target = Path(args.settings.path(args.export)).resolve() if args.export else None
-        protected = {
-            database.resolve(),
-            *(Path(str(database) + s).resolve() for s in ('-wal', '-shm')),
-        }
-        if target in protected:
-            raise ConfigError('export must not replace database or sidecars')
-        if args.action in ('associate', 'import', 'enrich'):
-            if not args.from_file or args.association or args.snapshot:
-                raise ConfigError(
-                    'associate/import/enrich require --from-file without association/snapshot flags'
-                )
-            if args.action == 'enrich' and (args.dry_run or target is None):
-                raise ConfigError('enrich requires --export without --dry-run')
-            if args.action == 'enrich':
-                request = Enrich(from_file=args.from_file, export=args.export)
-            elif args.action == 'associate':
-                request = Associate(from_file=args.from_file, dry_run=args.dry_run)
-            else:
-                request = ImportEvidence(from_file=args.from_file, dry_run=args.dry_run)
-            report = request.report(database, args.settings)
-        else:
-            if (
-                args.from_file
-                or args.dry_run
-                or not (args.association or args.snapshot)
-                or any(not k.strip() for k in (*args.association, *args.snapshot))
-            ):
-                raise ConfigError(
-                    'show/capture/refresh require explicit IDs without --from-file/--dry-run'
-                )
-            if args.action == 'show':
-                report = ShowEvidence(association=args.association, snapshot=args.snapshot).report(
-                    database, args.settings
-                )
-            else:
-                if args.snapshot:
-                    raise ConfigError('capture/refresh require --association without --snapshot')
-                report = capture_company_evidence(
-                    database, tuple(args.association), settings=args.settings
-                )
+        database = database_path(settings, args.database)
+        target = export_path(settings, database, args.export)
+        report = args.report(database, settings)
         if target is not None:
             try:
                 write_document(

@@ -5,9 +5,7 @@ import json
 import sys
 from pathlib import Path
 
-from typing import Annotated, Literal, get_args
-
-from pydantic import Field, StringConstraints
+from typing import Literal, get_args
 
 from ..domain.benchmarks import BenchmarkComparisonDocument, BenchmarkQuery, BenchmarkSnapshot
 from ..domain.canonical import canonical_json
@@ -20,16 +18,11 @@ from ..services.benchmark_acquisition import discover_benchmarks, fetch_benchmar
 from ..services.benchmarks import compare_benchmarks, import_snapshot, show_snapshots
 from ..settings import Settings
 from .database import database_path, export_path
-from .dispatch import AddParser, Request, actions, bind
+from .dispatch import AddParser, DatabaseRequest, Identifier, actions, bind
 
 
-Identifier = Annotated[str, StringConstraints(pattern=r'\S')]
-
-
-class BenchmarkRequest(Request):
-    database: str | None = None
+class BenchmarkRequest(DatabaseRequest):
     export: str | None = None
-    json_output: bool = Field(default=False, alias='json')
 
 
 class ImportSnapshot(BenchmarkRequest):

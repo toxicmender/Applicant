@@ -12,6 +12,7 @@ change bumps the minor version.
 | Previous invocation | 0.3.0 invocation | Change |
 | --- | --- | --- |
 | `benchmark --query PATH fetch` | `benchmark fetch --query PATH` | Action options follow the verb. |
+| `company-evidence --association ID capture` | `company-evidence capture --association ID` | Capture and refresh accept credentials. Offline actions accept their own document or ID options. |
 
 
 - Record the M4 delivery/coverage audit and fresh public-provider validation
