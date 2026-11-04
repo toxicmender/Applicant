@@ -95,6 +95,10 @@ Delivered locally:
   metadata-to-row label validation, retained quarter/year distinctions and the
   January 2025 methodology break. No schema change; default live TLS remains
   incompatible with the upstream legacy handshake, as detailed below.
+- Verified exact-version company associations and immutable evidence captures
+  (schema 7), raw-response hooks for all four existing providers, strict imports,
+  explicit enrichment bundles and dated company context in ranking reports.
+  See [company evidence contracts](company-evidence.md).
 
 The first three phases' full branch-enabled run passed 1,173 tests with 13 environment skips
 and 1,206 subtests. Overall coverage reports 98%; the 11 new runtime modules have
@@ -188,8 +192,34 @@ compatibility. The runtime adapter uses the shared client's unchanged TLS defaul
 it does not import the upstream SDK, disable verification, or opt into legacy
 renegotiation. CI uses synthetic responses and requires no live MoSPI access.
 
-Still pending: verified company
-associations/snapshots/enrichment; the full M4 installed CLI
+Phase 8 validation on Windows, 2026-11-04: **1,230 tests passed**, with **13
+environment skips** and **1,429 subtests**. The 17 focused evidence tests include
+Hypothesis canonical-number round trips, upgrades from all six prior schemas,
+migration/import rollback, indexed composite foreign keys, immutable SQL,
+retry-safe IDs, corrupt payload/key/hash rejection, wrong/ambiguous structured
+provider IDs, partial provider failure, date/count policies, enrichment and
+unchanged old-run replay. Offline HTTP and browser flows exercise raw capture
+through all four actual client implementations. The original ranking/profile
+formats and `ranking-1` remain unchanged. Financial information remains context.
+
+All five new runtime modules have **100% statement and branch coverage**
+(392 statements, 140 branches); overall coverage reports **99%**. The final
+historical-association corruption guard was covered in an additional focused
+run after the full suite. No exclusions or runtime dependencies were added.
+Ruff, formatting, Windows/Linux Pyright, uv lock validation and sdist/wheel
+build passed. A freshly rebuilt isolated installed package passed **73 tests**
+and **177 subtests** covering company evidence, feedback, evaluation,
+personalization, all benchmark adapters and the subprocess ranking journey.
+
+Live provider validation is **partial**. One public AmbitionBox request passed
+through the normal client and raw recorder (returned company ID `42`, one raw
+response). This verified decoding/acquisition compatibility only; no association
+was independently verified or persisted. Live Glassdoor, Crunchbase and Tracxn
+checks were **unavailable** in this run: the browser was not installed and
+authenticated API journeys were not attempted. Their capture/identity flows
+passed synthetic fixtures. Hosted Linux/Windows CI is still unverified.
+
+Still pending: the full M4 installed CLI
 journey and remaining hosted/provider validation (including BLS metadata access);
 final complete-milestone coverage audit.
 This is a partial delivery and does not mark Milestone 4 complete.

@@ -57,6 +57,7 @@ class GlassdoorClient:
         headless=True,
         timeout=45000,
         interaction: Interaction | None = None,
+        capture=None,
     ):
         # asked to wait while a person clears the bot check in a --login run
         self.interaction = interaction or Terminal()
@@ -66,6 +67,7 @@ class GlassdoorClient:
         self.timeout = timeout
         # a --login run asks the person once; the profile remembers after that
         self._paused = False
+        self.capture = capture
 
     def fetch(self, company, max_reviews=PAGE_SIZE):
         """Every failure leaves as a SourceError, so a caller trying several
@@ -101,6 +103,8 @@ class GlassdoorClient:
             page.goto(url, wait_until='domcontentloaded')
             self._settle(page)
             html_pages.append(page.content())
+            if self.capture is not None:
+                self.capture(url, html_pages[-1].encode('utf-8'), 'browser_dom')
 
             # Glassdoor shows ~10 reviews per page; keep paging until we have enough
             current = 1
@@ -112,6 +116,8 @@ class GlassdoorClient:
                     break
                 self._settle(page)
                 html_pages.append(page.content())
+                if self.capture is not None:
+                    self.capture(next_url, html_pages[-1].encode('utf-8'), 'browser_dom')
 
             if self.login:
                 self._save_state(session)
@@ -168,6 +174,8 @@ class GlassdoorClient:
             return
         if body:
             payloads.append(body)
+            if self.capture is not None:
+                self.capture(response.url, response.body(), 'browser_response')
 
     def _save_state(self, session):
         """Export the signed in session beside the profile it belongs to.
@@ -191,6 +199,21 @@ class GlassdoorClient:
 
         if not sources:
             raise Unparseable('no review data found in Glassdoor responses for {}'.format(url))
+
+        if self.capture is not None:
+            identifiers = set()
+            for source in sources:
+                for node in self._walk(source):
+                    for name in ('employerId', 'employer_id'):
+                        if node.get(name) is not None:
+                            identifiers.add(str(node[name]))
+                    employer = node.get('employer')
+                    if isinstance(employer, dict) and employer.get('id') is not None:
+                        identifiers.add(str(employer['id']))
+                    if node.get('__typename') == 'Employer' and node.get('id') is not None:
+                        identifiers.add(str(node['id']))
+            if identifiers != {employer_id}:
+                raise Unparseable('captured Glassdoor employer identity is missing or ambiguous')
 
         rating = CompanyRating(
             source='glassdoor',

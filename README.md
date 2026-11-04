@@ -101,6 +101,22 @@ See the guide for the query example and current upstream TLS limitation. Benchma
 reports preserve incompatible earnings definitions as context and use the run's
 archived FX; they do not alter ranking or candidate preferences.
 
+Verified company evidence uses explicit associations with exact persisted job
+versions and provider company IDs:
+
+```powershell
+uv run applicant company-evidence associate --from-file association.json
+uv run applicant company-evidence capture --association ASSOCIATION_ID
+uv run applicant company-evidence show --snapshot SNAPSHOT_ID
+uv run applicant company-evidence enrich --from-file selections.json --export enriched-jobs.json
+uv run applicant rank --job-versions enriched-jobs.json --offline --json
+```
+
+See [company evidence contracts and examples](docs/company-evidence.md) for
+schema 7, strict imports, source-date policies and all four supported providers.
+Unknown observation dates and financial figures remain context. Enrichment
+exports new job versions; existing runs never refresh company providers.
+
 ## Setup
 The project is managed with [uv](https://docs.astral.sh/uv/):
 

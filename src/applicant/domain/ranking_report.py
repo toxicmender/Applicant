@@ -5,6 +5,19 @@ from .ranking_v2 import RankingRunV2, RankingRunV3, ScoringConfigurationV2
 from .ranking_views import ranked_views
 
 
+def _company_context(job: JobVersion) -> dict:
+    records = [
+        e.payload for e in job.evidence if e.payload.get('kind') == 'company_evidence_context'
+    ]
+    if not records:
+        return {}
+    return {
+        'company_evidence': [
+            {k: v for k, v in record.items() if k != 'responses'} for record in records
+        ]
+    }
+
+
 def ranking_report(
     run: RankingRun | RankingRunV2 | RankingRunV3,
     jobs: tuple[JobVersion, ...],
@@ -49,6 +62,7 @@ def ranking_report(
                 | {
                     'eligibility': result.eligibility,
                     'job': versions[result.job_version_id].job_data,
+                    **_company_context(versions[result.job_version_id]),
                 }
                 for result in displayed
             ],

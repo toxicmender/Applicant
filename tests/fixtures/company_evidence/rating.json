@@ -1,0 +1,7 @@
+{
+  "source": "glassdoor", "company": "Synthetic Acme", "company_id": "42",
+  "url": "https://www.glassdoor.com/Reviews/Acme-Reviews-E42.htm",
+  "overall_rating": 4.2, "review_count": 12,
+  "rating_breakdown": {"culture_and_values": 4.3, "career_opportunities": 3.5},
+  "rating_distribution": {}, "reviews": []
+}

@@ -47,7 +47,8 @@ class AmbitionBoxClient:
     data route.
     """
 
-    def __init__(self, timeout=30.0, delay=1.0, retries=3, client=None):
+    def __init__(self, timeout=30.0, delay=1.0, retries=3, client=None, capture=None):
+        self.capture = capture
         # `delay` is both the gap between pages and the base of the retry
         # backoff, as it always was; HttpClient now does both
         self.http = HttpClient(
@@ -73,7 +74,10 @@ class AmbitionBoxClient:
         self.close()
 
     def _get(self, url, **kwargs) -> httpx.Response:
-        return self.http.get(url, **kwargs)
+        response = self.http.get(url, **kwargs)
+        if self.capture is not None:
+            self.capture(str(response.url), response.content, 'http_response')
+        return response
 
     def fetch(self, company, max_reviews=PAGE_SIZE):
         """Every failure leaves as a SourceError, so a caller trying several

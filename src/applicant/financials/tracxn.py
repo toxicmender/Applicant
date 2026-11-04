@@ -141,6 +141,7 @@ class TracxnClient:
         retries=3,
         client=None,
         interaction: Interaction | None = None,
+        capture=None,
     ):
         # asked to wait while a person clears the bot check in a --login run
         self.interaction = interaction or Terminal()
@@ -155,6 +156,7 @@ class TracxnClient:
         self.retries = retries
         self._client = client
         self._http: HttpClient | None = None
+        self.capture = capture
 
     def accepts(self, company: str) -> bool:
         """Whether Tracxn can look this up: anything but a profile url on crunchbase.com."""
@@ -234,6 +236,8 @@ class TracxnClient:
             json=body,
             headers={'accessToken': self.api_key or '', 'Content-Type': 'application/json'},
         )
+        if self.capture is not None:
+            self.capture(str(response.url), response.content, 'http_response')
 
         if response.status_code == 401:
             raise AuthFailed('Tracxn rejected the API token')
@@ -353,6 +357,8 @@ class TracxnClient:
                 and any(key in node for key in (*TOTAL_KEYS, 'domain', 'foundedYear'))
             ):
                 fallback = node
+        if self.capture is not None and entity_id:
+            raise Unparseable('captured Tracxn record does not match the exact entity ID')
         return fallback
 
     def _rounds(self, payload):
@@ -395,7 +401,10 @@ class TracxnClient:
             if 'tracxn.com' not in response.url or '/api/' not in response.url:
                 return
             with suppress(Exception):
-                payloads.append(response.json())
+                payload = response.json()
+                if self.capture is not None:
+                    self.capture(response.url, response.body(), 'browser_response')
+                payloads.append(payload)
 
         try:
             with browser(
@@ -410,6 +419,8 @@ class TracxnClient:
                         continue
                     self._settle(page, looks_blocked)
                     payloads.extend(embedded_json(page.content()))
+                    if self.capture is not None:
+                        self.capture(target, page.content().encode('utf-8'), 'browser_dom')
                     with suppress(Exception):
                         texts.append(page.inner_text('body'))
         except SourceError:
@@ -427,11 +438,15 @@ class TracxnClient:
             company_id=match.group('id'),
             company=match.group('slug').replace('-', ' ').title(),
         )
+        returned_id = None
         for payload in payloads:
             record = self._record(payload, None)
             if record:
+                returned_id = record.get('id')
                 self._read_company(record, financials)
                 break
+        if self.capture is not None and not returned_id:
+            raise Unparseable('captured Tracxn page has no structured company ID')
         rounds = []
         for payload in payloads:
             rounds.extend(self._rounds(payload))

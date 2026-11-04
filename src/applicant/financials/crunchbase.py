@@ -101,6 +101,7 @@ class CrunchbaseClient:
         retries=3,
         client=None,
         interaction: Interaction | None = None,
+        capture=None,
     ):
         # asked to wait while a person clears the bot check in a --login run
         self.interaction = interaction or Terminal()
@@ -115,6 +116,7 @@ class CrunchbaseClient:
         self.retries = retries
         self._client = client
         self._http: HttpClient | None = None
+        self.capture = capture
 
     def accepts(self, company: str) -> bool:
         """Whether Crunchbase can look this up: anything but a profile url on tracxn.com."""
@@ -183,6 +185,8 @@ class CrunchbaseClient:
         response = self.http.get(
             API + path, params=params, headers={'X-cb-user-key': self.api_key or ''}
         )
+        if self.capture is not None:
+            self.capture(str(response.url), response.content, 'http_response')
 
         if response.status_code == 401:
             raise AuthFailed('Crunchbase rejected the API key')
@@ -243,7 +247,10 @@ class CrunchbaseClient:
             if '/v4/data/' not in response.url and '/v4/entities/' not in response.url:
                 return
             with suppress(Exception):
-                payloads.append(response.json())
+                payload = response.json()
+                if self.capture is not None:
+                    self.capture(response.url, response.body(), 'browser_response')
+                payloads.append(payload)
 
         try:
             with browser(
@@ -256,6 +263,8 @@ class CrunchbaseClient:
                         raise NotFound('no Crunchbase organization at {}'.format(target))
                     self._settle(page, looks_blocked)
                     payloads.extend(embedded_json(page.content()))
+                    if self.capture is not None:
+                        self.capture(target, page.content().encode('utf-8'), 'browser_dom')
                     with suppress(Exception):
                         texts.append(page.inner_text('body'))
         except SourceError:
@@ -301,6 +310,19 @@ class CrunchbaseClient:
     # -- parsing ----------------------------------------------------------
 
     def _build(self, payloads, slug, company, max_rounds, url=None):
+        if self.capture is not None:
+            identifiers = {
+                identity['permalink']
+                for payload in payloads
+                for node in walk(payload)
+                if isinstance(identity := node.get('identifier'), dict)
+                and identity.get('permalink')
+                and identity.get('entity_def_id', 'organization') == 'organization'
+            }
+            if identifiers != {slug}:
+                raise Unparseable(
+                    'captured Crunchbase organization identity is missing or ambiguous'
+                )
         financials = CompanyFinancials(
             source='crunchbase',
             company=company,

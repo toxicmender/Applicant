@@ -7,6 +7,13 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Add verified company associations and immutable evidence snapshots (schema 7),
+  bounded raw capture through all four existing providers, strict retry-safe
+  imports, per-provider outcomes and explicit job-version enrichment exports.
+  Require structured provider identity during capture, retain unknown source
+  dates as context, and keep dated financial facts outside scoring. Enriched
+  ranking reports show company provenance; historical inputs remain unchanged.
+
 - Add MoSPI PLFS regular salaried earnings discovery and bounded paginated
   acquisition, with archived code/label mappings, precise monthly INR values,
   Agriculture/Calendar Year distinctions and separate survey-design cohorts.

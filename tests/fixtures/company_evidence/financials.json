@@ -1,0 +1,9 @@
+{
+  "source": "crunchbase", "company": "Synthetic Acme", "company_id": "acme",
+  "url": "https://www.crunchbase.com/organization/acme", "fetched_at": "2026-11-02T00:00:00+00:00",
+  "total_funding": {"amount": 1000000, "currency": "INR", "amount_usd": null, "text": "Synthetic INR 1M"},
+  "valuation": {"amount": 5000000, "currency": "USD", "amount_usd": 5000000, "text": "Synthetic $5M"},
+  "valuation_date": "2020-01-01", "revenue": null,
+  "rounds": [{"date": "2020-01-01", "round": "Seed", "amount": {"amount": 1000000, "currency": "INR"}, "post_money_valuation": null}],
+  "notes": ["Synthetic fixture; financial figures are dated context, not a financial-health score."]
+}
