@@ -205,6 +205,8 @@ class EvaluationTest(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), before)
         self.assertEqual(self.cli('evaluate', '--run', 'missing')[0], 4)
         self.assertEqual(self.cli('evaluate', '--run', ' ')[0], 2)
+        for flag, value in (('--top', '0'), ('--feedback-through', '-1')):
+            self.assertEqual(self.cli('evaluate', '--run', 'missing', flag, value)[0], 2)
         self.assertEqual(
             self.cli('evaluate', '--run', self.created.ranking_run_id, '--export', str(self.path))[
                 0

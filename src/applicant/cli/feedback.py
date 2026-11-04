@@ -16,18 +16,8 @@ from ..infra.store.profiles import RevisionConflict
 from ..infra.store.ranking_runs import RankingRunNotFound
 from ..services.feedback import feedback_report, import_feedback
 from ..settings import Settings
-from .database import database_path as resolve_database
+from .database import database_path
 from .dispatch import AddParser, DatabaseRequest, Identifier, actions, bind
-
-
-def nonnegative(value: str) -> int:
-    try:
-        number = int(value)
-        if number >= 0:
-            return number
-    except ValueError:
-        pass
-    raise argparse.ArgumentTypeError('must be a nonnegative integer')
 
 
 class Record(DatabaseRequest):
@@ -101,13 +91,9 @@ def add_parser(add: AddParser) -> None:
     bind(command, ListFeedback, run)
 
 
-def database_path(args: argparse.Namespace) -> Path:
-    return resolve_database(args.settings, args.database)
-
-
 def run(args: Record | ImportFeedback | ListFeedback, settings: Settings) -> int:
     try:
-        database = resolve_database(settings, args.database)
+        database = database_path(settings, args.database)
         if isinstance(args, ListFeedback):
             result = feedback_report(
                 database, args.run, history=args.history, through=args.feedback_through

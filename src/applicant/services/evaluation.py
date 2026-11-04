@@ -1,6 +1,7 @@
 """Read-only comparisons and evaluation over one consistent database snapshot."""
 
 from pathlib import Path
+from typing import Any
 
 from ..domain.evaluation import compare_runs, evaluate_feedback
 from ..domain.ranking import RankingRun
@@ -11,7 +12,7 @@ from ..infra.store.sqlite import Store
 from .ranking_history import load_history
 
 
-def evaluate_run(database: Path, run_id: str, *, top: int = 20, through: int | None = None) -> dict:
+def evaluate_run(database: Path, run_id: str, *, top: int = 20, through: int | None = None) -> dict[str, Any]:
     with Store.open_readonly(database) as reader, reader.read_snapshot():
         history = load_history(reader, run_id)
         if isinstance(history.run, RankingRun) or not isinstance(
@@ -28,7 +29,7 @@ def evaluate_run(database: Path, run_id: str, *, top: int = 20, through: int | N
         return evaluate_feedback(history.run, history.config, events, top=top, through=cutoff)
 
 
-def compare_history(database: Path, base_id: str, candidate_id: str) -> dict:
+def compare_history(database: Path, base_id: str, candidate_id: str) -> dict[str, Any]:
     with Store.open_readonly(database) as reader, reader.read_snapshot():
         reports = []
         inputs = []

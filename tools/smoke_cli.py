@@ -15,6 +15,7 @@ from applicant.cli import main
 
 # argv, exit code, required output, forbidden output
 CASES = [
+    (['evaluate', '--help'], 0, '--feedback-through', '--decision'),
     (['db', 'upgrade', '--help'], 0, '--database', '--snapshot'),
     (['personalize', 'show', '--help'], 0, '--suggestion', '--run'),
     (['feedback', 'list', '--help'], 0, '--feedback-through', '--decision'),
