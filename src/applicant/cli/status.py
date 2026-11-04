@@ -4,14 +4,23 @@ from __future__ import annotations
 
 import argparse
 
+from pydantic import Field
+
 from ..files import write_document
 from ..log import get
-from .common import file_arg
+from ..settings import Settings
+from .dispatch import AddParser, Request
 
 logger = get(__name__)
 
 
-def add_parser(add) -> argparse.ArgumentParser:
+class StatusRequest(Request):
+    input: str | None = None
+    log: str | None = None
+    json_path: str | None = Field(default=None, alias='json')
+
+
+def add_parser(add: AddParser) -> argparse.ArgumentParser:
     status = add('status', help='summarise stored jobs and applications')
     status.add_argument(
         '-i',
@@ -27,13 +36,14 @@ def add_parser(add) -> argparse.ArgumentParser:
     return status
 
 
-def run(args) -> int:
+def run(args: StatusRequest, settings: Settings) -> int:
     """What is stored right now: jobs found, and what came of them."""
     from ..services.status import summarise
 
-    settings = args.settings
     status = summarise(
-        file_arg(args, 'input', 'listing'), file_arg(args, 'log', 'applications'), settings.store
+        settings.path(settings.files.listing if args.input is None else args.input),
+        settings.path(settings.files.applications if args.log is None else args.log),
+        settings.store,
     )
 
     print('{} jobs stored in {}'.format(status.jobs, status.input))
@@ -44,8 +54,8 @@ def run(args) -> int:
     for name in sorted(status.by_status):
         print('  {}: {}'.format(name, status.by_status[name]))
 
-    if args.json:
-        target = settings.path(args.json)
+    if args.json_path:
+        target = settings.path(args.json_path)
         # all at once or not at all, like every other file the CLI writes
         write_document(target, status.to_dict())
         logger.info(f'status: summary written to {target}')

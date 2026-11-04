@@ -49,6 +49,7 @@ from . import (
     survey,
 )
 from .common import add_filters, filters_from, shared_flags
+from .dispatch import bind
 
 __all__ = [
     'add_filters',
@@ -130,7 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
     reviews.add_parser(add).set_defaults(handler=run_reviews)
     financials.add_parser(add).set_defaults(handler=run_financials)
     rates.add_parser(add).set_defaults(handler=run_rates)
-    status.add_parser(add).set_defaults(handler=run_status)
+    bind(status.add_parser(add), status.StatusRequest, run_status)
     survey.add_parser(add).set_defaults(handler=run_survey)
     rank.add_parser(add).set_defaults(handler=run_rank)
     feedback.add_parser(add).set_defaults(handler=run_feedback)
@@ -159,6 +160,8 @@ def main(argv: list[str] | None = None) -> int:
             crunchbase_key=getattr(args, 'crunchbase_key', None),
             tracxn_key=getattr(args, 'tracxn_key', None),
         )
+        prepare = getattr(args, 'prepare', None)
+        execute = prepare(args, settings) if prepare is not None else None
     except ConfigError as error:
         print('applicant: {}'.format(error), file=sys.stderr)
         return 2
@@ -188,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
         if filepath:
             logger.info('logging this run to {}'.format(filepath))
         logger.debug(f'{args.command}: {_loggable(args)}')
-        return handler(args) or 0
+        return execute() if execute is not None else handler(args) or 0
     except KeyboardInterrupt:
         logger.warning(f'{args.command}: interrupted')
         return 130
@@ -222,7 +225,16 @@ def main(argv: list[str] | None = None) -> int:
 
 
 # argparse attributes that are plumbing, or secret, rather than something to log
-NOT_LOGGED = {'handler', 'command', 'verbose', 'quiet', 'log_file', 'no_log_file', 'settings'}
+NOT_LOGGED = {
+    'prepare',
+    'handler',
+    'command',
+    'verbose',
+    'quiet',
+    'log_file',
+    'no_log_file',
+    'settings',
+}
 SECRET_ARGS = {'crunchbase_key', 'tracxn_key'}
 
 

@@ -25,7 +25,7 @@ class Status:
     def applications(self) -> int:
         return sum(self.by_status.values())
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, object]:
         """The machine readable form `status --json` writes."""
         return {
             'input': self.input,
