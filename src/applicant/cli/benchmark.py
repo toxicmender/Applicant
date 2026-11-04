@@ -13,7 +13,52 @@ from ..infra.store.benchmarks import BenchmarkNotFound
 from ..infra.store.ranking_runs import RankingRunNotFound
 from ..services.benchmark_acquisition import discover_benchmarks, fetch_benchmarks
 from ..services.benchmarks import compare_benchmarks, import_snapshot, show_snapshots
+from ..settings import Settings
+from .dispatch import Request
 from .feedback import database_path
+
+
+class ImportSnapshot(Request):
+    from_file: str
+    dry_run: bool = False
+
+    def report(self, database: Path, settings: Settings) -> dict[str, object]:
+        snapshot = BenchmarkSnapshot.model_validate(
+            read_ranking_document(Path(settings.path(self.from_file)), decimal=True)
+        )
+        return {
+            'kind': 'benchmark_import_result',
+            'schema_version': 1,
+            'dry_run': self.dry_run,
+            'snapshot': import_snapshot(database, snapshot, dry_run=self.dry_run).model_dump(),
+        }
+
+
+def require_database(database: Path) -> None:
+    try:
+        database.stat()
+    except FileNotFoundError:
+        raise BenchmarkNotFound(f'database not found: {database}') from None
+
+
+class ShowSnapshots(Request):
+    snapshot: list[str]
+
+    def report(self, database: Path, settings: Settings) -> dict[str, object]:
+        require_database(database)
+        return show_snapshots(database, tuple(self.snapshot))
+
+
+class CompareSnapshots(Request):
+    run: str
+    selections: str
+
+    def report(self, database: Path, settings: Settings) -> dict[str, object]:
+        document = BenchmarkComparisonDocument.model_validate(
+            read_ranking_document(Path(settings.path(self.selections)), decimal=True)
+        )
+        require_database(database)
+        return compare_benchmarks(database, self.run, document)
 
 
 def add_parser(add):
@@ -68,15 +113,9 @@ def run(args) -> int:
         elif args.action == 'import':
             if not args.from_file or args.snapshot or args.run is not None or args.selections:
                 raise ConfigError('import requires --from-file without snapshot/run/selections')
-            snapshot = BenchmarkSnapshot.model_validate(
-                read_ranking_document(Path(args.settings.path(args.from_file)), decimal=True)
+            report = ImportSnapshot(from_file=args.from_file, dry_run=args.dry_run).report(
+                database, args.settings
             )
-            report = {
-                'kind': 'benchmark_import_result',
-                'schema_version': 1,
-                'dry_run': args.dry_run,
-                'snapshot': import_snapshot(database, snapshot, dry_run=args.dry_run).model_dump(),
-            }
         else:
             if args.from_file or args.dry_run:
                 raise ConfigError('--from-file and --dry-run require import')
@@ -90,22 +129,12 @@ def run(args) -> int:
                     raise ConfigError('show requires --snapshot without run/selections')
             elif not args.run or not args.run.strip() or not args.selections or args.snapshot:
                 raise ConfigError('compare requires --run --selections without --snapshot')
-            document = (
-                BenchmarkComparisonDocument.model_validate(
-                    read_ranking_document(Path(args.settings.path(args.selections)), decimal=True)
-                )
-                if args.action == 'compare'
-                else None
+            request = (
+                ShowSnapshots(snapshot=args.snapshot)
+                if args.action == 'show'
+                else CompareSnapshots(run=args.run, selections=args.selections)
             )
-            try:
-                database.stat()
-            except FileNotFoundError:
-                raise BenchmarkNotFound(f'database not found: {database}') from None
-            if document is None:
-                report = show_snapshots(database, tuple(args.snapshot))
-            else:
-                assert args.run is not None
-                report = compare_benchmarks(database, args.run, document)
+            report = request.report(database, args.settings)
         if target is not None:
             try:
                 write_document(

@@ -336,6 +336,9 @@ class BenchmarkCliTest(unittest.TestCase):
             self.assertTrue(report['results'][0]['comparable'])
             self.assertEqual(report, json.loads((self.data.root / 'report.json').read_text()))
             self.assertEqual(self.cli('show', '--snapshot', 'golden-wages', '--json')[0], 0)
+            self.assertEqual(
+                self.cli('show', '--snapshot', 'golden-wages', '--snapshot', 'golden-wages')[0], 2
+            )
         self.assertEqual(self.path.read_bytes(), before)
         import_snapshot(self.path, snapshot(snapshot_id='new-release', release_label='new'))
         self.assertEqual(
