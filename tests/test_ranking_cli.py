@@ -69,6 +69,7 @@ class RankingCliTest(unittest.TestCase):
                     '--data-dir',
                     str(self.root),
                     'rank',
+                    'create',
                     '--provenance',
                     'provenance.json',
                     *options,

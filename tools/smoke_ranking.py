@@ -72,6 +72,7 @@ def journey(*, require_installed: bool = False) -> dict:
         first = json.loads(
             cli(
                 'rank',
+                'create',
                 '--provenance',
                 provenance,
                 '--job-versions',
@@ -91,9 +92,7 @@ def journey(*, require_installed: bool = False) -> dict:
             'eligible score differs from golden data',
         )
         review = first['groups']['review_required']['results'][0]
-        explanation = json.loads(
-            cli('rank', '--run', run_id, '--explain', review['job_id'], '--json')
-        )
+        explanation = json.loads(cli('rank', 'explain', run_id, review['job_id'], '--json'))
         criteria = explanation['result']['decision']['criteria']
         conflict = next(c for c in criteria if c['reason_code'] == expected['review_reason'])[
             'conflicts'
@@ -125,6 +124,7 @@ def journey(*, require_installed: bool = False) -> dict:
         (data / 'config.json').write_text(json.dumps(config), encoding='utf-8')
         cli(
             'rank',
+            'create',
             '--provenance',
             provenance,
             '--job-versions',
@@ -136,13 +136,13 @@ def journey(*, require_installed: bool = False) -> dict:
         )
         database = data / 'applicant.db'
         original = database.read_bytes()
-        repeated = json.loads(cli('rank', '--run', run_id, '--json'))
+        repeated = json.loads(cli('rank', 'show', run_id, '--json'))
         expect(repeated == first, 'original report changed after current inputs changed')
-        listing = json.loads(cli('rank', '--list-runs', '--json'))
+        listing = json.loads(cli('rank', 'list', '--json'))
         expect(len(listing['runs']) == 2, 'run listing omitted a completed run')
         current = json.loads(cli('survey', 'show', '--json'))
-        replay = json.loads(cli('rank', '--replay', run_id, '--provenance', provenance, '--json'))
-        cli('rank', '--run', run_id, '--explain', 'not-a-member', code=4)
+        replay = json.loads(cli('rank', 'replay', run_id, '--provenance', provenance, '--json'))
+        cli('rank', 'explain', run_id, 'not-a-member', code=4)
         expect(database.read_bytes() == original, 'historical commands changed database content')
         summary = {
             'group_counts': counts,

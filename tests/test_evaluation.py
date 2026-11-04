@@ -189,7 +189,7 @@ class EvaluationTest(unittest.TestCase):
             )
             code, out, _ = self.cli(
                 'rank',
-                '--compare',
+                'compare',
                 self.created.ranking_run_id,
                 self.created.ranking_run_id,
                 '--json',
@@ -198,7 +198,7 @@ class EvaluationTest(unittest.TestCase):
             self.assertEqual(json.loads(out)['changed_run_inputs'], [])
             self.assertEqual(
                 self.cli(
-                    'rank', '--compare', self.created.ranking_run_id, self.created.ranking_run_id
+                    'rank', 'compare', self.created.ranking_run_id, self.created.ranking_run_id
                 )[0],
                 0,
             )
@@ -213,18 +213,17 @@ class EvaluationTest(unittest.TestCase):
             ],
             2,
         )
-        self.assertEqual(
+        with self.assertRaises(SystemExit) as stopped:
             self.cli(
                 'rank',
-                '--compare',
+                'compare',
                 self.created.ranking_run_id,
                 self.created.ranking_run_id,
                 '--top',
                 '1',
-            )[0],
-            2,
-        )
-        self.assertEqual(self.cli('rank', '--compare', 'missing', 'missing')[0], 4)
+            )
+        self.assertEqual(stopped.exception.code, 2)
+        self.assertEqual(self.cli('rank', 'compare', 'missing', 'missing')[0], 4)
         with mock.patch('applicant.cli.evaluate.write_document', side_effect=OSError('disk')):
             self.assertEqual(
                 self.cli('evaluate', '--run', self.created.ranking_run_id, '--export', 'x.json')[0],

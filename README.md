@@ -19,7 +19,7 @@ uv run applicant feedback list --run RUN_ID --history --json
 uv run applicant feedback import --from-file feedback.json --dry-run
 ```
 
-Use full ranking job IDs from `rank --run RUN_ID --all --json`. A dismissal is
+Use full ranking job IDs from `rank show RUN_ID --all --json`. A dismissal is
 the candidate's decision and requires a reason; application outcomes are separate.
 Supported reasons are the six scoring dimensions plus `location`,
 `employment_arrangement`, `missing_evidence`, `conflicting_evidence`, `timing`,
@@ -42,7 +42,7 @@ Completed runs also support descriptive evaluation and historical comparison:
 ```powershell
 uv run applicant evaluate --run RUN_ID --top 20 --export evaluation.json
 uv run applicant evaluate --run RUN_ID --feedback-through SEQUENCE --json
-uv run applicant rank --compare BASE_RUN CANDIDATE_RUN --json
+uv run applicant rank compare BASE_RUN CANDIDATE_RUN --json
 ```
 
 Evaluation counts eligible candidates and explicit judgments. Unjudged or cleared
@@ -113,7 +113,7 @@ uv run applicant company-evidence associate --from-file association.json
 uv run applicant company-evidence capture --association ASSOCIATION_ID
 uv run applicant company-evidence show --snapshot SNAPSHOT_ID
 uv run applicant company-evidence enrich --from-file selections.json --export enriched-jobs.json
-uv run applicant rank --job-versions enriched-jobs.json --offline --json
+uv run applicant rank create --provenance provenance.json --job-versions enriched-jobs.json --offline --json
 ```
 
 See [company evidence contracts and examples](docs/company-evidence.md) for
@@ -1009,9 +1009,9 @@ normal CLI log creation.
 ## Create a ranking run
 
 ```console
-uv run --frozen applicant rank --provenance provenance.json --offline
-uv run --frozen applicant rank --provenance provenance.json --input jobs.json --top 10
-uv run --frozen applicant rank --provenance provenance.json --job-versions versions.json --all --json --offline
+uv run --frozen applicant rank create --provenance provenance.json --offline
+uv run --frozen applicant rank create --provenance provenance.json --input jobs.json --top 10
+uv run --frozen applicant rank create --provenance provenance.json --job-versions versions.json --all --json --offline
 ```
 
 Create a provenance document with the identity of your retained source/release
@@ -1061,11 +1061,11 @@ Decimal values as strings and unknown scores as null. Keep the returned run ID.
 Historical display, explanation and verification use the frozen run inputs:
 
 ```console
-uv run --frozen applicant rank --list-runs
-uv run --frozen applicant rank --list-runs --profile default --json
-uv run --frozen applicant rank --run RUN_ID --top 10
-uv run --frozen applicant rank --run RUN_ID --explain FULL_RANKING_JOB_ID --json
-uv run --frozen applicant rank --replay RUN_ID --provenance provenance.json
+uv run --frozen applicant rank list
+uv run --frozen applicant rank list --profile default --json
+uv run --frozen applicant rank show RUN_ID --top 10
+uv run --frozen applicant rank explain RUN_ID FULL_RANKING_JOB_ID --json
+uv run --frozen applicant rank replay RUN_ID --provenance provenance.json
 ```
 
 Display and explanation require no provenance file and perform no evaluation or

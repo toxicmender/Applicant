@@ -104,7 +104,7 @@ def journey(*, require_installed: bool = False) -> dict:
             return path
 
         database = data / 'applicant.db'
-        report('rank', '--list-runs', '--json')
+        report('rank', 'list', '--json')
         cli('company-evidence', 'show', '--snapshot', 'missing', code=1)
         expect(not database.exists(), 'read-only commands created a missing database')
         cli('survey', 'import', str(FIXTURES / 'ranking' / 'preferences.json'))
@@ -127,7 +127,14 @@ def journey(*, require_installed: bool = False) -> dict:
 
         def rank(path: str):
             return report(
-                'rank', '--job-versions', path, '--provenance', provenance, '--offline', '--json'
+                'rank',
+                'create',
+                '--job-versions',
+                path,
+                '--provenance',
+                provenance,
+                '--offline',
+                '--json',
             )
 
         base = rank('versions.json')
@@ -138,7 +145,7 @@ def journey(*, require_installed: bool = False) -> dict:
         jobs = groups['eligible']['results']
         review = groups['review_required']['results'][0]
         excluded = groups['excluded']['results'][0]
-        explanation = report('rank', '--run', run_id, '--explain', review['job_id'], '--json')
+        explanation = report('rank', 'explain', run_id, review['job_id'], '--json')
         conflicts = [c for c in explanation['result']['decision']['criteria'] if c['conflicts']]
         expect(
             bool(conflicts) and all(c['conflicts'][0]['needs_verification'] for c in conflicts),
@@ -264,9 +271,7 @@ def journey(*, require_installed: bool = False) -> dict:
         candidate_judged = report('evaluate', '--run', candidate['run']['ranking_run_id'])[
             'eligible'
         ]['judged']
-        comparison = report(
-            'rank', '--compare', run_id, candidate['run']['ranking_run_id'], '--json'
-        )
+        comparison = report('rank', 'compare', run_id, candidate['run']['ranking_run_id'], '--json')
         expect(
             all(j['membership'] == 'unchanged_version' for j in comparison['jobs'])
             and 'profile' in comparison['input_changes'],
@@ -366,9 +371,7 @@ def journey(*, require_installed: bool = False) -> dict:
             },
         )
         enriched_run = rank('enriched-batch.json')
-        changed = report(
-            'rank', '--compare', run_id, enriched_run['run']['ranking_run_id'], '--json'
-        )
+        changed = report('rank', 'compare', run_id, enriched_run['run']['ranking_run_id'], '--json')
         changed_versions = sum(j['membership'] == 'changed_version' for j in changed['jobs'])
         context = next(
             j
@@ -447,19 +450,19 @@ def journey(*, require_installed: bool = False) -> dict:
             'frozen evaluation changed after later feedback',
         )
         expect(
-            report('rank', '--run', run_id, '--json') == base,
+            report('rank', 'show', run_id, '--json') == base,
             'historical ranking changed after personalization/enrichment',
         )
-        historical_replay = report('rank', '--replay', run_id, '--provenance', provenance, '--json')
+        historical_replay = report('rank', 'replay', run_id, '--provenance', provenance, '--json')
         enriched_replay = report(
             'rank',
-            '--replay',
+            'replay',
             enriched_run['run']['ranking_run_id'],
             '--provenance',
             provenance,
             '--json',
         )
-        completed_runs = len(report('rank', '--list-runs', '--json')['runs'])
+        completed_runs = len(report('rank', 'list', '--json')['runs'])
         for command in (
             ('evaluate', '--run', run_id),
             ('benchmark', 'show', '--snapshot', benchmark['snapshot_id']),

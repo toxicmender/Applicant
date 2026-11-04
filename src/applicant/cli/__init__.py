@@ -134,7 +134,7 @@ def build_parser() -> argparse.ArgumentParser:
     rates.add_parser(add).set_defaults(handler=run_rates)
     bind(status.add_parser(add), status.StatusRequest, run_status)
     survey.add_parser(add)
-    rank.add_parser(add).set_defaults(handler=run_rank)
+    rank.add_parser(add)
     feedback.add_parser(add)
     bind(evaluate.add_parser(add), evaluate.Evaluate, run_evaluate)
     personalize.add_parser(add)

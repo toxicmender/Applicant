@@ -18,6 +18,9 @@ change bumps the minor version.
 | `db --database PATH upgrade` | `db upgrade --database PATH` | The required database belongs to the upgrade action. |
 | `survey` / `survey --show` | `survey edit` / `survey show` | Editing is explicit. Bare survey prints usage. |
 | `survey --validate P` / `--from-file P` / `--export P` | `survey validate P` / `survey import P` / `survey export P` | Document paths are positional. Add `--dry-run` to import. |
+| `rank --provenance P` / `rank --list-runs` | `rank create --provenance P` / `rank list` | Creation and history listing are explicit verbs. |
+| `rank --run R [--explain J]` | `rank show R` / `rank explain R J` | IDs are positional. |
+| `rank --compare A B` / `rank --replay R --provenance P` | `rank compare A B` / `rank replay R --provenance P` | History actions reject creation options. |
 
 
 - Record the M4 delivery/coverage audit and fresh public-provider validation

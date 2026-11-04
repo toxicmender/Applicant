@@ -13,7 +13,7 @@ uv run applicant company-evidence show --association glassdoor-acme --snapshot S
 uv run applicant company-evidence import --from-file evidence-import.json --dry-run
 uv run applicant company-evidence import --from-file evidence-import.json
 uv run applicant company-evidence enrich --from-file selections.json --export enriched-jobs.json
-uv run applicant rank --job-versions enriched-jobs.json --offline --json
+uv run applicant rank create --provenance provenance.json --job-versions enriched-jobs.json --offline --json
 ```
 
 Every command accepts `--database PATH`. The default uses the configured SQLite

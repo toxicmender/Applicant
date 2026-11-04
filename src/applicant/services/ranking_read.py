@@ -1,6 +1,7 @@
 """Read-only ranking presentation and verification from exact archived inputs."""
 
 from pathlib import Path
+from typing import Any
 
 from ..domain.ranking import RankingRun
 from ..domain.ranking_inputs import ProvenanceDocument
@@ -27,7 +28,7 @@ def _exists(database: Path) -> bool:
     return True
 
 
-def list_runs(database: Path, *, profile_id: str | None = None) -> dict:
+def list_runs(database: Path, *, profile_id: str | None = None) -> dict[str, Any]:
     runs = ()
     if _exists(database):
         with Store.open_readonly(database) as store, store.read_snapshot():
@@ -56,7 +57,7 @@ def read_run(
     top: int | None = 20,
     job_id: str | None = None,
     provenance: ProvenanceDocument | None = None,
-) -> dict:
+) -> dict[str, Any]:
     if not _exists(database):
         raise RankingRunNotFound(f'completed ranking run not found: {run_id}')
     with Store.open_readonly(database) as store, store.read_snapshot():
