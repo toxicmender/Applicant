@@ -115,6 +115,15 @@ class GateTest(unittest.TestCase):
         self.assertIn('name: junit-${{ matrix.os }}-${{ matrix.python }}', unit)
         self.assertIn('--junitxml="junit-${{ matrix.os }}-${{ matrix.python }}.xml"', unit)
 
+    def test_installed_cli_contracts_gate_every_unit_platform(self):
+        unit = self.text.split('\n  unit:\n', 1)[1].split('\n  coverage:\n', 1)[0]
+        step = unit.split('- name: Installed CLI contracts', 1)[1].split('- name:', 1)[0]
+        self.assertIn(
+            '--python ${{ matrix.python }} python tools/smoke_cli.py --require-installed', step
+        )
+        for escape in ('continue-on-error', '|| true', 'if:'):
+            self.assertNotIn(escape, step)
+
     def test_installed_ranking_journey_gates_every_unit_platform(self):
         unit = self.text.split('\n  unit:\n', 1)[1].split('\n  coverage:\n', 1)[0]
         command = 'uv run --frozen --isolated --no-editable --python ${{ matrix.python }} python tools/smoke_ranking.py --require-installed'

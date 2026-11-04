@@ -186,6 +186,9 @@ jobs:
 
       # An isolated, non-editable install uses the frozen lock and exercises
       # packaging plus real subprocess CLI boundaries on every gated unit leg.
+      - name: Installed CLI contracts
+        run: uv run --frozen --isolated --no-editable --refresh-package applicant --reinstall-package applicant --python ${{ matrix.python }} python tools/smoke_cli.py --require-installed
+
       - name: Installed ranking CLI journey
         run: uv run --frozen --isolated --no-editable --python ${{ matrix.python }} python tools/smoke_ranking.py --require-installed
 
