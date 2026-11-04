@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from ..domain.canonical import canonical_json
@@ -17,7 +18,7 @@ from .ranking_history import load_history
 from .survey import editable_profile
 
 
-def suggest_weights(database: Path, run_id: str, *, created_at: datetime):
+def suggest_weights(database: Path, run_id: str, *, created_at: datetime) -> dict[str, Any]:
     with Store.open_readonly(database) as reader, reader.read_snapshot():
         history = load_history(reader, run_id)
         if isinstance(history.run, RankingRun):

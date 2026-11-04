@@ -15,6 +15,7 @@ from applicant.cli import main
 
 # argv, exit code, required output, forbidden output
 CASES = [
+    (['personalize', 'show', '--help'], 0, '--suggestion', '--run'),
     (['feedback', 'list', '--help'], 0, '--feedback-through', '--decision'),
     (['company-evidence', 'capture', '--help'], 0, '--association', '--from-file'),
     (['benchmark', 'fetch', '--query', 'unused', '--snapshot', 'bad'], 2, '--snapshot', ''),

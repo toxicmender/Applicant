@@ -1,5 +1,6 @@
 """Explicit generation, inspection and acceptance of weight suggestions."""
 
+import argparse
 import sys
 
 from ..domain.canonical import canonical_json
@@ -9,34 +10,55 @@ from ..infra.store.personalization import SuggestionNotFound
 from ..infra.store.profiles import RevisionConflict
 from ..infra.store.ranking_runs import RankingRunNotFound
 from ..services.personalization import accept_suggestion, show_suggestion, suggest_weights
-from .feedback import database_path
+from ..settings import Settings
+from .database import database_path
+from .dispatch import AddParser, DatabaseRequest, Identifier, actions, bind
 
 
-def add_parser(add):
-    command = add('personalize', help='preview and explicitly accept bounded weight suggestions')
-    command.add_argument('action', choices=('suggest', 'show', 'accept'))
-    command.add_argument('--database')
-    command.add_argument('--run')
-    command.add_argument('--suggestion')
-    command.add_argument('--json', action='store_true')
-    return command
+class Suggest(DatabaseRequest):
+    run: Identifier
 
 
-def run(args) -> int:
+class Show(DatabaseRequest):
+    suggestion: Identifier
+
+
+class Accept(DatabaseRequest):
+    suggestion: Identifier
+
+
+def add_parser(add: AddParser) -> None:
+    action = actions(add('personalize', help='preview and explicitly accept weight suggestions'))
+
+    def leaf(name: str, help: str) -> argparse.ArgumentParser:
+        command = action(name, help=help)
+        command.add_argument('--database')
+        command.add_argument('--json', action='store_true')
+        return command
+
+    command = leaf('suggest', 'generate a weight suggestion from a ranked run')
+    command.add_argument('--run', required=True)
+    bind(command, Suggest, run)
+    for name, model in (('show', Show), ('accept', Accept)):
+        command = leaf(
+            name,
+            'read a saved suggestion'
+            if name == 'show'
+            else 'accept a suggestion as a new profile revision',
+        )
+        command.add_argument('--suggestion', required=True)
+        bind(command, model, run)
+
+
+def run(args: Suggest | Show | Accept, settings: Settings) -> int:
     try:
-        database = database_path(args)
-        if args.action == 'suggest':
-            if not args.run or not args.run.strip() or args.suggestion is not None:
-                raise ConfigError('suggest requires --run without --suggestion')
+        database = database_path(settings, args.database)
+        if isinstance(args, Suggest):
             result = suggest_weights(database, args.run, created_at=now())
+        elif isinstance(args, Show):
+            result = show_suggestion(database, args.suggestion)
         else:
-            if not args.suggestion or not args.suggestion.strip() or args.run is not None:
-                raise ConfigError('show/accept require --suggestion without --run')
-            result = (
-                show_suggestion(database, args.suggestion)
-                if args.action == 'show'
-                else accept_suggestion(database, args.suggestion, accepted_at=now())
-            )
+            result = accept_suggestion(database, args.suggestion, accepted_at=now())
         print(canonical_json(result))
         return 0
     except (ValueError, ConfigError, RevisionConflict) as error:

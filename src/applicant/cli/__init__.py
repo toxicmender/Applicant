@@ -136,7 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
     rank.add_parser(add).set_defaults(handler=run_rank)
     feedback.add_parser(add)
     evaluate.add_parser(add).set_defaults(handler=run_evaluate)
-    personalize.add_parser(add).set_defaults(handler=run_personalize)
+    personalize.add_parser(add)
     feedback.add_database_parser(add).set_defaults(handler=run_database)
     return parser
 

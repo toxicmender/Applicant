@@ -197,8 +197,10 @@ class PersonalizationTest(unittest.TestCase):
         )
         for action in ('show', 'accept'):
             self.assertEqual(self.data.cli('personalize', action, '--suggestion', 'missing')[0], 4)
-        self.assertEqual(self.data.cli('personalize', 'suggest')[0], 2)
-        self.assertEqual(self.data.cli('personalize', 'show', '--run', 'x')[0], 2)
+        for options in (('suggest',), ('show', '--run', 'x')):
+            with self.subTest(options=options), self.assertRaises(SystemExit) as stopped:
+                self.data.cli('personalize', *options)
+            self.assertEqual(stopped.exception.code, 2)
         self.feedback()
         self.assertEqual(
             self.data.cli('personalize', 'suggest', '--run', self.created.ranking_run_id)[0], 0
