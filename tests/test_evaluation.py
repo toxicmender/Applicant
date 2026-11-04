@@ -177,10 +177,13 @@ class EvaluationTest(unittest.TestCase):
         self.save(0, 'shortlist')
         before = self.path.read_bytes()
         with mock.patch('httpx.Client.request', side_effect=AssertionError('network')):
+            code, plain, _ = self.cli('evaluate', '--run', self.created.ranking_run_id)
+            self.assertEqual(code, 0)
             code, out, _ = self.cli(
                 'evaluate', '--run', self.created.ranking_run_id, '--export', 'evaluation.json'
             )
             self.assertEqual(code, 0)
+            self.assertEqual(json.loads(plain), json.loads(out))
             self.assertEqual(
                 json.loads(out), json.loads((self.data.root / 'evaluation.json').read_text())
             )

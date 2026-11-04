@@ -99,6 +99,9 @@ Delivered locally:
   (schema 7), raw-response hooks for all four existing providers, strict imports,
   explicit enrichment bundles and dated company context in ranking reports.
   See [company evidence contracts](company-evidence.md).
+- Full M4 subprocess/installed-package journey on each existing Linux/Windows
+  unit leg, and a required per-module branch-aware coverage gate for all 28 new
+  runtime modules. See the [M4 validation guide](milestone-4-validation.md).
 
 The first three phases' full branch-enabled run passed 1,173 tests with 13 environment skips
 and 1,206 subtests. Overall coverage reports 98%; the 11 new runtime modules have
@@ -219,9 +222,31 @@ checks were **unavailable** in this run: the browser was not installed and
 authenticated API journeys were not attempted. Their capture/identity flows
 passed synthetic fixtures. Hosted Linux/Windows CI is still unverified.
 
-Still pending: the full M4 installed CLI
-journey and remaining hosted/provider validation (including BLS metadata access);
-final complete-milestone coverage audit.
+Phase 9 validation on Windows, 2026-11-04: **1,239 tests passed**, with **13
+environment skips** and **1,433 subtests**. The full fixed-clock M4 journey passed
+through separate CLI processes and a fresh isolated installed package. It covers
+feedback/evaluation cutoffs, stale/idempotent suggestion acceptance, exact-version
+comparison, company enrichment, benchmark context and immutable replay, while
+blocking subprocess networking and ignoring host configuration/credentials.
+
+The per-module audit found personalization service coverage at **89.86%** before
+this phase. Focused regressions now bring all **28 new M4 runtime modules to 100%
+measured statement/branch coverage** (1,901 statements, 648 branches); overall
+coverage is **99%**. The CI gate compares unrounded counts against the 90% floor
+and rejects missing branch data and unapproved exclusions. Its sole documented
+exception is Coverage.py's automatic type-only `BenchmarkProvider` Protocol
+exclusion, checked against the source AST. No runtime dependencies, migrations,
+source exclusion pragmas or ranking-policy changes were added.
+
+The final gate/workflow checks passed **21 tests and 40 subtests** after the full
+suite. Ruff, formatting, Windows/Linux Pyright, uv lock validation and builds
+passed. Installed M4 execution is now required on every existing unit matrix leg;
+the coverage job retains both detailed JSON and module-gate results. Hosted CI
+and live providers were not rerun in this phase. Earlier live limitations remain.
+
+Still pending: the final delivery/provider audit and remaining hosted/live
+validation, including full BLS metadata acquisition and default-client MoSPI
+compatibility. The local full-journey and per-module coverage gates are delivered.
 This is a partial delivery and does not mark Milestone 4 complete.
 
 Ruff, formatting, both platform Pyright targets, uv lock validation, build and

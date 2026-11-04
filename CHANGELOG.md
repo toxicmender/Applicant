@@ -7,6 +7,12 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Gate the full Milestone 4 CLI journey on the existing Linux/Windows installed
+  unit legs. Add fixed-clock golden fixtures with forbidden subprocess networking,
+  per-module branch-aware coverage enforcement for all 28 M4 runtime modules,
+  and regressions for stale suggestions, corrupt acceptance links, legacy runs,
+  unknown dimension feedback and invalid feedback cutoffs.
+
 - Add verified company associations and immutable evidence snapshots (schema 7),
   bounded raw capture through all four existing providers, strict retry-safe
   imports, per-provider outcomes and explicit job-version enrichment exports.

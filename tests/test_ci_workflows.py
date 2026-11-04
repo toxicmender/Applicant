@@ -124,6 +124,31 @@ class GateTest(unittest.TestCase):
         self.assertNotIn('|| true', step)
         self.assertNotIn('if:', step)
 
+    def test_installed_m4_journey_and_module_floor_are_required(self):
+        unit = self.text.split('\n  unit:\n', 1)[1].split('\n  coverage:\n', 1)[0]
+        step = unit.split('- name: Installed Milestone 4 CLI journey', 1)[1].split('- name:', 1)[0]
+        self.assertIn(
+            '--isolated --no-editable --refresh-package applicant --reinstall-package applicant',
+            step,
+        )
+        self.assertIn(
+            '--python ${{ matrix.python }} python tools/smoke_milestone4.py --require-installed',
+            step,
+        )
+        for escape in ('continue-on-error', '|| true', 'if:'):
+            self.assertNotIn(escape, step)
+        coverage = self.text.split('\n  coverage:\n', 1)[1].split('\n  browser:\n', 1)[0]
+        self.assertIn('coverage json -q -o coverage-m4.json', coverage)
+        self.assertIn(
+            'if ! uv run --frozen python tools/check_milestone_coverage.py coverage-m4.json',
+            coverage,
+        )
+        gate = coverage.split('if ! uv run --frozen python tools/check_milestone_coverage.py', 1)[
+            1
+        ].split('fi', 1)[0]
+        self.assertIn('exit 1', gate)
+        self.assertIn('milestone-4-coverage.json', coverage)
+
     def test_the_coverage_floor_is_set_where_a_local_run_reads_it(self):
         if sys.version_info >= (3, 11):
             import tomllib

@@ -160,6 +160,24 @@ checks mixed eligibility, conflict evidence, profile edits, historical stability
 and offline replay. The [Milestone 3 coverage audit](docs/milestone-3-coverage.md)
 records the final local results and remaining hosted validation.
 
+Milestone 4 adds a second required installed-package journey on every unit leg:
+
+```console
+uv run --frozen --isolated --no-editable --refresh-package applicant --reinstall-package applicant python tools/smoke_milestone4.py --require-installed
+uv run --frozen coverage json -o coverage-m4.json
+uv run --frozen python tools/check_milestone_coverage.py coverage-m4.json
+```
+
+It checks feedback, evaluation cutoffs, suggestion acceptance, company enrichment,
+benchmark context and immutable historical replay through separate CLI processes.
+The fixture clock is fixed and subprocess network access is blocked. CI retains
+the overall 90% coverage floor and enforces an unrounded 90% combined line/branch
+floor for each of the 28 new M4 runtime modules. The gate rejects unapproved
+excluded lines; Coverage.py's type-only `BenchmarkProvider` declaration is the
+documented exception.
+See the [M4 validation guide](docs/milestone-4-validation.md) for scenarios and
+the distinction between fixture, installed-package and live-provider validation.
+
 The sources that drive a browser are tested twice. `tests/fakes.py` has a scripted
 page that their own code runs against - paging, limits, bot checks, sign in - in
 milliseconds. `tests/test_live_pages.py` runs the same flows in a real Chromium

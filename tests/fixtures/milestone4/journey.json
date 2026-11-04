@@ -1,0 +1,22 @@
+{
+  "fixture_version": 1,
+  "group_counts": {"eligible": 3, "review_required": 1, "excluded": 1},
+  "partial_precision": null,
+  "partial_precision_lower_bound": "0.5",
+  "partial_precision_upper_bound": "1",
+  "complete_precision": "1",
+  "complete_recall": "1",
+  "transfer": "0.05",
+  "recipient": "compensation",
+  "donor": "remote_compatibility",
+  "accepted_revision": 2,
+  "candidate_judged": 0,
+  "changed_versions": 1,
+  "benchmark_observations": 4,
+  "comparable_benchmarks": 1,
+  "context_benchmarks": 3,
+  "company_contexts": 2,
+  "historical_replay_matches": true,
+  "enriched_replay_matches": true,
+  "completed_runs": 3
+}

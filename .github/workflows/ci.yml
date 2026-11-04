@@ -189,6 +189,9 @@ jobs:
       - name: Installed ranking CLI journey
         run: uv run --frozen --isolated --no-editable --python ${{ matrix.python }} python tools/smoke_ranking.py --require-installed
 
+      - name: Installed Milestone 4 CLI journey
+        run: uv run --frozen --isolated --no-editable --refresh-package applicant --reinstall-package applicant --python ${{ matrix.python }} python tools/smoke_milestone4.py --require-installed
+
       # proves the suite still runs on the stdlib runner alone, which is what a
       # contributor has before installing anything
       - name: unittest discover
@@ -236,6 +239,13 @@ jobs:
           echo "### Coverage: ${total}%" >> "$GITHUB_STEP_SUMMARY"
           # exits 2 under fail_under; the table is written either way
           if uv run --frozen coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"; then
+            uv run --frozen coverage json -q -o coverage-m4.json
+            if ! uv run --frozen python tools/check_milestone_coverage.py coverage-m4.json > milestone-4-coverage.json; then
+              echo 'outcome=fail' >> "$GITHUB_OUTPUT"
+              echo 'detail=Milestone 4 module coverage below 90%, excluded, or missing branch data' >> "$GITHUB_OUTPUT"
+              cat milestone-4-coverage.json >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
             echo 'outcome=pass' >> "$GITHUB_OUTPUT"
             echo "detail=${total}% line and branch" >> "$GITHUB_OUTPUT"
           else
@@ -248,7 +258,10 @@ jobs:
         if: always()
         with:
           name: coverage
-          path: coverage.xml
+          path: |
+            coverage.xml
+            coverage-m4.json
+            milestone-4-coverage.json
           retention-days: 30
 
   # The browser sources in a real Chromium against tests/fixtures/pages: the

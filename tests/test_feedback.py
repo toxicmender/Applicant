@@ -106,6 +106,9 @@ class FeedbackTest(unittest.TestCase):
             self.save(self.request(event_id='stale'))
         with self.assertRaises(RevisionConflict):
             self.save(self.request(decision='dismiss', reasons=('other',)))
+        for cutoff in (-1, 999):
+            with self.assertRaisesRegex(ValueError, 'cutoff'):
+                feedback_report(self.path, self.created.ranking_run_id, through=cutoff)
 
     def test_invalid_batch_rolls_back_and_validates_before_writer(self):
         first = self.request()
