@@ -107,7 +107,7 @@ def journey(*, require_installed: bool = False) -> dict:
         report('rank', '--list-runs', '--json')
         cli('company-evidence', 'show', '--snapshot', 'missing', code=1)
         expect(not database.exists(), 'read-only commands created a missing database')
-        cli('survey', '--from-file', str(FIXTURES / 'ranking' / 'preferences.json'))
+        cli('survey', 'import', str(FIXTURES / 'ranking' / 'preferences.json'))
         cli('db', 'upgrade', '--database', 'applicant.db')
         bundle = read(FIXTURES / 'ranking' / 'cli-versions.json')
         original = bundle['jobs'][0]

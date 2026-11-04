@@ -90,68 +90,70 @@ class SurveyTest(unittest.TestCase):
         for text in bad:
             with self.subTest(text=text):
                 self.path.write_text(text, encoding='utf-8')
-                code, out, err = self.cli('survey', '--from-file', 'preferences.json')
+                code, out, err = self.cli('survey', 'import', 'preferences.json')
                 self.assertEqual(code, 2)
                 self.assertEqual(out, '')
                 self.assertIn('invalid preferences', err)
                 self.assertFalse(self.database.exists())
 
     def test_validate_and_missing_store_dry_run_do_not_write(self):
-        self.assertEqual(self.cli('survey', '--validate', 'preferences.json')[0], 0)
-        code, out, _ = self.cli('survey', '--dry-run', '--from-file', 'preferences.json')
+        self.assertEqual(self.cli('survey', 'validate', 'preferences.json')[0], 0)
+        code, out, _ = self.cli('survey', 'import', '--dry-run', 'preferences.json')
         self.assertEqual(code, 0)
         self.assertIn('proposed profile default revision 1', out)
         self.assertFalse(self.database.exists())
         data = json.loads(self.path.read_text()) | {'expected_revision': 1}
         self.path.write_text(json.dumps(data), encoding='utf-8')
-        self.assertEqual(self.cli('survey', '--dry-run', '--from-file', 'preferences.json')[0], 2)
+        self.assertEqual(self.cli('survey', 'import', '--dry-run', 'preferences.json')[0], 2)
         self.assertFalse(self.database.exists())
 
     def test_import_export_edit_stale_revision_and_historical_reads(self):
-        self.assertEqual(self.cli('survey', '--from-file', 'preferences.json')[0], 0)
+        self.assertEqual(self.cli('survey', 'import', 'preferences.json')[0], 0)
         original = self.database.read_bytes()
-        code, out, _ = self.cli('survey', '--show', '--json')
+        code, out, _ = self.cli('survey', 'show', '--json')
         self.assertEqual(code, 0)
         archived = json.loads(out)
         self.assertEqual(archived['profile_revision'], 1)
         self.assertEqual(archived['updated_at'], '2026-11-02T00:00:00.000000Z')
-        self.assertEqual(self.cli('survey', '--export', 'export.json')[0], 0)
+        self.assertEqual(self.cli('survey', 'export', 'export.json')[0], 0)
         exported = read_preferences(self.root / 'export.json')
         self.assertEqual(exported.expected_revision, 1)
-        self.assertEqual(self.cli('survey', '--dry-run', '--from-file', 'export.json')[0], 0)
+        self.assertEqual(self.cli('survey', 'import', '--dry-run', 'export.json')[0], 0)
         self.assertEqual(self.database.read_bytes(), original)
-        self.assertEqual(self.cli('survey', '--from-file', 'export.json')[0], 0)
-        self.assertEqual(self.cli('survey', '--from-file', 'export.json')[0], 2)
-        self.assertEqual(self.cli('survey', '--dry-run', '--from-file', 'export.json')[0], 2)
+        self.assertEqual(self.cli('survey', 'import', 'export.json')[0], 0)
+        self.assertEqual(self.cli('survey', 'import', 'export.json')[0], 2)
+        self.assertEqual(self.cli('survey', 'import', '--dry-run', 'export.json')[0], 2)
         self.assertEqual(load_profile(self.database, 'default').profile_revision, 2)
         self.assertEqual(
-            json.loads(self.cli('survey', '--show', '--revision', '1', '--json')[1]), archived
+            json.loads(self.cli('survey', 'show', '--revision', '1', '--json')[1]), archived
         )
-        code, out, _ = self.cli('survey', '--show')
+        code, out, _ = self.cli('survey', 'show')
         self.assertEqual(code, 0)
         self.assertIn('annual base pay', out)
         self.assertIn('currently do not add ranking signals', out)
-        self.assertEqual(self.cli('survey', '--show', '--revision', '9')[0], 4)
-        self.assertEqual(self.cli('survey', '--show', '--profile', 'unknown')[0], 4)
+        self.assertEqual(self.cli('survey', 'show', '--revision', '9')[0], 4)
+        self.assertEqual(self.cli('survey', 'show', '--profile', 'unknown')[0], 4)
 
     def test_missing_profiles_and_wrong_options_create_nothing(self):
-        self.assertEqual(self.cli('survey', '--show')[0], 4)
-        self.assertEqual(self.cli('survey', '--export', 'export.json')[0], 4)
+        self.assertEqual(self.cli('survey', 'show')[0], 4)
+        self.assertEqual(self.cli('survey', 'export', 'export.json')[0], 4)
         for options in (
             [],
-            ['--store', 'files', '--validate', 'preferences.json'],
-            ['--dry-run'],
-            ['--revision', '1'],
-            ['--json'],
-            ['--show', '--profile', ' '],
-            ['--profile', 'x', '--from-file', 'preferences.json'],
-            ['--profile', 'x', '--validate', 'preferences.json'],
+            ['--from-file', 'preferences.json'],
+            ['edit', '--revision', '1'],
+            ['validate', 'preferences.json', '--profile', 'x'],
+            ['import', 'preferences.json', '--profile', 'x'],
         ):
-            with self.subTest(options=options):
-                self.assertEqual(self.cli('survey', *options)[0], 2)
+            with self.subTest(options=options), self.assertRaises(SystemExit) as stopped:
+                self.cli('survey', *options)
+            self.assertEqual(stopped.exception.code, 2)
+        self.assertEqual(self.cli('survey', 'show', '--profile', ' ')[0], 2)
+        self.assertEqual(
+            self.cli('survey', 'validate', 'preferences.json', '--store', 'files')[0], 2
+        )
         self.assertFalse(self.database.exists())
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
-            main(['survey', '--show', '--validate', 'x'])
+            main(['survey', 'show', '--validate', 'x'])
         self.assertEqual(error.exception.code, 2)
 
     def test_explicit_database_and_configured_listing_default(self):
@@ -160,20 +162,18 @@ class SurveyTest(unittest.TestCase):
                 '--store',
                 'sqlite',
                 'survey',
+                'import',
                 '--database',
                 'custom/db.sqlite',
-                '--from-file',
                 'preferences.json',
             )[0],
             0,
         )
         self.assertFalse(self.database.exists())
-        self.assertEqual(self.cli('survey', '--database', 'custom/db.sqlite', '--show')[0], 0)
+        self.assertEqual(self.cli('survey', 'show', '--database', 'custom/db.sqlite')[0], 0)
         config = self.root / 'applicant.toml'
         config.write_text('[files]\nlisting = "elsewhere/jobs.json"\n', encoding='utf-8')
-        code, out, _ = self.cli(
-            'survey', '--config', str(config), '--from-file', 'preferences.json'
-        )
+        code, out, _ = self.cli('survey', '--config', str(config), 'import', 'preferences.json')
         self.assertEqual(code, 0)
         self.assertIn(str(self.root / 'elsewhere' / 'applicant.db'), out)
         self.assertFalse(self.database.exists())
@@ -219,7 +219,7 @@ class SurveyTest(unittest.TestCase):
             self.assertRaises(StoreError),
         ):
             load_profile(self.database, 'default')
-        self.assertEqual(self.cli('survey', '--validate', 'missing.json')[0], 1)
+        self.assertEqual(self.cli('survey', 'validate', 'missing.json')[0], 1)
         with self.assertRaises(ProfileNotFound):
             load_profile(self.database, 'default')
 

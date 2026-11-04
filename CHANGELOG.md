@@ -16,6 +16,8 @@ change bumps the minor version.
 | `feedback --run R list` | `feedback list --run R` | Record, import and list validate their own inputs. |
 | `personalize --run R suggest` | `personalize suggest --run R` | Show and accept require a suggestion ID. |
 | `db --database PATH upgrade` | `db upgrade --database PATH` | The required database belongs to the upgrade action. |
+| `survey` / `survey --show` | `survey edit` / `survey show` | Editing is explicit. Bare survey prints usage. |
+| `survey --validate P` / `--from-file P` / `--export P` | `survey validate P` / `survey import P` / `survey export P` | Document paths are positional. Add `--dry-run` to import. |
 
 
 - Record the M4 delivery/coverage audit and fresh public-provider validation

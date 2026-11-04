@@ -62,7 +62,7 @@ def create_ranking_run(
         try:
             database.stat()
         except FileNotFoundError:
-            raise ConfigError('no candidate profile; run applicant survey first') from None
+            raise ConfigError('no candidate profile; run applicant survey edit first') from None
         except OSError as error:
             raise StoreError(f'could not read {database}: {error}') from error
         at = utc(clock())
@@ -70,7 +70,7 @@ def create_ranking_run(
             try:
                 profile = ProfileRepository(reader.db).get(profile_id, revision)
             except ProfileNotFound as error:
-                raise ConfigError(f'{error}; run applicant survey first') from error
+                raise ConfigError(f'{error}; run applicant survey edit first') from error
             jobs = (
                 bundle.jobs
                 if bundle is not None

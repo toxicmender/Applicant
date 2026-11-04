@@ -133,7 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
     financials.add_parser(add).set_defaults(handler=run_financials)
     rates.add_parser(add).set_defaults(handler=run_rates)
     bind(status.add_parser(add), status.StatusRequest, run_status)
-    survey.add_parser(add).set_defaults(handler=run_survey)
+    survey.add_parser(add)
     rank.add_parser(add).set_defaults(handler=run_rank)
     feedback.add_parser(add)
     bind(evaluate.add_parser(add), evaluate.Evaluate, run_evaluate)

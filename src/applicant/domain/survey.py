@@ -51,7 +51,7 @@ class PreferenceDocument(BaseModel):
                 updated_at=updated_at,
             )
 
-    def expanded(self) -> dict:
+    def expanded(self) -> dict[str, Any]:
         """All editable defaults, with no generated archival metadata."""
         return self.to_profile(updated_at=_VALIDATION_TIME).model_dump(
             exclude=set(PROFILE_METADATA)

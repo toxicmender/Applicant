@@ -213,7 +213,7 @@ class InteractiveCliTest(unittest.TestCase):
             mock.patch('applicant.cli.survey.Terminal', return_value=script),
             mock.patch('applicant.cli.survey.now', return_value=NOW),
         ):
-            code = main(['survey', '--no-log-file', '--data-dir', str(self.root), *flags])
+            code = main(['survey', 'edit', '--no-log-file', '--data-dir', str(self.root), *flags])
         return code, out.getvalue(), err.getvalue()
 
     def test_create_then_edit_exact_profile_and_preserve_original_revision(self):
@@ -292,7 +292,7 @@ class InteractiveCliTest(unittest.TestCase):
             mock.patch('applicant.cli.survey.sys.stdin.isatty', return_value=True),
             mock.patch('builtins.input', side_effect=ANSWERS),
         ):
-            code = main(['survey', '--no-log-file', '--data-dir', str(self.root)])
+            code = main(['survey', 'edit', '--no-log-file', '--data-dir', str(self.root)])
         self.assertEqual(code, 0)
         self.assertIn('saved profile default', out.getvalue())
         self.assertNotIn('Save?', out.getvalue())

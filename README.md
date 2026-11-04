@@ -948,7 +948,7 @@ store, it returns an empty tuple. These are library APIs supporting the planned
 ## Candidate preferences
 
 Survey commands use SQLite profiles with immutable revisions. Run `uv run --frozen
-applicant survey` in a terminal to create or edit the default profile, or add
+applicant survey edit` in a terminal to create or edit the default profile, or add
 `--profile ID` for another profile. The questionnaire asks all editable fields,
 shows current/default values and saves only after confirmation. Enter keeps a
 displayed value; `-` clears an optional field/list. New profiles require experience
@@ -957,7 +957,7 @@ are fractions summing to one; invalid salary/weight groups can be corrected.
 
 Declining or EOF saves nothing; Ctrl-C returns exit 130. A concurrent edit causes
 a revision conflict, preserving the other editor's save. Prompts and validation
-feedback go to stderr. Noninteractive stdin requires `--from-file` to avoid waiting
+feedback go to stderr. Noninteractive stdin requires `survey import PATH` to avoid waiting
 for input. For file-based use, create an editable `preferences.json` document:
 
 ```json
@@ -979,12 +979,12 @@ for input. For file-based use, create an editable `preferences.json` document:
 ```
 
 ```console
-uv run --frozen applicant survey --validate preferences.json
-uv run --frozen applicant survey --dry-run --from-file preferences.json
-uv run --frozen applicant survey --from-file preferences.json
-uv run --frozen applicant survey --show
-uv run --frozen applicant survey --show --revision 1 --json
-uv run --frozen applicant survey --export preferences-edit.json
+uv run --frozen applicant survey validate preferences.json
+uv run --frozen applicant survey import preferences.json --dry-run
+uv run --frozen applicant survey import preferences.json
+uv run --frozen applicant survey show
+uv run --frozen applicant survey show --revision 1 --json
+uv run --frozen applicant survey export preferences-edit.json
 ```
 
 Salary amounts are annual base pay; basis defaults to gross. Required work modes

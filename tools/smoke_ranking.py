@@ -65,10 +65,10 @@ def journey(*, require_installed: bool = False) -> dict:
         prefs = str(FIXTURES / 'preferences.json')
         provenance = str(FIXTURES / 'provenance.json')
         versions = str(FIXTURES / 'cli-versions.json')
-        cli('survey', '--validate', prefs)
-        cli('survey', '--dry-run', '--from-file', prefs)
+        cli('survey', 'validate', prefs)
+        cli('survey', 'import', '--dry-run', prefs)
         expect(not (data / 'applicant.db').exists(), 'validation/dry-run created a database')
-        cli('survey', '--from-file', prefs)
+        cli('survey', 'import', prefs)
         first = json.loads(
             cli(
                 'rank',
@@ -111,11 +111,11 @@ def journey(*, require_installed: bool = False) -> dict:
             'excluded reason differs from golden data',
         )
 
-        cli('survey', '--export', 'edit.json')
+        cli('survey', 'export', 'edit.json')
         edited = json.loads((data / 'edit.json').read_text(encoding='utf-8'))
         edited['preferences']['preferred_base_salary'] = '120000'
         (data / 'edit.json').write_text(json.dumps(edited), encoding='utf-8')
-        cli('survey', '--from-file', 'edit.json')
+        cli('survey', 'import', 'edit.json')
         # Inputs that would break/change creation must have no effect on history.
         (data / 'job_listing.json').write_text('{broken', encoding='utf-8')
         config = explanation['configuration'] | {
@@ -140,7 +140,7 @@ def journey(*, require_installed: bool = False) -> dict:
         expect(repeated == first, 'original report changed after current inputs changed')
         listing = json.loads(cli('rank', '--list-runs', '--json'))
         expect(len(listing['runs']) == 2, 'run listing omitted a completed run')
-        current = json.loads(cli('survey', '--show', '--json'))
+        current = json.loads(cli('survey', 'show', '--json'))
         replay = json.loads(cli('rank', '--replay', run_id, '--provenance', provenance, '--json'))
         cli('rank', '--run', run_id, '--explain', 'not-a-member', code=4)
         expect(database.read_bytes() == original, 'historical commands changed database content')
