@@ -4,6 +4,7 @@ import sqlite3
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from ..domain.feedback import FeedbackDocument, FeedbackEvent
 from ..infra.store.feedback import FeedbackRepository
@@ -36,7 +37,7 @@ def import_feedback(
 
 def feedback_report(
     database: Path, run_id: str, *, history: bool = False, through: int | None = None
-) -> dict:
+) -> dict[str, Any]:
     with Store.open_readonly(database) as reader, reader.read_snapshot():
         RankingRunRepository(reader.db).get(run_id)
         watermark = reader.db.execute(

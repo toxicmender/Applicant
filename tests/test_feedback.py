@@ -207,6 +207,7 @@ class FeedbackTest(unittest.TestCase):
             ('list', '--run', 'x', '--dry-run'),
         ):
             self.assertEqual(self.cli('feedback', *options)[0], 2)
+        self.assertEqual(self.cli(*args, '--expected-revision', '-1')[0], 2)
         self.assertEqual(self.cli(*args, '--importance', 'bad')[0], 2)
         self.assertEqual(
             self.cli(

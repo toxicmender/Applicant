@@ -1,6 +1,10 @@
 """Candidate feedback commands and explicit database upgrades."""
 
+import argparse
 import sys
+from typing import Any
+
+from pydantic import NonNegativeInt, model_validator
 from pathlib import Path
 
 from ..domain.canonical import canonical_json
@@ -10,13 +14,14 @@ from ..errors import ConfigError
 from ..infra.ranking_documents import read_ranking_document
 from ..infra.store.profiles import RevisionConflict
 from ..infra.store.ranking_runs import RankingRunNotFound
-from ..infra.store.sqlite import DB_NAME, MIGRATIONS, Store
+from ..infra.store.sqlite import MIGRATIONS, Store
 from ..services.feedback import feedback_report, import_feedback
+from ..settings import Settings
+from .database import database_path as resolve_database
+from .dispatch import AddParser, DatabaseRequest, Identifier, actions, bind
 
 
 def nonnegative(value: str) -> int:
-    import argparse
-
     try:
         number = int(value)
         if number >= 0:
@@ -26,44 +31,89 @@ def nonnegative(value: str) -> int:
     raise argparse.ArgumentTypeError('must be a nonnegative integer')
 
 
-def add_parser(add):
-    command = add('feedback', help='record explicit candidate judgments on completed rankings')
-    command.add_argument('action', choices=('record', 'import', 'list'))
-    command.add_argument('--database')
-    command.add_argument('--run')
-    command.add_argument('--job')
-    command.add_argument('--event-id')
-    command.add_argument('--expected-revision', type=nonnegative)
-    command.add_argument('--decision', choices=('shortlist', 'dismiss', 'clear'))
-    command.add_argument('--reason', action='append', default=[])
+class Record(DatabaseRequest):
+    event: FeedbackInput
+    dry_run: bool = False
+
+    @model_validator(mode='before')
+    @classmethod
+    def collect_event(cls, fields: dict[str, Any]) -> dict[str, Any]:
+        values = fields.copy()
+        event = {
+            key: values.pop(key)
+            for key in (
+                'run_id',
+                'job_id',
+                'event_id',
+                'expected_revision',
+                'decision',
+                'reasons',
+                'notes',
+            )
+        }
+        importance: dict[str, str] = {}
+        for entry in values.pop('importance'):
+            name, separator, direction = entry.partition('=')
+            if not separator or name in importance:
+                raise ValueError('use --importance DIMENSION=DIRECTION once per dimension')
+            importance[name] = direction
+        return {**values, 'event': {**event, 'importance': importance}}
+
+
+class ImportFeedback(DatabaseRequest):
+    from_file: str
+    dry_run: bool = False
+
+
+class ListFeedback(DatabaseRequest):
+    run: Identifier
+    history: bool = False
+    feedback_through: NonNegativeInt | None = None
+
+
+def add_parser(add: AddParser) -> None:
+    action = actions(add('feedback', help='record candidate judgments on completed rankings'))
+
+    def leaf(name: str, help: str) -> argparse.ArgumentParser:
+        command = action(name, help=help)
+        command.add_argument('--database')
+        command.add_argument('--json', action='store_true')
+        return command
+
+    command = leaf('record', 'record one judgment at an expected revision')
+    command.add_argument('--run', dest='run_id', required=True)
+    command.add_argument('--job', dest='job_id', required=True)
+    command.add_argument('--event-id', required=True)
+    command.add_argument('--expected-revision', type=int, required=True)
+    command.add_argument('--decision', choices=('shortlist', 'dismiss', 'clear'), required=True)
+    command.add_argument('--reason', dest='reasons', action='append', default=[])
     command.add_argument('--importance', action='append', default=[], metavar='DIMENSION=DIRECTION')
     command.add_argument('--notes', default='')
-    command.add_argument('--from-file')
     command.add_argument('--dry-run', action='store_true')
+    bind(command, Record, run)
+    command = leaf('import', 'import a feedback document')
+    command.add_argument('--from-file', required=True)
+    command.add_argument('--dry-run', action='store_true')
+    bind(command, ImportFeedback, run)
+    command = leaf('list', 'read the judgments for a completed run')
+    command.add_argument('--run', required=True)
     command.add_argument('--history', action='store_true')
-    command.add_argument('--feedback-through', type=nonnegative)
-    command.add_argument('--json', action='store_true')
-    return command
+    command.add_argument('--feedback-through', type=int)
+    bind(command, ListFeedback, run)
 
 
-def add_database_parser(add):
+def add_database_parser(add: AddParser) -> argparse.ArgumentParser:
     command = add('db', help='explicitly upgrade an existing database')
     command.add_argument('action', choices=('upgrade',))
     command.add_argument('--database', required=True)
     return command
 
 
-def database_path(args) -> Path:
-    if args.settings.store != 'sqlite':
-        raise ConfigError('this command requires --store sqlite')
-    return (
-        Path(args.settings.path(args.database))
-        if args.database
-        else Path(args.settings.path(args.settings.files.listing)).resolve().parent / DB_NAME
-    )
+def database_path(args: argparse.Namespace) -> Path:
+    return resolve_database(args.settings, args.database)
 
 
-def run_upgrade(args) -> int:
+def run_upgrade(args: argparse.Namespace) -> int:
     try:
         database = database_path(args)
         if not database.is_file():
@@ -78,64 +128,21 @@ def run_upgrade(args) -> int:
         return 2
 
 
-def run(args) -> int:
+def run(args: Record | ImportFeedback | ListFeedback, settings: Settings) -> int:
     try:
-        database = database_path(args)
-        record_options = (
-            args.job
-            or args.event_id
-            or args.expected_revision is not None
-            or args.decision
-            or args.reason
-            or args.importance
-            or args.notes
-        )
-        if args.action == 'list':
-            if not args.run or record_options or args.from_file or args.dry_run:
-                raise ConfigError('list requires --run and accepts only history/cutoff options')
+        database = resolve_database(settings, args.database)
+        if isinstance(args, ListFeedback):
             result = feedback_report(
                 database, args.run, history=args.history, through=args.feedback_through
             )
         else:
-            if args.history or args.feedback_through is not None:
-                raise ConfigError('history/cutoff require list')
-            if args.action == 'import':
-                if not args.from_file or record_options or args.run:
-                    raise ConfigError('import requires --from-file without record options')
-                document = FeedbackDocument.model_validate(
-                    read_ranking_document(Path(args.settings.path(args.from_file)))
+            document = (
+                FeedbackDocument(events=(args.event,))
+                if isinstance(args, Record)
+                else FeedbackDocument.model_validate(
+                    read_ranking_document(Path(settings.path(args.from_file)))
                 )
-            else:
-                if (
-                    args.from_file
-                    or not all((args.run, args.job, args.event_id, args.decision))
-                    or args.expected_revision is None
-                ):
-                    raise ConfigError(
-                        'record requires --run --job --event-id --decision --expected-revision'
-                    )
-                importance = {}
-                for entry in args.importance:
-                    name, direction = entry.split('=', 1)
-                    if name in importance:
-                        raise ValueError('duplicate importance dimension')
-                    importance[name] = direction
-                document = FeedbackDocument(
-                    events=(
-                        FeedbackInput.model_validate(
-                            {
-                                'event_id': args.event_id,
-                                'run_id': args.run,
-                                'job_id': args.job,
-                                'expected_revision': args.expected_revision,
-                                'decision': args.decision,
-                                'reasons': args.reason,
-                                'importance': importance,
-                                'notes': args.notes,
-                            }
-                        ),
-                    )
-                )
+            )
             events = import_feedback(database, document, recorded_at=now(), dry_run=args.dry_run)
             result = {
                 'kind': 'candidate_feedback_import_result',
