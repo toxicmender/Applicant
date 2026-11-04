@@ -7,6 +7,10 @@ change bumps the minor version.
 
 ## Unreleased
 
+- Record the M4 delivery/coverage audit and fresh public-provider validation
+  ledger. Local implementation and gates are delivered; BLS metadata access,
+  MoSPI default-TLS acquisition and hosted/live acceptance remain open.
+
 - Gate the full Milestone 4 CLI journey on the existing Linux/Windows installed
   unit legs. Add fixed-clock golden fixtures with forbidden subprocess networking,
   per-module branch-aware coverage enforcement for all 28 M4 runtime modules,

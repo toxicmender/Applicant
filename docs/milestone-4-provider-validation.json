@@ -1,0 +1,157 @@
+{
+  "kind": "milestone_provider_validation",
+  "schema_version": 1,
+  "audited_commit": "51d3677",
+  "checked_at": "2026-11-04T15:22:29.739374+00:00",
+  "tls": "default verified HTTPS; no legacy handshake opt-in",
+  "benchmark_providers": [
+    {
+      "provider": "eurostat",
+      "query": {
+        "kind": "benchmark_query",
+        "schema_version": 1,
+        "provider": "eurostat",
+        "dataset": "earn_ses22_28",
+        "filters": {
+          "geo": [
+            "DE",
+            "FR"
+          ],
+          "isco08": [
+            "OC1",
+            "OC2"
+          ]
+        }
+      },
+      "fetch_exit_code": 0,
+      "database_created": true,
+      "status": "verified",
+      "adapter_version": "eurostat-ses-1",
+      "snapshot_id": "d61c70ae-3f99-459c-bc39-72784b60cf30",
+      "snapshot_hash": "b676b1f61f982d178037eb74100b1305d59b40247940bf28cfd20f1cfb135a3b",
+      "observations": 4,
+      "retrieved_at": "2026-11-04T15:22:33.933740+00:00",
+      "release_label": "2026-02-09T23:00:00+0100",
+      "export": ".cache/m4-audit-10fa3d42/eurostat-acquisition.json",
+      "responses": [
+        {
+          "url": "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/earn_ses22_28?lang=EN",
+          "sha256": "030adbccb61f04efe4f8c2a1e1f568252724f19beac6893a8313ae0437895a82"
+        },
+        {
+          "url": "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/earn_ses22_28?lang=EN&age=TOTAL&freq=A&geo=DE&geo=FR&indic_se=ERN&isco08=OC1&isco08=OC2&sex=T&sizeclas=GE10&time=2022&unit=EUR",
+          "sha256": "d1715fcd977348057da71b643115b769d23025cae89843e55e557a0507a643ae"
+        }
+      ],
+      "readback_verified": true
+    },
+    {
+      "provider": "bls",
+      "query": {
+        "kind": "benchmark_query",
+        "schema_version": 1,
+        "provider": "bls",
+        "dataset": "oews",
+        "filters": {
+          "area": [
+            "N:0000000"
+          ],
+          "occupation": [
+            "151252"
+          ],
+          "year": [
+            "2025"
+          ],
+          "statistic": [
+            "mean",
+            "median"
+          ]
+        }
+      },
+      "fetch_exit_code": 1,
+      "database_created": false,
+      "status": "unavailable",
+      "error": "benchmark: SourceError: BLS HTTP 403"
+    },
+    {
+      "provider": "mospi",
+      "query": {
+        "kind": "benchmark_query",
+        "schema_version": 1,
+        "provider": "mospi",
+        "dataset": "plfs",
+        "filters": {
+          "year_type": [
+            "1"
+          ],
+          "year": [
+            "2023-24"
+          ],
+          "state": [
+            "99"
+          ],
+          "gender": [
+            "3"
+          ],
+          "sector": [
+            "3"
+          ]
+        }
+      },
+      "fetch_exit_code": 7,
+      "database_created": false,
+      "status": "unavailable",
+      "error": "benchmark: Unreachable: could not reach mospi: [SSL: UNSAFE_LEGACY_RENEGOTIATION_DISABLED] unsafe legacy renegotiation disabled (_ssl.c:1000)"
+    }
+  ],
+  "company_providers": [
+    {
+      "provider": "ambitionbox",
+      "status": "verified",
+      "scope": "Public decoding and raw capture only; no job/company association independently verified or stored.",
+      "returned_company_id": "42",
+      "source_observed_at": null,
+      "responses": [
+        {
+          "url": "https://www.ambitionbox.com/reviews/tcs-reviews",
+          "sha256": "aa12b6db45cdf801f07fbb664f165fc9cc4c98b4c528e72cbd0ec531129730b5"
+        }
+      ]
+    },
+    {
+      "provider": "glassdoor",
+      "status": "unavailable",
+      "scope": "No live check performed in this audit; browser unavailable in local suite; authenticated APIs not exercised."
+    },
+    {
+      "provider": "crunchbase",
+      "status": "unavailable",
+      "scope": "No live check performed in this audit; browser unavailable in local suite; authenticated APIs not exercised."
+    },
+    {
+      "provider": "tracxn",
+      "status": "unavailable",
+      "scope": "No live check performed in this audit; browser unavailable in local suite; authenticated APIs not exercised."
+    }
+  ],
+  "bls_wage_api_diagnostic": {
+    "status": "verified",
+    "source_url": "https://api.bls.gov/publicAPI/v2/timeseries/data/",
+    "body_sha256": "998a700bf8ecdc8e1e30c0fdc94fd5a5a181a2d64e62f95aac0eb18b5262feac",
+    "series_ids": [
+      "OEUN000000000000015125204",
+      "OEUN000000000000015125213"
+    ],
+    "year": "2025",
+    "notice": "Direct wage API diagnostic only; metadata validation and completed acquisition remain separate."
+  },
+  "benchmark_live_acceptance_complete": false,
+  "local_artifacts": ".cache/m4-audit-10fa3d42",
+  "bls_metadata_diagnostic": {
+    "status": "unavailable",
+    "http_status": 403,
+    "source_url": "https://download.bls.gov/pub/time.series/oe/oe.area",
+    "body_sha256": "6e4817ce506d7b6ab392028edc18f472318ac3452fbc0bb5da6d3ec3bfd79866"
+  },
+  "completed_at": "2026-11-04T16:04:45.959120+00:00"
+}

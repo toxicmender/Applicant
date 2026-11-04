@@ -107,5 +107,7 @@ BLS acquisition is partial because official metadata downloads returned HTTP 403
 MoSPI's default TLS client remains incompatible with the upstream legacy
 renegotiation requirement. Public AmbitionBox decoding passed; other live company
 capture checks remain unverified. Fixture and installed-package success do not
-establish full live-provider compatibility. Milestone 4 remains open for the final
-delivery/provider audit and unresolved hosted/live acceptance.
+establish full live-provider compatibility. The
+[final delivery audit](milestone-4-delivery.md) records the fresh full-suite,
+actual-wheel and public-provider rechecks. Milestone 4 remains open for unresolved
+hosted/live acceptance.

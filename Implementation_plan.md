@@ -14,11 +14,13 @@
 > and remaining hosted gates.
 
 The accepted [Milestone 4 plan](docs/milestone-4-plan.md) defines personalization,
-evaluation, benchmark adapters and verified company evidence.
+evaluation, benchmark adapters and verified company evidence. Local feature and
+CI-gate implementation is delivered; the [M4 delivery audit](docs/milestone-4-delivery.md)
+records coverage, provider rechecks and open hosted/live acceptance gates.
 
 Project: toxicmender/Applicant
 Document: Implementation Plan and Technical Specification
-Status: Milestones 1–3 implemented and validated locally; hosted CI remains unverified
+Status: Milestones 1–3 validated locally; M4 implementation delivered locally, hosted/live acceptance open
 Primary language: Python
 Package manager: uv
 Data validation: Pydantic
@@ -1448,6 +1450,11 @@ The survey must support interactive and non-interactive operation.
 Configuration imports must be validated before database modification.
 
 Milestone 4 — Personalization and Evaluation
+
+See the [accepted M4 plan](docs/milestone-4-plan.md) and
+[delivery audit](docs/milestone-4-delivery.md) for the delivered contracts,
+commands and current acceptance status. The list below preserves the original
+proposal.
 
 Potential future capabilities:
 

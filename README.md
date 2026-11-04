@@ -2,9 +2,13 @@
 It is a dynamic web scraper which gets the posted jobs which are applicable from within the site and don't redirect to another site. It then applies to them automatically with your stored (Latest) Resume.
 > _**Note: Filter operation hasn't been implemented yet for jobs**_
 
+Milestone 4 personalization, evaluation, benchmarks and company evidence are
+implemented locally. See the [delivery audit](docs/milestone-4-delivery.md) for
+coverage and the remaining hosted/live-provider acceptance gates.
+
 ## Candidate feedback
 
-Milestone 4 begins with explicit candidate judgments on completed rankings.
+Candidate judgments reference exact completed ranking runs.
 Upgrade an existing database before using the new schema:
 
 ```powershell

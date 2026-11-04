@@ -244,10 +244,29 @@ passed. Installed M4 execution is now required on every existing unit matrix leg
 the coverage job retains both detailed JSON and module-gate results. Hosted CI
 and live providers were not rerun in this phase. Earlier live limitations remain.
 
-Still pending: the final delivery/provider audit and remaining hosted/live
-validation, including full BLS metadata acquisition and default-client MoSPI
-compatibility. The local full-journey and per-module coverage gates are delivered.
-This is a partial delivery and does not mark Milestone 4 complete.
+Phase 10 delivers the [final local delivery audit](milestone-4-delivery.md) and
+[provider-validation ledger](milestone-4-provider-validation.json), audited against
+`51d3677` on 2026-11-04. The fresh full suite passed **1,239 tests**, with **13
+environment skips** and **1,433 subtests**, in **196.56 seconds**. All 28 new M4
+runtime modules retain **100% measured statement/branch coverage**; overall
+coverage is **99%**. Ruff, both Pyright platform targets, lock validation and
+sdist/wheel builds passed. The full M4 journey also passed against the built wheel
+with runtime dependencies pinned from `uv.lock`.
+
+Fresh normal-CLI acquisition verified Eurostat discovery, four selected
+observations, private export, SQLite persistence and exact offline recovery.
+BLS metadata still returned **HTTP 403** (exit 1); a separate direct wage-API
+diagnostic passed for two 2025 annual series. MoSPI still failed default verified
+HTTPS with **UNSAFE_LEGACY_RENEGOTIATION_DISABLED** (exit 7). Neither unavailable
+fetch created a database. Public AmbitionBox decoding/raw capture passed again;
+live Glassdoor/Crunchbase/Tracxn checks were not performed. The ledger records
+queries, response digests and verification scope. No TLS weakening or fallback
+cohort/release was introduced.
+
+All planned local implementation/audit phases are delivered. Remaining milestone
+acceptance is external: hosted CI execution, complete normal-provider BLS and
+MoSPI acquisition, and available live company checks. These requirements remain
+open; Milestone 4 is not marked complete.
 
 Ruff, formatting, both platform Pyright targets, uv lock validation, build and
 the existing isolated installed-package ranking journey passed locally.
