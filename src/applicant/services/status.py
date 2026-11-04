@@ -4,10 +4,28 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import TypedDict
 
 from ..infra.store.repositories import Backend, applications, listing
 
 logger = logging.getLogger(__name__)
+
+
+class JobCounts(TypedDict):
+    total: int
+    by_source: dict[str, int]
+
+
+class ApplicationCounts(TypedDict):
+    total: int
+    by_status: dict[str, int]
+
+
+class StatusReport(TypedDict):
+    input: str
+    log: str
+    jobs: JobCounts
+    applications: ApplicationCounts
 
 
 @dataclass(frozen=True)
@@ -25,7 +43,7 @@ class Status:
     def applications(self) -> int:
         return sum(self.by_status.values())
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(self) -> StatusReport:
         """The machine readable form `status --json` writes."""
         return {
             'input': self.input,
