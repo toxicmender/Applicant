@@ -15,6 +15,7 @@ change bumps the minor version.
 | `company-evidence --association ID capture` | `company-evidence capture --association ID` | Capture and refresh accept credentials. Offline actions accept their own document or ID options. |
 | `feedback --run R list` | `feedback list --run R` | Record, import and list validate their own inputs. |
 | `personalize --run R suggest` | `personalize suggest --run R` | Show and accept require a suggestion ID. |
+| `db --database PATH upgrade` | `db upgrade --database PATH` | The required database belongs to the upgrade action. |
 
 
 - Record the M4 delivery/coverage audit and fresh public-provider validation

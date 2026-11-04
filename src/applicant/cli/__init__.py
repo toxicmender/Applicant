@@ -36,6 +36,7 @@ from . import (
     apply,
     benchmark,
     company_evidence,
+    database,
     evaluate,
     feedback,
     financials,
@@ -89,7 +90,7 @@ run_rank = rank.run
 run_feedback = feedback.run
 run_evaluate = evaluate.run
 run_personalize = personalize.run
-run_database = feedback.run_upgrade
+run_database = database.run_upgrade
 
 # what an error that reached main() says about the run, for a calling script
 EXIT_CODES: tuple[tuple[type[BaseException], int], ...] = (
@@ -137,7 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
     feedback.add_parser(add)
     evaluate.add_parser(add).set_defaults(handler=run_evaluate)
     personalize.add_parser(add)
-    feedback.add_database_parser(add).set_defaults(handler=run_database)
+    database.add_parser(add)
     return parser
 
 

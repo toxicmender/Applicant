@@ -14,7 +14,6 @@ from ..errors import ConfigError
 from ..infra.ranking_documents import read_ranking_document
 from ..infra.store.profiles import RevisionConflict
 from ..infra.store.ranking_runs import RankingRunNotFound
-from ..infra.store.sqlite import MIGRATIONS, Store
 from ..services.feedback import feedback_report, import_feedback
 from ..settings import Settings
 from .database import database_path as resolve_database
@@ -102,30 +101,8 @@ def add_parser(add: AddParser) -> None:
     bind(command, ListFeedback, run)
 
 
-def add_database_parser(add: AddParser) -> argparse.ArgumentParser:
-    command = add('db', help='explicitly upgrade an existing database')
-    command.add_argument('action', choices=('upgrade',))
-    command.add_argument('--database', required=True)
-    return command
-
-
 def database_path(args: argparse.Namespace) -> Path:
     return resolve_database(args.settings, args.database)
-
-
-def run_upgrade(args: argparse.Namespace) -> int:
-    try:
-        database = database_path(args)
-        if not database.is_file():
-            print(f'database not found: {database}', file=sys.stderr)
-            return 4
-        with Store(database):
-            pass
-        print(f'database upgraded to schema {len(MIGRATIONS)}: {database.resolve()}')
-        return 0
-    except ConfigError as error:
-        print(f'applicant db: {error}', file=sys.stderr)
-        return 2
 
 
 def run(args: Record | ImportFeedback | ListFeedback, settings: Settings) -> int:

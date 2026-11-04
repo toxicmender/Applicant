@@ -159,6 +159,7 @@ class FeedbackTest(unittest.TestCase):
             self.assertCountEqual(pool.map(edit, (1, 2)), ('saved', 'stale'))
 
     def test_upgrade_from_schema_three_and_cli_options(self):
+        self.assertEqual(self.cli('db', 'upgrade', '--database', 'absent.db')[0], 4)
         old = self.data.root / 'old # 测试.db'
         with mock.patch('applicant.infra.store.sqlite.MIGRATIONS', MIGRATIONS[:3]), Store(old):
             pass
