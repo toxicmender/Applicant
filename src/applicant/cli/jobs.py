@@ -7,13 +7,23 @@ import sys
 from pathlib import Path
 
 from ..log import get
-from .common import file_arg
+from ..settings import Settings
+from .dispatch import AddParser, Request
+from .common import configured_path
 from .render import terminal
 
 logger = get(__name__)
 
 
-def add_parser(add) -> argparse.ArgumentParser:
+class JobsRequest(Request):
+    cookies: str | None = None
+    overwrite: bool = False
+    twofa: bool = False
+    jobs: str | None = None
+    show: bool = False
+
+
+def add_parser(add: AddParser) -> argparse.ArgumentParser:
     jobs = add('jobs', help='scrape LinkedIn jobs while signed in')
     jobs.add_argument(
         '-c',
@@ -44,10 +54,10 @@ def add_parser(add) -> argparse.ArgumentParser:
     return jobs
 
 
-def run(args) -> int:
+def run(args: JobsRequest, settings: Settings) -> int:
     from ..boards.linkedin_apply import LinkedIn
 
-    fp = Path(file_arg(args, 'cookies', 'cookies'))
+    fp = Path(configured_path(settings, args.cookies, settings.files.cookies))
     with LinkedIn(headless=not args.show, interaction=terminal()) as operator:
         if fp.exists() and not fp.is_dir() and not args.overwrite:
             logger.info(f'jobs: restoring the LinkedIn session from {fp}')
@@ -74,7 +84,7 @@ def run(args) -> int:
             if saved is not None:
                 print('session saved to {}'.format(saved))
 
-        listing = file_arg(args, 'jobs', 'listing')
-        jobs = operator.scrape_jobs(listing, backend=args.settings.store)
+        listing = configured_path(settings, args.jobs, settings.files.listing)
+        jobs = operator.scrape_jobs(listing, backend=settings.store)
     print('scraped {} recommended jobs into {}'.format(len(jobs), listing))
     return 0

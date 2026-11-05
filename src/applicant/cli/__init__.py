@@ -124,13 +124,13 @@ def build_parser() -> argparse.ArgumentParser:
         return commands.add_parser(name, parents=[every_command], **options)
 
     # the names are read here, at call time, so a patched run_* is the one bound
-    jobs.add_parser(add).set_defaults(handler=run_jobs)
+    bind(jobs.add_parser(add), jobs.JobsRequest, run_jobs)
     bind(search.add_parser(add), search.Search, run_search)
     bind(apply.add_parser(add), apply.Apply, run_apply)
     benchmark.add_parser(add)
     company_evidence.add_parser(add)
-    reviews.add_parser(add).set_defaults(handler=run_reviews)
-    financials.add_parser(add).set_defaults(handler=run_financials)
+    bind(reviews.add_parser(add), reviews.ReviewsRequest, run_reviews)
+    bind(financials.add_parser(add), financials.FinancialsRequest, run_financials)
     rates.add_parser(add).set_defaults(handler=run_rates)
     bind(status.add_parser(add), status.StatusRequest, run_status)
     survey.add_parser(add)

@@ -3,14 +3,35 @@
 from __future__ import annotations
 
 import argparse
+from typing import Literal, TYPE_CHECKING
+from pydantic import Field
 from contextlib import ExitStack
 
 from ..services.financials import FINANCIAL_SOURCES
-from .common import file_arg
+from ..settings import Settings
+from .dispatch import AddParser, Request
+from .common import configured_path
 from .render import Renderer, terminal
 
 
-def add_parser(add) -> argparse.ArgumentParser:
+if TYPE_CHECKING:
+    from ..financials import CrunchbaseClient, TracxnClient
+
+
+class FinancialsRequest(Request):
+    companies: list[str] = Field(default_factory=list)
+    from_jobs: str | None = None
+    source: Literal['crunchbase', 'tracxn', 'both'] = 'both'
+    max_rounds: int = 20
+    output: str | None = None
+    rounds: bool = False
+    login: bool = False
+    show: bool = False
+    cb_profile: str | None = None
+    tx_profile: str | None = None
+
+
+def add_parser(add: AddParser) -> argparse.ArgumentParser:
     financials = add(
         'financials',
         help='track company funding, valuation and revenue from Crunchbase and Tracxn',
@@ -69,25 +90,29 @@ def add_parser(add) -> argparse.ArgumentParser:
     return financials
 
 
-def clients(args) -> dict:
+def clients(
+    args: FinancialsRequest, settings: Settings
+) -> dict[str, CrunchbaseClient | TracxnClient]:
     """One place that knows which client a --source names."""
     from ..financials import CrunchbaseClient, TracxnClient
 
     wanted = FINANCIAL_SOURCES if args.source == 'both' else (args.source,)
-    made = {}
+    made: dict[str, CrunchbaseClient | TracxnClient] = {}
     if 'crunchbase' in wanted:
         made['crunchbase'] = CrunchbaseClient(
             # flag, then $CRUNCHBASE_API_KEY, resolved by Settings
-            api_key=args.settings.secret('crunchbase_key'),
-            profile_dir=file_arg(args, 'cb_profile', 'crunchbase_profile'),
+            api_key=settings.secret('crunchbase_key'),
+            profile_dir=configured_path(
+                settings, args.cb_profile, settings.files.crunchbase_profile
+            ),
             login=args.login,
             headless=not args.show,
             interaction=terminal(),
         )
     if 'tracxn' in wanted:
         made['tracxn'] = TracxnClient(
-            api_key=args.settings.secret('tracxn_key'),
-            profile_dir=file_arg(args, 'tx_profile', 'tracxn_profile'),
+            api_key=settings.secret('tracxn_key'),
+            profile_dir=configured_path(settings, args.tx_profile, settings.files.tracxn_profile),
             login=args.login,
             headless=not args.show,
             interaction=terminal(),
@@ -95,10 +120,9 @@ def clients(args) -> dict:
     return made
 
 
-def run(args) -> int:
+def run(args: FinancialsRequest, settings: Settings) -> int:
     from ..services.financials import companies_to_track, track_financials
 
-    settings = args.settings
     companies = companies_to_track(
         args.companies,
         settings.path(args.from_jobs) if args.from_jobs else None,
@@ -110,11 +134,13 @@ def run(args) -> int:
 
     # the clients are made here, so they are closed here - whatever happens
     with ExitStack() as opened:
-        made = {name: opened.enter_context(client) for name, client in clients(args).items()}
+        made = {
+            name: opened.enter_context(client) for name, client in clients(args, settings).items()
+        }
         tracked = track_financials(
             companies,
             made,
-            file_arg(args, 'output', 'financials'),
+            configured_path(settings, args.output, settings.files.financials),
             max_rounds=args.max_rounds,
             emit=Renderer(rounds=args.rounds, failures=True),
             backend=settings.store,

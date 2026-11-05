@@ -117,12 +117,12 @@ class LinkedIn(LinkedInGuest):
 
     def login(
         self,
-        username,
-        password,
-        twoFA=False,
+        username: str,
+        password: str,
+        twoFA: bool = False,
         filepath: str | Path = 'cookies.json',
-        overwrite=False,
-    ):
+        overwrite: bool = False,
+    ) -> Path | None:
         target = Path(filepath)
         if target.exists() and not overwrite:
             logger.warning(
@@ -198,7 +198,9 @@ class LinkedIn(LinkedInGuest):
 
     # -- logged in flows --------------------------------------------------
 
-    def scrape_jobs(self, filepath='job_listing.json', backend: Backend = 'files'):
+    def scrape_jobs(
+        self, filepath: str = 'job_listing.json', backend: Backend = 'files'
+    ) -> list[Job]:
         """Recommended jobs from the signed in Jobs page, merged into `filepath`
         through the store `backend` names."""
         from ..infra.store.repositories import listing

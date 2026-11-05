@@ -3,14 +3,31 @@
 from __future__ import annotations
 
 import argparse
+from typing import Literal, TYPE_CHECKING
 from contextlib import ExitStack
 
 from ..services.reviews import REVIEW_SOURCES
-from .common import file_arg
+from ..settings import Settings
+from .dispatch import AddParser, Request
+from .common import configured_path
 from .render import Renderer, terminal
 
 
-def add_parser(add) -> argparse.ArgumentParser:
+if TYPE_CHECKING:
+    from ..reviews import AmbitionBoxClient, GlassdoorClient
+
+
+class ReviewsRequest(Request):
+    company: str
+    source: Literal['ambitionbox', 'glassdoor', 'both'] = 'ambitionbox'
+    max_reviews: int = 20
+    output: str | None = None
+    login: bool = False
+    profile: str | None = None
+    show: bool = False
+
+
+def add_parser(add: AddParser) -> argparse.ArgumentParser:
     reviews = add('reviews', help='fetch company ratings and pros/cons')
     reviews.add_argument(
         'company',
@@ -47,18 +64,22 @@ def add_parser(add) -> argparse.ArgumentParser:
     return reviews
 
 
-def clients(args) -> dict:
+def clients(
+    args: ReviewsRequest, settings: Settings
+) -> dict[str, AmbitionBoxClient | GlassdoorClient]:
     """One place that knows which client a --source names."""
     from ..reviews import AmbitionBoxClient, GlassdoorClient
 
     wanted = REVIEW_SOURCES if args.source == 'both' else (args.source,)
-    made = {}
+    made: dict[str, AmbitionBoxClient | GlassdoorClient] = {}
     for source in wanted:
         if source == 'ambitionbox':
             made[source] = AmbitionBoxClient()
         else:
             made[source] = GlassdoorClient(
-                profile_dir=file_arg(args, 'profile', 'glassdoor_profile'),
+                profile_dir=configured_path(
+                    settings, args.profile, settings.files.glassdoor_profile
+                ),
                 login=args.login,
                 headless=not args.show,
                 interaction=terminal(),
@@ -66,17 +87,18 @@ def clients(args) -> dict:
     return made
 
 
-def run(args) -> int:
+def run(args: ReviewsRequest, settings: Settings) -> int:
     from ..services.reviews import fetch_reviews
 
-    settings = args.settings
     # the clients are made here, so they are closed here - whatever happens
     with ExitStack() as opened:
-        made = {name: opened.enter_context(client) for name, client in clients(args).items()}
+        made = {
+            name: opened.enter_context(client) for name, client in clients(args, settings).items()
+        }
         found = fetch_reviews(
             args.company,
             made,
-            file_arg(args, 'output', 'reviews'),
+            configured_path(settings, args.output, settings.files.reviews),
             max_reviews=args.max_reviews,
             emit=Renderer(),
             backend=settings.store,
