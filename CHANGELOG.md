@@ -22,6 +22,7 @@ change bumps the minor version.
 | `rank --run R [--explain J]` | `rank show R` / `rank explain R J` | IDs are positional. |
 | `rank --compare A B` / `rank --replay R --provenance P` | `rank compare A B` / `rank replay R --provenance P` | History actions reject creation options. |
 | `search/apply --experience -1` or `--min-salary -1` | Supply zero or a positive value | CLI and saved searches use the same lower bounds. |
+| `rates --force` / `--currency GBP` / `--into PATH` | `rates --refresh ...` | Refresh-only flags on cached reads now fail with exit 2. |
 
 
 - Record the M4 delivery/coverage audit and fresh public-provider validation

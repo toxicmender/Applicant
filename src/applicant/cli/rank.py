@@ -3,6 +3,7 @@
 import argparse
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -67,7 +68,10 @@ class Replay(DatabaseRequest):
     provenance: str
 
 
-def add_parser(add: AddParser) -> None:
+def add_parser(
+    add: AddParser,
+    handler: Callable[[Create | ListRuns | Show | Explain | Compare | Replay, Settings], int],
+) -> None:
     action = actions(add('rank', help='create, inspect and verify ranking runs'))
 
     def leaf(name: str, help: str) -> argparse.ArgumentParser:
@@ -94,26 +98,26 @@ def add_parser(add: AddParser) -> None:
     command.add_argument('--tiers')
     command.add_argument('--offline', action='store_true')
     limits(command)
-    bind(command, Create, run)
+    bind(command, Create, handler)
     command = leaf('list', 'list completed ranking runs offline')
     command.add_argument('--profile')
-    bind(command, ListRuns, run)
+    bind(command, ListRuns, handler)
     command = leaf('show', 'display a completed ranking run')
     command.add_argument('run_id', metavar='RUN_ID')
     limits(command)
-    bind(command, Show, run)
+    bind(command, Show, handler)
     command = leaf('explain', 'explain one job in a completed run')
     command.add_argument('run_id', metavar='RUN_ID')
     command.add_argument('job_id', metavar='JOB_ID')
-    bind(command, Explain, run)
+    bind(command, Explain, handler)
     command = leaf('compare', 'compare two historical runs')
     command.add_argument('base', metavar='BASE_RUN')
     command.add_argument('candidate', metavar='CANDIDATE_RUN')
-    bind(command, Compare, run)
+    bind(command, Compare, handler)
     command = leaf('replay', 'verify a completed run offline against its provenance')
     command.add_argument('run_id', metavar='RUN_ID')
     command.add_argument('--provenance', required=True)
-    bind(command, Replay, run)
+    bind(command, Replay, handler)
 
 
 def _render(report: dict[str, Any], database: Path) -> None:

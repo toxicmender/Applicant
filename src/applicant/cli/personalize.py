@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+from collections.abc import Callable
 
 from ..domain.canonical import canonical_json
 from ..domain.contracts import now
@@ -27,7 +28,7 @@ class Accept(DatabaseRequest):
     suggestion: Identifier
 
 
-def add_parser(add: AddParser) -> None:
+def add_parser(add: AddParser, handler: Callable[[Suggest | Show | Accept, Settings], int]) -> None:
     action = actions(add('personalize', help='preview and explicitly accept weight suggestions'))
 
     def leaf(name: str, help: str) -> argparse.ArgumentParser:
@@ -38,7 +39,7 @@ def add_parser(add: AddParser) -> None:
 
     command = leaf('suggest', 'generate a weight suggestion from a ranked run')
     command.add_argument('--run', required=True)
-    bind(command, Suggest, run)
+    bind(command, Suggest, handler)
     for name, model in (('show', Show), ('accept', Accept)):
         command = leaf(
             name,
@@ -47,7 +48,7 @@ def add_parser(add: AddParser) -> None:
             else 'accept a suggestion as a new profile revision',
         )
         command.add_argument('--suggestion', required=True)
-        bind(command, model, run)
+        bind(command, model, handler)
 
 
 def run(args: Suggest | Show | Accept, settings: Settings) -> int:

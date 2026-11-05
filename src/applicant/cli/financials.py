@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import argparse
-from typing import Literal, TYPE_CHECKING
-from pydantic import Field
 from contextlib import ExitStack
+from typing import TYPE_CHECKING, Literal
+
+from pydantic import Field
 
 from ..services.financials import FINANCIAL_SOURCES
 from ..settings import Settings
-from .dispatch import AddParser, Request
 from .common import configured_path
+from .dispatch import AddParser, Request
 from .render import Renderer, terminal
-
 
 if TYPE_CHECKING:
     from ..financials import CrunchbaseClient, TracxnClient

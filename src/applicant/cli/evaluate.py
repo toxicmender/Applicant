@@ -1,8 +1,8 @@
 """Descriptive evaluation of explicit candidate judgments."""
 
+import argparse
 import json
 import sys
-import argparse
 
 from pydantic import NonNegativeInt, PositiveInt
 

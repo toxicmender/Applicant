@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import argparse
-from typing import Literal, TYPE_CHECKING
 from contextlib import ExitStack
+from typing import TYPE_CHECKING, Literal
 
 from ..services.reviews import REVIEW_SOURCES
 from ..settings import Settings
-from .dispatch import AddParser, Request
 from .common import configured_path
+from .dispatch import AddParser, Request
 from .render import Renderer, terminal
-
 
 if TYPE_CHECKING:
     from ..reviews import AmbitionBoxClient, GlassdoorClient

@@ -8,8 +8,8 @@ import sys
 from ..domain.job import Job
 from ..log import get
 from ..settings import FilterOptions, Settings
-from .dispatch import AddParser, Request
 from .common import add_filters, configured_path, filters_from
+from .dispatch import AddParser, Request
 from .render import shown, terminal
 
 logger = get(__name__)

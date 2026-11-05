@@ -3,8 +3,8 @@
 import argparse
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
-
 from typing import Literal, get_args
 
 from ..domain.benchmarks import BenchmarkComparisonDocument, BenchmarkQuery, BenchmarkSnapshot
@@ -91,7 +91,7 @@ class Fetch(BenchmarkRequest):
 Benchmark = ImportSnapshot | ShowSnapshots | CompareSnapshots | Discover | Fetch
 
 
-def add_parser(add: AddParser) -> None:
+def add_parser(add: AddParser, handler: Callable[[Benchmark, Settings], int]) -> None:
     group = add('benchmark', help='import and compare wage benchmark cohorts')
     action = actions(group)
 
@@ -105,20 +105,20 @@ def add_parser(add: AddParser) -> None:
     command = leaf('import', 'import an immutable benchmark snapshot')
     command.add_argument('--from-file', required=True)
     command.add_argument('--dry-run', action='store_true')
-    bind(command, ImportSnapshot, run)
+    bind(command, ImportSnapshot, handler)
     command = leaf('show', 'display stored benchmark snapshots')
     command.add_argument('--snapshot', action='append', required=True)
-    bind(command, ShowSnapshots, run)
+    bind(command, ShowSnapshots, handler)
     command = leaf('compare', 'compare a ranking run against selected benchmarks')
     command.add_argument('--run', required=True)
     command.add_argument('--selections', required=True)
-    bind(command, CompareSnapshots, run)
+    bind(command, CompareSnapshots, handler)
     command = leaf('discover', 'discover available provider datasets')
     command.add_argument('--provider', required=True, choices=get_args(Provider))
-    bind(command, Discover, run)
+    bind(command, Discover, handler)
     command = leaf('fetch', 'fetch the observations specified by a query document')
     command.add_argument('--query', required=True)
-    bind(command, Fetch, run)
+    bind(command, Fetch, handler)
 
 
 def run(args: Benchmark, settings: Settings) -> int:

@@ -71,7 +71,7 @@ pythonVersion = "3.10"
 venvPath = "."
 venv = ".venv"
 typeCheckingMode = "basic"
-strict = ["src/applicant/cli/dispatch.py", "src/applicant/cli/status.py", "src/applicant/cli/benchmark.py", "src/applicant/cli/database.py", "src/applicant/cli/company_evidence.py", "src/applicant/cli/feedback.py", "src/applicant/cli/personalize.py", "src/applicant/cli/evaluate.py", "src/applicant/cli/survey.py", "src/applicant/cli/rank.py", "src/applicant/cli/search.py", "src/applicant/cli/apply.py", "src/applicant/cli/jobs.py", "src/applicant/cli/reviews.py", "src/applicant/cli/financials.py"]
+strict = ["src/applicant/cli/dispatch.py", "src/applicant/cli/status.py", "src/applicant/cli/benchmark.py", "src/applicant/cli/database.py", "src/applicant/cli/company_evidence.py", "src/applicant/cli/feedback.py", "src/applicant/cli/personalize.py", "src/applicant/cli/evaluate.py", "src/applicant/cli/survey.py", "src/applicant/cli/rank.py", "src/applicant/cli/search.py", "src/applicant/cli/apply.py", "src/applicant/cli/jobs.py", "src/applicant/cli/reviews.py", "src/applicant/cli/financials.py", "src/applicant/cli/rates.py"]
 reportMissingImports = "error"
 
 [tool.ruff]

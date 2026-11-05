@@ -3,6 +3,7 @@
 import argparse
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from pydantic import Field, model_validator
@@ -83,7 +84,7 @@ class Capture(EvidenceRequest):
 Evidence = ImportEvidence | ShowEvidence | Enrich | Capture
 
 
-def add_parser(add: AddParser) -> None:
+def add_parser(add: AddParser, handler: Callable[[Evidence, Settings], int]) -> None:
     action = actions(
         add('company-evidence', help='associate, capture and enrich exact company evidence')
     )
@@ -104,20 +105,20 @@ def add_parser(add: AddParser) -> None:
         )
         command.add_argument('--from-file', required=True)
         command.add_argument('--dry-run', action='store_true')
-        bind(command, model, run)
+        bind(command, model, handler)
     command = leaf('enrich', 'export job versions enriched with selected company evidence')
     command.add_argument('--from-file', required=True)
-    bind(command, Enrich, run)
+    bind(command, Enrich, handler)
     command = leaf('show', 'read selected company evidence offline')
     command.add_argument('--association', action='append', default=[])
     command.add_argument('--snapshot', action='append', default=[])
-    bind(command, ShowEvidence, run)
+    bind(command, ShowEvidence, handler)
     for name in ('capture', 'refresh'):
         command = leaf(name, 'capture verified evidence for selected associations')
         command.add_argument('--association', action='append', required=True)
         command.add_argument('--crunchbase-key')
         command.add_argument('--tracxn-key')
-        bind(command, Capture, run)
+        bind(command, Capture, handler)
 
 
 def run(args: Evidence, settings: Settings) -> int:

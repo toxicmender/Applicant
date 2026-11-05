@@ -1,11 +1,10 @@
 """Explicit capture/import and offline enrichment; ranking never refreshes sources."""
 
 from collections.abc import Callable
-from typing import Any
-
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from ..domain.canonical import content_hash, utc

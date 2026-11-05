@@ -1,6 +1,8 @@
 """Interactive and document-based candidate survey commands."""
 
 import sys
+from collections.abc import Callable
+
 from pydantic import Field, PositiveInt
 
 from ..domain.canonical import canonical_json
@@ -40,20 +42,22 @@ class Import(Validate):
     dry_run: bool = False
 
 
-def add_parser(add: AddParser) -> None:
+def add_parser(
+    add: AddParser, handler: Callable[[Edit | Show | Export | Validate | Import, Settings], int]
+) -> None:
     action = actions(add('survey', help='manage versioned candidate preferences'))
     command = action('edit', help='create or edit a profile interactively')
     command.add_argument('--profile', default='default')
     command.add_argument('--database')
-    bind(command, Edit, run)
+    bind(command, Edit, handler)
     command = action('validate', help='validate preferences without opening a database')
     command.add_argument('path', metavar='PATH')
-    bind(command, Validate, run)
+    bind(command, Validate, handler)
     command = action('import', help='save preferences as a new revision')
     command.add_argument('path', metavar='PATH')
     command.add_argument('--dry-run', action='store_true')
     command.add_argument('--database')
-    bind(command, Import, run)
+    bind(command, Import, handler)
     for name, model in (('show', Show), ('export', Export)):
         command = action(
             name,
@@ -66,7 +70,7 @@ def add_parser(add: AddParser) -> None:
             command.add_argument('--json', action='store_true')
         else:
             command.add_argument('path', metavar='PATH')
-        bind(command, model, run)
+        bind(command, model, handler)
 
 
 def run(args: Edit | Show | Export | Validate | Import, settings: Settings) -> int:

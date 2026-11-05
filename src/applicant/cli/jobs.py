@@ -8,8 +8,8 @@ from pathlib import Path
 
 from ..log import get
 from ..settings import Settings
-from .dispatch import AddParser, Request
 from .common import configured_path
+from .dispatch import AddParser, Request
 from .render import terminal
 
 logger = get(__name__)

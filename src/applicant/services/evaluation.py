@@ -12,7 +12,9 @@ from ..infra.store.sqlite import Store
 from .ranking_history import load_history
 
 
-def evaluate_run(database: Path, run_id: str, *, top: int = 20, through: int | None = None) -> dict[str, Any]:
+def evaluate_run(
+    database: Path, run_id: str, *, top: int = 20, through: int | None = None
+) -> dict[str, Any]:
     with Store.open_readonly(database) as reader, reader.read_snapshot():
         history = load_history(reader, run_id)
         if isinstance(history.run, RankingRun) or not isinstance(

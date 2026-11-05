@@ -1,6 +1,7 @@
 """SQLite and export paths shared by CLI commands."""
 
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from ..errors import ConfigError
@@ -33,11 +34,11 @@ class Upgrade(Request):
     database: str
 
 
-def add_parser(add: AddParser) -> None:
+def add_parser(add: AddParser, handler: Callable[[Upgrade, Settings], int]) -> None:
     action = actions(add('db', help='manage an existing Applicant database'))
     command = action('upgrade', help='upgrade an existing SQLite database')
     command.add_argument('--database', required=True)
-    bind(command, Upgrade, run_upgrade)
+    bind(command, Upgrade, handler)
 
 
 def run_upgrade(args: Upgrade, settings: Settings) -> int:

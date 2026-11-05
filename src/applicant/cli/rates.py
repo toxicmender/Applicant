@@ -4,10 +4,27 @@ from __future__ import annotations
 
 import argparse
 
+from pydantic import model_validator
+
+from ..settings import Settings
+from .dispatch import AddParser, Request
 from .render import Renderer
 
 
-def add_parser(add) -> argparse.ArgumentParser:
+class Rates(Request):
+    refresh: bool = False
+    force: bool = False
+    currency: list[str] | None = None
+    into: str | None = None
+
+    @model_validator(mode='after')
+    def refresh_only(self):
+        if not self.refresh and (self.force or self.currency is not None or self.into is not None):
+            raise ValueError('--force, --currency and --into require --refresh')
+        return self
+
+
+def add_parser(add: AddParser) -> argparse.ArgumentParser:
     rates = add('rates', help='show or refresh the locally cached PPP conversion factors')
     rates.add_argument(
         '--refresh',
@@ -33,7 +50,7 @@ def add_parser(add) -> argparse.ArgumentParser:
     return rates
 
 
-def run(args) -> int:
+def run(args: Rates, settings: Settings) -> int:
     """Show, or top up, the locally cached PPP factors."""
     from ..services.rates import cached, refresh
 
@@ -46,7 +63,7 @@ def run(args) -> int:
         )
         print('one country at a time - the API throttles hard, so this is not quick.\n')
 
-        into = args.settings.path(args.into) if args.into else None
+        into = settings.path(args.into) if args.into else None
         done = refresh(wanted, force=args.force, emit=Renderer(), into=into)
         if done.unknown:
             print('not a mapped currency: {}'.format(', '.join(done.unknown)))

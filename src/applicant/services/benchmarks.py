@@ -42,7 +42,9 @@ def show_snapshots(database: Path, snapshot_ids: tuple[str, ...]) -> dict[str, A
     }
 
 
-def compare_benchmarks(database: Path, run_id: str, document: BenchmarkComparisonDocument) -> dict[str, Any]:
+def compare_benchmarks(
+    database: Path, run_id: str, document: BenchmarkComparisonDocument
+) -> dict[str, Any]:
     document = validated(document)
     with Store.open_readonly(database) as reader, reader.read_snapshot():
         history = load_history(reader, run_id)

@@ -2,10 +2,11 @@
 
 import argparse
 import sys
+from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from pydantic import NonNegativeInt, model_validator
-from pathlib import Path
 
 from ..domain.canonical import canonical_json
 from ..domain.contracts import now
@@ -60,7 +61,9 @@ class ListFeedback(DatabaseRequest):
     feedback_through: NonNegativeInt | None = None
 
 
-def add_parser(add: AddParser) -> None:
+def add_parser(
+    add: AddParser, handler: Callable[[Record | ImportFeedback | ListFeedback, Settings], int]
+) -> None:
     action = actions(add('feedback', help='record candidate judgments on completed rankings'))
 
     def leaf(name: str, help: str) -> argparse.ArgumentParser:
@@ -79,16 +82,16 @@ def add_parser(add: AddParser) -> None:
     command.add_argument('--importance', action='append', default=[], metavar='DIMENSION=DIRECTION')
     command.add_argument('--notes', default='')
     command.add_argument('--dry-run', action='store_true')
-    bind(command, Record, run)
+    bind(command, Record, handler)
     command = leaf('import', 'import a feedback document')
     command.add_argument('--from-file', required=True)
     command.add_argument('--dry-run', action='store_true')
-    bind(command, ImportFeedback, run)
+    bind(command, ImportFeedback, handler)
     command = leaf('list', 'read the judgments for a completed run')
     command.add_argument('--run', required=True)
     command.add_argument('--history', action='store_true')
     command.add_argument('--feedback-through', type=int)
-    bind(command, ListFeedback, run)
+    bind(command, ListFeedback, handler)
 
 
 def run(args: Record | ImportFeedback | ListFeedback, settings: Settings) -> int:
