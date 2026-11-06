@@ -157,8 +157,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(arguments)
 
-    handler = getattr(args, 'handler', None)
-    if handler is None:
+    prepare = getattr(args, 'prepare', None)
+    if prepare is None:
         # `applicant` alone used to mean the LinkedIn job run; since 0.2.0 a
         # command is required, and that one is `applicant jobs`
         parser.print_help(sys.stderr)
@@ -172,13 +172,10 @@ def main(argv: list[str] | None = None) -> int:
             crunchbase_key=getattr(args, 'crunchbase_key', None),
             tracxn_key=getattr(args, 'tracxn_key', None),
         )
-        prepare = getattr(args, 'prepare', None)
-        execute = prepare(args, settings) if prepare is not None else None
+        execute = prepare(args, settings)
     except ConfigError as error:
         print('applicant: {}'.format(error), file=sys.stderr)
         return 2
-    # every command reads its paths, keys and backend from here
-    args.settings = settings
     money.configure(
         cache=settings.path(settings.files.money_cache),
         factors=settings.path(settings.files.ppp_factors),
@@ -203,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
         if filepath:
             logger.info('logging this run to {}'.format(filepath))
         logger.debug(f'{args.command}: {_loggable(args)}')
-        return execute() if execute is not None else handler(args) or 0
+        return execute()
     except KeyboardInterrupt:
         logger.warning(f'{args.command}: interrupted')
         return 130
@@ -245,7 +242,6 @@ NOT_LOGGED = {
     'quiet',
     'log_file',
     'no_log_file',
-    'settings',
 }
 SECRET_ARGS = {'crunchbase_key', 'tracxn_key'}
 

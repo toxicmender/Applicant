@@ -46,7 +46,6 @@ PLUMBING = {
     'action',
     'handler',
     'prepare',
-    'settings',
     'data_dir',
     'config',
     'store',
