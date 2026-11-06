@@ -6,7 +6,6 @@ import argparse
 from typing import NoReturn
 
 from .. import log
-
 from ..filters import JobFilter
 from ..settings import FilterOptions, Settings
 
