@@ -7,7 +7,13 @@ change bumps the minor version.
 
 ## Unreleased
 
+## [0.3.0] - 2026-11-06
+
 ### CLI migration
+
+Applicant uses explicit actions for ranking and surveys. For action-based commands,
+put action-specific options after the action. Shared settings and logging options
+can still appear before the command, between the command and action, or afterward.
 
 | Previous invocation | 0.3.0 invocation | Change |
 | --- | --- | --- |
@@ -24,6 +30,16 @@ change bumps the minor version.
 | `search/apply --experience -1` or `--min-salary -1` | Supply zero or a positive value | CLI and saved searches use the same lower bounds. |
 | `rates --force` / `--currency GBP` / `--into PATH` | `rates --refresh ...` | Refresh-only flags on cached reads now fail with exit 2. |
 
+Python callers can continue to use `applicant.cli.main(argv)`. The exported
+`run_*` handler functions now take a validated request and resolved `Settings`.
+
+### Changes
+
+- Validate every executable CLI command with Pydantic v2 before dispatch.
+  Enforce Pyright strict checks on the typed CLI boundary and handlers.
+- Gate the installed launchers, command help and error behavior on the Linux and
+  Windows CI matrix alongside the existing offline ranking and Milestone 4
+  journeys.
 
 - Record the M4 delivery/coverage audit and fresh public-provider validation
   ledger. Local implementation and gates are delivered; BLS metadata access,
@@ -353,4 +369,5 @@ easy apply, or a multi step form" say nothing about the job. Delete those rows f
 
 The state of `master` at `4441a79`, before the redesign.
 
+[0.3.0]: https://github.com/toxicmender/Applicant/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/toxicmender/Applicant/compare/4441a79...v0.2.0
