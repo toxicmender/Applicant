@@ -9,6 +9,7 @@ import tempfile
 import time
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 import applicant
 from applicant.cli import main
@@ -68,7 +69,15 @@ def check(require_installed: bool) -> None:
     if require_installed and Path(applicant.__file__).resolve().is_relative_to(source):
         raise RuntimeError('expected an installed wheel, found the source tree')
     executable = Path(sys.executable).with_name('applicant.exe' if os.name == 'nt' else 'applicant')
-    with tempfile.TemporaryDirectory() as folder:
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith('APPLICANT_')
+        and name not in ('CRUNCHBASE_API_KEY', 'TRACXN_API_KEY')
+    }
+    with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, environment, clear=True):
+        config = Path(folder) / 'applicant.toml'
+        config.write_text('', encoding='utf-8')
         for launcher in ([str(executable)], [sys.executable, '-m', 'applicant']):
             result = subprocess.run(
                 [*launcher, '--version'],
@@ -84,7 +93,9 @@ def check(require_installed: bool) -> None:
             out, err = io.StringIO(), io.StringIO()
             with redirect_stdout(out), redirect_stderr(err):
                 try:
-                    code = main(['--no-log-file', '--data-dir', folder, *argv])
+                    code = main(
+                        ['--no-log-file', '--config', str(config), '--data-dir', folder, *argv]
+                    )
                 except SystemExit as stop:
                     code = stop.code
             output, other = (err, out) if expected else (out, err)
