@@ -28,6 +28,8 @@ class Record(DatabaseRequest):
     @model_validator(mode='before')
     @classmethod
     def collect_event(cls, fields: dict[str, Any]) -> dict[str, Any]:
+        if 'event' in fields:
+            return fields
         values = fields.copy()
         event = {
             key: values.pop(key)

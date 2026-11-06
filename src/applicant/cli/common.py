@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 import argparse
+from typing import NoReturn
+
+from .. import log
 
 from ..filters import JobFilter
 from ..settings import FilterOptions, Settings
+
+
+class CLIParser(argparse.ArgumentParser):
+    def error(self, message: str) -> NoReturn:
+        super().error(log.redact(message))
 
 
 def positive_int(text: str) -> int:
@@ -20,7 +28,7 @@ def positive_int(text: str) -> int:
     return value
 
 
-def shared_flags(*, suppress: bool) -> argparse.ArgumentParser:
+def shared_flags(*, suppress: bool) -> CLIParser:
     """The flags every command takes, as a parent parser.
 
     Used twice: by the top-level parser, so `applicant -v search x` works, and
@@ -33,7 +41,7 @@ def shared_flags(*, suppress: bool) -> argparse.ArgumentParser:
     def default(value):
         return argparse.SUPPRESS if suppress else value
 
-    flags = argparse.ArgumentParser(add_help=False)
+    flags = CLIParser(add_help=False)
     flags.add_argument(
         '-v',
         '--verbose',

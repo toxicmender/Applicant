@@ -43,6 +43,33 @@ def children(parser):
 
 
 class DispatchTest(unittest.TestCase):
+    def test_rejected_credentials_are_masked_even_before_settings_load(self):
+        import io
+        from contextlib import redirect_stderr
+
+        from applicant.cli import main
+
+        for options in (
+            ['--crunchbase-key', 'private-key-12345678'],
+            ['--tracxn-key=private-key-12345678'],
+            ['--tracxn-k', 'private-key-12345678'],
+        ):
+            err = io.StringIO()
+            with self.subTest(options=options), redirect_stderr(err), self.assertRaises(SystemExit):
+                main(['company-evidence', 'show', '--snapshot', 'x', *options])
+            self.assertNotIn('private-key-12345678', err.getvalue())
+            self.assertIn('--', err.getvalue())
+
+    def test_feedback_request_accepts_an_already_validated_event(self):
+        from applicant.cli.feedback import Record
+        from applicant.domain.feedback import FeedbackInput
+
+        event = FeedbackInput(
+            event_id='event', run_id='run', job_id='job', expected_revision=0, decision='shortlist'
+        )
+        request = Record(event=event)
+        self.assertEqual(request.event, event)
+
     def test_every_executable_leaf_has_a_typed_binding(self):
         families = children(build_parser())
         self.assertEqual(set(families), FAMILIES)

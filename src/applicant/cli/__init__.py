@@ -49,7 +49,7 @@ from . import (
     status,
     survey,
 )
-from .common import add_filters, filters_from, shared_flags
+from .common import CLIParser, add_filters, filters_from, shared_flags
 from .dispatch import bind
 
 __all__ = [
@@ -111,7 +111,7 @@ def exit_code_for(error: BaseException) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = CLIParser(
         prog='applicant',
         description='Scrape and apply to jobs, and look up company ratings and financials',
         parents=[shared_flags(suppress=False)],
@@ -143,8 +143,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    arguments = sys.argv[1:] if argv is None else argv
+    for index, argument in enumerate(arguments):
+        option, equals, value = argument.partition('=')
+        if (
+            len(option) > 2
+            and option.startswith('--')
+            and any(flag.startswith(option) for flag in ('--crunchbase-key', '--tracxn-key'))
+        ):
+            if not equals:
+                value = arguments[index + 1] if index + 1 < len(arguments) else ''
+            log.register_secret(value)
     parser = build_parser()
-    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(arguments)
 
     handler = getattr(args, 'handler', None)
     if handler is None:
