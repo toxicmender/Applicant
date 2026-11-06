@@ -175,7 +175,9 @@ class SurveyTest(unittest.TestCase):
         config.write_text('[files]\nlisting = "elsewhere/jobs.json"\n', encoding='utf-8')
         code, out, _ = self.cli('survey', '--config', str(config), 'import', 'preferences.json')
         self.assertEqual(code, 0)
-        self.assertIn(str(self.root / 'elsewhere' / 'applicant.db'), out)
+        configured_database = (self.root / 'elsewhere' / 'applicant.db').resolve()
+        self.assertIn(str(configured_database), out)
+        self.assertTrue(configured_database.is_file())
         self.assertFalse(self.database.exists())
 
     def test_legacy_profile_exports_and_imports_as_new_v2_revision(self):
