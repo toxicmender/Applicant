@@ -208,6 +208,11 @@ returns a retryable failure if it cannot complete. Never delete WAL/SHM sidecars
 
 ## Validation
 
+See [research repair coverage](research-coverage.md) for command-level regression
+coverage, precise corporate event imports, session recovery, and worker lifecycle
+contracts. CI enforces separate 90% line and branch floors for the five research
+modules identified in the coverage review.
+
 ```powershell
 uv run --extra pdf pytest tests
 uv run --extra pdf pyright
