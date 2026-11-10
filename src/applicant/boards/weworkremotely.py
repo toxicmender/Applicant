@@ -8,6 +8,7 @@ from xml.etree import ElementTree
 
 from ..domain.capability import Capability, Field
 from ..domain.job import Job
+from ..domain.places import within
 from ..errors import Blocked, Unparseable
 from ..infra.http import HttpClient
 
@@ -52,7 +53,13 @@ class WeWorkRemotely:
                 continue
             # A feed's "remote" label does not establish worldwide eligibility.
             region = item.findtext('region') or None
-            if location and region and location.casefold() not in region.casefold():
+            worldwide = (region or '').strip().casefold() in (
+                'anywhere in the world',
+                'worldwide',
+                'global',
+            )
+            eligible = True if worldwide or not location else within(location, region)
+            if eligible is False:
                 continue
             company, sep, role = title.partition(': ')
             date = item.findtext('pubDate')
@@ -74,6 +81,7 @@ class WeWorkRemotely:
                     location=region,
                     remote=True,
                     posted=posted,
+                    flags=['location_unresolved'] if location and eligible is None else [],
                 )
             )
         return result
