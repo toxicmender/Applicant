@@ -25,6 +25,7 @@ from ..domain.job import Job
 from ..domain.ports import ApplicationResult, Interrupted, easy_apply_results
 from ..errors import Blocked, SourceError
 from ..infra.browser import BrowserSession, looks_blocked
+from ..infra.profile_lock import profile_lock
 from ..interaction import Interaction, Terminal
 from .linkedin import LinkedInGuest
 
@@ -64,6 +65,8 @@ class LinkedIn(LinkedInGuest):
         # asked for the one-time code when a sign in needs two factors
         self.interaction = interaction or Terminal()
         self._browser_session: BrowserSession | None = None
+        self._session_lock = None
+        self._session_path = None
         # the last easy_apply's outcomes, kept as they happen so an interrupt
         # cannot lose them: the urls applied to, and those submitted without
         # LinkedIn confirming them - possibly sent, so never retried blindly -
@@ -131,6 +134,7 @@ class LinkedIn(LinkedInGuest):
             )
             return None
 
+        self._claim_session(target)
         session = self._session()
         page = session.page
         page.goto('https://www.linkedin.com/login', wait_until='domcontentloaded')
@@ -161,6 +165,7 @@ class LinkedIn(LinkedInGuest):
         return target
 
     def restore_session(self, filepath: str | Path = 'cookies.json'):
+        self._claim_session(Path(filepath))
         state = self._load_state(filepath)
         if state is None:
             logger.warning(f'linkedin: no usable session in {filepath}; call login() first')
@@ -173,6 +178,16 @@ class LinkedIn(LinkedInGuest):
             return False
         logger.info(f'linkedin: session restored from {filepath}')
         return True
+
+    def _claim_session(self, path):
+        path = Path(path).resolve()
+        if self._session_lock is not None:
+            if self._session_path != path:
+                raise SourceError('close the current session before selecting another profile')
+            return
+        lock = profile_lock(path.with_suffix('.lock'))
+        lock.__enter__()
+        self._session_lock, self._session_path = lock, path
 
     def _load_state(self, filepath: str | Path):
         """A Playwright storage_state saved by `login`, or None."""
@@ -394,4 +409,7 @@ class LinkedIn(LinkedInGuest):
         if self._browser_session is not None:
             self._browser_session.close()
             self._browser_session = None
+        if self._session_lock is not None:
+            lock, self._session_lock = self._session_lock, None
+            lock.__exit__(None, None, None)
         super().close()

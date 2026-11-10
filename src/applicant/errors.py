@@ -94,3 +94,10 @@ def sqlite_busy(error):
 
 class ConfigError(ApplicantError):
     """The settings, flags or environment do not describe a runnable job."""
+
+
+class ProfileBusy(ConfigError):
+    """Another process owns the session profile."""
+
+    status = 'profile_busy'
+    retryable = True
