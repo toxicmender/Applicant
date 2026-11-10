@@ -17,6 +17,7 @@ be read, 6 a key refused or out of credits, 130 interrupted.
 from __future__ import annotations
 
 import argparse
+import sqlite3
 import sys
 
 from .. import __version__, log, money
@@ -25,10 +26,12 @@ from ..errors import (
     AuthFailed,
     Blocked,
     ConfigError,
+    DatabaseBusy,
     NotFound,
     SourceError,
     Unparseable,
     Unreachable,
+    sqlite_busy,
 )
 from ..log import QUIET, configure, default_file, get
 from ..settings import Settings
@@ -44,9 +47,13 @@ from . import (
     personalize,
     rank,
     rates,
+    research,
     reviews,
     search,
+    setup,
+    sources,
     status,
+    store,
     survey,
 )
 from .common import CLIParser, add_filters, filters_from, shared_flags
@@ -94,6 +101,7 @@ run_database = database.run_upgrade
 
 # what an error that reached main() says about the run, for a calling script
 EXIT_CODES: tuple[tuple[type[BaseException], int], ...] = (
+    (DatabaseBusy, 8),
     (Blocked, 3),
     (NotFound, 4),
     (Unparseable, 5),
@@ -139,10 +147,20 @@ def build_parser() -> argparse.ArgumentParser:
     bind(evaluate.add_parser(add), evaluate.Evaluate, run_evaluate)
     personalize.add_parser(add, run_personalize)
     database.add_parser(add, run_database)
+    sources.add_parser(add)
+    setup.add_parser(add)
+    store.add_parser(add)
+    research.add_parser(add)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    # CLI JSON/Markdown are UTF-8 even when redirected on a Windows host whose
+    # default text encoding cannot represent currencies or international names.
+    for stream in (sys.stdout, sys.stderr):
+        configure_stream = getattr(stream, 'reconfigure', None)
+        if sys.platform == 'win32' and callable(configure_stream):
+            configure_stream(encoding='utf-8')
     arguments = sys.argv[1:] if argv is None else argv
     for index, argument in enumerate(arguments):
         option, equals, value = argument.partition('=')
@@ -218,7 +236,24 @@ def main(argv: list[str] | None = None) -> int:
     # a store that cannot be written, a setting that does not hold: expected
     # failures with a message that says what to fix, not bugs to trace
     except ApplicantError as error:
+        if isinstance(error, DatabaseBusy):
+            from ..domain.canonical import canonical_json
+
+            print(
+                canonical_json(
+                    {'status': 'database_busy', 'retryable': True, 'message': str(error)}
+                )
+            )
+            return 8
         logger.error(f'{args.command}: {error}')
+        return 1
+    except sqlite3.OperationalError as error:
+        if sqlite_busy(error):
+            from ..domain.canonical import canonical_json
+
+            print(canonical_json({'status': 'database_busy', 'retryable': True}))
+            return 8
+        logger.error(f'{args.command}: database operation failed: {error}')
         return 1
     except Exception as error:
         logger.critical(

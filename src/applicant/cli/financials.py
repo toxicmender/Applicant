@@ -123,6 +123,17 @@ def clients(
 def run(args: FinancialsRequest, settings: Settings) -> int:
     from ..services.financials import companies_to_track, track_financials
 
+    if args.login:
+        from .setup import legacy_login
+
+        for name in FINANCIAL_SOURCES if args.source == 'both' else (args.source,):
+            code = legacy_login(
+                settings, name, profile=args.cb_profile if name == 'crunchbase' else args.tx_profile
+            )
+            if code:
+                return code
+        args = args.model_copy(update={'login': False})
+
     companies = companies_to_track(
         args.companies,
         settings.path(args.from_jobs) if args.from_jobs else None,

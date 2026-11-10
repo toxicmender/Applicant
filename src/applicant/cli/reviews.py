@@ -89,6 +89,14 @@ def clients(
 def run(args: ReviewsRequest, settings: Settings) -> int:
     from ..services.reviews import fetch_reviews
 
+    if args.login and args.source in ('glassdoor', 'both'):
+        from .setup import legacy_login
+
+        code = legacy_login(settings, 'glassdoor', profile=args.profile)
+        if code:
+            return code
+        args = args.model_copy(update={'login': False})
+
     # the clients are made here, so they are closed here - whatever happens
     with ExitStack() as opened:
         made = {
