@@ -40,7 +40,7 @@ jobs:
           enable-cache: true
 
       - name: Install locked development tools
-        run: uv sync --locked
+        run: uv sync --locked --extra pdf
 
       - name: ruff check
         id: ruff
@@ -93,7 +93,7 @@ jobs:
       # without the venv every `import httpx` is an unresolved import and the
       # whole run says nothing useful
       - name: Install dependencies
-        run: uv sync --locked
+        run: uv sync --locked --extra pdf
 
       # Checked against the floor requires-python claims and against 3.12, where
       # the stdlib typeshed differs (deprecations, removed aliases). One job and
@@ -159,7 +159,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --locked --python ${{ matrix.python }}
+        run: uv sync --locked --extra pdf --python ${{ matrix.python }}
 
       - name: Windows type check
         if: runner.os == 'Windows'
@@ -195,6 +195,9 @@ jobs:
       - name: Installed Milestone 4 CLI journey
         run: uv run --frozen --isolated --no-editable --refresh-package applicant --reinstall-package applicant --python ${{ matrix.python }} python tools/smoke_milestone4.py --require-installed
 
+      - name: Installed research CLI journey
+        run: uv run --frozen --extra pdf --isolated --no-editable --refresh-package applicant --reinstall-package applicant --python ${{ matrix.python }} python tools/smoke_research.py --require-installed
+
       # proves the suite still runs on the stdlib runner alone, which is what a
       # contributor has before installing anything
       - name: unittest discover
@@ -227,7 +230,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --locked --python 3.12
+        run: uv sync --locked --extra pdf --python 3.12
 
       - name: coverage
         id: coverage
