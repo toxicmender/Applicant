@@ -19,6 +19,9 @@ from ..domain.capability import UNKNOWN, Capability, Field
 __all__ = ['CAPABILITIES', 'UNKNOWN', 'Capability', 'Field', 'capability']
 
 CAPABILITIES = {
+    'weworkremotely': Capability(
+        publishes=frozenset({Field.ID, Field.URL, Field.POSTED, Field.REMOTE})
+    ),
     # the guest card: title, company, location and date; nothing on pay or experience
     'linkedin': Capability(
         filters=frozenset({Field.LOCATION, Field.POSTED}),
@@ -43,6 +46,13 @@ CAPABILITIES = {
         publishes=frozenset({Field.SALARY, Field.POSTED, Field.EMPLOYMENT_TYPE, Field.VIA}),
     ),
 }
+
+for _name in ('wellfound', 'builtin', 'welcometothejungle', 'arc', 'instahyre'):
+    CAPABILITIES[_name] = Capability(
+        publishes=frozenset(
+            {Field.ID, Field.URL, Field.POSTED, Field.SALARY, Field.REMOTE, Field.EMPLOYMENT_TYPE}
+        )
+    )
 
 
 def capability(source: str | None) -> Capability:

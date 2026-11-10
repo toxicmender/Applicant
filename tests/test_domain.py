@@ -157,6 +157,19 @@ def parsed_samples() -> dict[str, Job]:
         '6 days ago\nFull-time\n₹20L–₹30L a year'
     )
     samples = {'linkedin': card, 'indeed': listing, 'naukri': naukri, 'googlejobs': google}
+    from applicant.boards.public import SITES, PublicBoard
+    from applicant.boards.weworkremotely import WeWorkRemotely
+    from tests.research_pages import posting
+
+    samples['weworkremotely'] = WeWorkRemotely.parse(
+        b'<rss><channel><item><title>Acme: Engineer</title><link>https://weworkremotely.com/remote-jobs/acme-engineer</link><pubDate>Mon, 02 Nov 2026 00:00:00 GMT</pubDate></item></channel></rss>'
+    )[0]
+    for name, (landing, _) in SITES.items():
+        client = PublicBoard(name)
+        try:
+            samples[name] = client._job(posting('https://example.com/jobs/1'), landing)
+        finally:
+            client.close()
     assert all(samples.values())
     return {name: job for name, job in samples.items() if job is not None}
 

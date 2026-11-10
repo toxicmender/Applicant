@@ -52,7 +52,19 @@ CONFIG_FILE = 'applicant.toml'
 
 Store = Literal['sqlite', 'files']
 # the boards a saved search may name (applicant.services.search.SOURCES, and 'all')
-SourceName = Literal['linkedin', 'indeed', 'naukri', 'googlejobs', 'all']
+SourceName = Literal[
+    'linkedin',
+    'indeed',
+    'naukri',
+    'googlejobs',
+    'weworkremotely',
+    'wellfound',
+    'builtin',
+    'welcometothejungle',
+    'arc',
+    'instahyre',
+    'all',
+]
 
 
 class Files(BaseModel):
@@ -135,6 +147,15 @@ class Settings(BaseModel):
     tracxn_key: SecretStr | None = None
     # standing searches, from [searches.<name>] tables in applicant.toml
     searches: dict[str, SavedSearch] = {}
+    timezone: str = 'UTC'
+
+    @field_validator('timezone')
+    @classmethod
+    def valid_timezone(cls, value):
+        from .domain.research_time import zone
+
+        zone(value)
+        return value
 
     def path(self, name: str | os.PathLike[str]) -> str:
         """`name` under `data_dir`, unless it is absolute already.
