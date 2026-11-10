@@ -12,10 +12,18 @@ dependencies = [
     "pydantic>=2",
     # applicant.toml on Python 3.10; 3.11+ has tomllib in the standard library
     "tomli>=2; python_version < '3.11'",
+    "tzdata==2026.6",
 ]
 
 [project.scripts]
 applicant = "applicant.cli:main"
+
+[project.optional-dependencies]
+pdf = [
+    "fonttools>=4.65.0",
+    "pypdf>=7.0.0",
+    "reportlab>=5.1.0",
+]
 
 [build-system]
 requires = ["hatchling"]
