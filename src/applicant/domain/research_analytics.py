@@ -2,7 +2,7 @@
 
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from statistics import median
 
 from .fx import FXSnapshot
@@ -150,9 +150,12 @@ def analytics(
             pay_currency, salary_id, reason = p.currency, chosen.evidence_id, 'range_midpoint'
             if currency and currency != pay_currency:
                 if rates and pay_currency in rates.rates and currency in rates.rates:
-                    salary = (salary * rates.rates[currency] / rates.rates[pay_currency]).quantize(
-                        Decimal('.01')
-                    )
+                    with localcontext() as context:
+                        context.prec = 50
+                        context.rounding = ROUND_HALF_EVEN
+                        salary = (
+                            salary * rates.rates[currency] / rates.rates[pay_currency]
+                        ).quantize(Decimal('.01'), rounding=ROUND_HALF_EVEN)
                     pay_currency = currency
                 else:
                     salary, reason = None, 'missing_fx'
@@ -224,6 +227,7 @@ def analytics(
         'group_by': group_by,
         'filters': {'origin': origin, 'role': role, 'geography': geography},
         'fx': rates.model_dump(mode='json') if rates else None,
+        'fx_age_days': (day - rates.effective_date).days if rates else None,
         'rounding': 'Decimal half-even to 0.01 after conversion',
         'members': members,
         'job_version_ids': [x['job_version_id'] for x in members],
