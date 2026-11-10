@@ -496,7 +496,9 @@ class CompanyStoreTest(unittest.TestCase):
                 with self.assertRaisesRegex(StoreError, 'upgrade'):
                     Store.open_readonly(path)
             with Store(path) as store:
-                self.assertEqual(store.db.execute('PRAGMA user_version').fetchone()[0], 7)
+                self.assertEqual(
+                    store.db.execute('PRAGMA user_version').fetchone()[0], len(MIGRATIONS)
+                )
         path = self.root / 'broken.db'
         with mock.patch('applicant.infra.store.sqlite.MIGRATIONS', MIGRATIONS[:6]), Store(path):
             pass
