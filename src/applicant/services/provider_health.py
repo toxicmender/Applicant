@@ -1,11 +1,16 @@
 """Short SQLite transactions lease acquisition; no network work holds a writer."""
 
+import sqlite3
 from datetime import datetime, timedelta
+from pathlib import Path
+from threading import Event, Thread
 from uuid import uuid4
 
 from ..domain.contracts import now
 from ..domain.providers import provider
-from ..infra.store.sqlite import Store
+from ..errors import DatabaseBusy, sqlite_busy
+from ..infra.store.maintenance import configure_connection
+from ..infra.store.sqlite import MIGRATIONS, Store
 
 
 def health(database, name):
@@ -20,6 +25,36 @@ def health(database, name):
         if row
         else {'status': 'ready', 'failures': 0}
     )
+
+
+def recover_authentication(database, name):
+    """Inspect and update existing health only; never initialize or migrate."""
+    path = Path(database)
+    if not path.exists():
+        return {'status': 'skipped_missing_database'}
+    db = sqlite3.connect(path.resolve().as_uri() + '?mode=rw', uri=True)
+    try:
+        configure_connection(db)
+        if db.execute('PRAGMA user_version').fetchone()[0] != len(MIGRATIONS):
+            return {
+                'status': 'schema_incompatible',
+                'retryable': False,
+                'command': f'applicant db upgrade --database "{path}"',
+            }
+        with db:
+            changed = db.execute(
+                "UPDATE provider_health SET status='ready',failures=0,reason=NULL "
+                "WHERE provider=? AND status='needs_setup' AND lease_token IS NULL",
+                (provider(name).id,),
+            ).rowcount
+        return {'status': 'recovered' if changed else 'unchanged'}
+    except sqlite3.Error as error:
+        return {
+            'status': 'database_busy' if sqlite_busy(error) else 'database_error',
+            'retryable': sqlite_busy(error),
+        }
+    finally:
+        db.close()
 
 
 def acquire(database, name, *, clock=now, allow_degraded=False):
@@ -86,3 +121,93 @@ def finish(database, name, token, outcome, *, retry_at=None, clock=now):
         'failures': failures,
         'eligible_at': eligible.isoformat() if eligible else None,
     }
+
+
+def renew(database, name, token, *, clock=now):
+    with Store(database) as store, store.db:
+        result = store.db.execute(
+            'UPDATE provider_health SET lease_until=? WHERE provider=? AND lease_token=?',
+            ((clock() + timedelta(minutes=10)).isoformat(), name, token),
+        )
+        if result.rowcount != 1:
+            raise ValueError('provider acquisition lease ownership lost')
+
+
+def abandon(database, name, token):
+    with Store(database) as store, store.db:
+        store.db.execute(
+            'UPDATE provider_health SET lease_until=NULL,lease_token=NULL WHERE provider=? AND lease_token=?',
+            (name, token),
+        )
+
+
+class LeaseFailure(RuntimeError):
+    """Infrastructure failure, never a provider health failure."""
+
+    retryable = True
+
+
+class Acquisition:
+    """Own a lease and a bounded renewal worker through every exit path."""
+
+    def __init__(self, database, name, *, clock=now, probe=False, interval=60):
+        self.database, self.name, self.clock = database, name, clock
+        self.probe, self.interval = probe, interval
+        self.stop = Event()
+        self.error = None
+        self.thread = None
+        self.token = None
+
+    def __enter__(self):
+        self.result = acquire(self.database, self.name, clock=self.clock, allow_degraded=self.probe)
+        if self.result['status'] == 'acquired':
+            self.token = self.result['token']
+            self.thread = Thread(target=self._run, daemon=True)
+            self.thread.start()
+        return self
+
+    def tick(self):
+        for attempt in range(2):
+            try:
+                renew(self.database, self.name, self.token, clock=self.clock)
+                return
+            except Exception as error:
+                if attempt == 0 and (isinstance(error, DatabaseBusy) or sqlite_busy(error)):
+                    if self.stop.wait(1):
+                        return
+                else:
+                    raise
+
+    def _run(self):
+        try:
+            while not self.stop.wait(self.interval):
+                self.tick()
+        except BaseException as error:  # noqa: BLE001 - the owner must observe worker failure
+            self.error = error
+
+    def check(self):
+        if self.error is not None:
+            raise LeaseFailure(
+                'acquisition renewal failed: ' + type(self.error).__name__
+            ) from self.error
+
+    def shutdown(self):
+        self.stop.set()
+        if self.thread:
+            self.thread.join(12)
+            if self.thread.is_alive():
+                raise LeaseFailure('acquisition renewal did not stop within 12 seconds')
+
+    def finish(self, outcome, **kwargs):
+        self.shutdown()
+        self.check()
+        result = finish(self.database, self.name, self.token, outcome, clock=self.clock, **kwargs)
+        self.token = None
+        return result
+
+    def __exit__(self, *_):
+        try:
+            self.shutdown()
+        finally:
+            if self.token:
+                abandon(self.database, self.name, self.token)

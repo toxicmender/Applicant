@@ -8,8 +8,10 @@ from ..domain.providers import provider
 from ..domain.research import ListingObservation, ResearchImport
 from ..domain.research_identity import match_jobs
 from ..errors import AuthFailed, Blocked, SourceError, Unparseable
+from ..infra.board_worker import OwnedBoard
+from ..infra.owned_worker import WorkerFailure
 from ..infra.provider_registry import board_client
-from .provider_health import acquire, finish
+from .provider_health import Acquisition, LeaseFailure
 from .research import import_research, read_research, save_snapshot
 
 
@@ -63,6 +65,11 @@ def collect_feed(database, query, *, factory=board_client, clock=now, parent=Non
     limit = query.get('limit', 25)
     if type(limit) is not int or not 1 <= limit <= 500:
         raise ValueError('feed limit must be between 1 and 500')
+    for name, urls in query.get('urls', {}).items():
+        if name not in names:
+            raise ValueError('URL provider must be a canonical selected provider')
+        if urls and not (provider(name).board or '').startswith('applicant.boards.public.'):
+            raise ValueError('provider does not support explicit public job URLs')
     outcomes, acquired = [], []
     for name in names:
         if provider(name).board is None:
@@ -74,77 +81,93 @@ def collect_feed(database, query, *, factory=board_client, clock=now, parent=Non
                 }
             )
             continue
-        lease = acquire(database, name, clock=clock, allow_degraded=probe)
-        if lease['status'] != 'acquired':
-            outcomes.append({'provider': name, **lease})
-            continue
-        client = None
-        jobs = []
-        network_finished = False
-        try:
-            client = factory(name, headless=True)
-            if query.get('urls', {}).get(name):
-                if not callable(getattr(client, 'capture', None)):
-                    raise ValueError('provider does not support explicit public job URLs')
-                urls = query['urls'][name]
-                if not isinstance(urls, list) or len(urls) > 25:
-                    raise ValueError('capture accepts at most 25 job URLs per provider')
-                for url in urls:
-                    jobs.extend(client.capture(url))
-                    if len(jobs) >= limit:
-                        break
-                jobs = jobs[:limit]
-            else:
-                jobs = client.search(
-                    query.get('keywords', ''), location=query.get('location', ''), limit=limit
+        with Acquisition(database, name, clock=clock, probe=probe) as owner:
+            lease = owner.result
+            if lease['status'] != 'acquired':
+                outcomes.append({'provider': name, **lease})
+                continue
+            client = None
+            jobs = []
+            network_finished = False
+            try:
+                client = (
+                    OwnedBoard(name, owner.check)
+                    if factory is board_client
+                    else factory(name, headless=True)
                 )
-            network_finished = True
-            observations = observations_from(client, jobs, clock(), name)
-        except (SourceError, OSError, ValueError) as error:
-            status = (
-                'needs_setup'
-                if isinstance(error, AuthFailed)
-                else 'adapter_degraded'
-                if isinstance(error, Unparseable)
-                else 'throttled'
-                if 'rate limit' in str(error).lower()
-                else 'blocked'
-                if isinstance(error, Blocked)
-                else 'unavailable'
-            )
-            partial = getattr(client, 'partial_jobs', [])
-            partial = jobs or (partial if isinstance(partial, list) else [])
-            count = 0
-            if partial and not network_finished:
-                observations = observations_from(client, partial[:limit], clock(), name)
-                import_research(database, ResearchImport(observations=tuple(observations)))
-                acquired.extend(observations)
-                count = len(observations)
-            finish(
-                database,
-                name,
-                lease['token'],
-                status,
-                retry_at=getattr(error, 'retry_at', None),
-                clock=clock,
-            )
-            outcomes.append(
-                {
-                    'provider': name,
-                    'status': status,
-                    'error_type': type(error).__name__,
-                    'preserved_count': count,
-                }
-            )
-            continue
-        finally:
-            if client:
-                client.close()
-        # Database errors are deliberately outside provider failure handling.
-        import_research(database, ResearchImport(observations=tuple(observations)))
-        finish(database, name, lease['token'], 'success', clock=clock)
-        acquired.extend(observations)
-        outcomes.append({'provider': name, 'status': 'success', 'count': len(observations)})
+                if query.get('urls', {}).get(name):
+                    if not callable(getattr(client, 'capture', None)):
+                        raise ValueError('provider does not support explicit public job URLs')
+                    urls = query['urls'][name]
+                    for url in urls:
+                        owner.check()
+                        jobs.extend(client.capture(url))
+                        if len(jobs) >= limit:
+                            break
+                    jobs = jobs[:limit]
+                else:
+                    jobs = client.search(
+                        query.get('keywords', ''), location=query.get('location', ''), limit=limit
+                    )
+                owner.check()
+                network_finished = True
+                observations = observations_from(client, jobs, clock(), name)
+            except (LeaseFailure, WorkerFailure) as error:
+                if jobs:
+                    observations = observations_from(client, jobs[:limit], clock(), name)
+                    import_research(database, ResearchImport(observations=tuple(observations)))
+                    acquired.extend(observations)
+                outcomes.append(
+                    {
+                        'provider': name,
+                        'status': 'infrastructure_failure',
+                        'retryable': True,
+                        'error_type': type(error).__name__,
+                        'preserved_count': len(jobs[:limit]),
+                    }
+                )
+                continue
+            except (SourceError, OSError, ValueError) as error:
+                status = (
+                    'needs_setup'
+                    if isinstance(error, AuthFailed)
+                    else 'adapter_degraded'
+                    if isinstance(error, Unparseable)
+                    else 'throttled'
+                    if 'rate limit' in str(error).lower()
+                    else 'blocked'
+                    if isinstance(error, Blocked)
+                    else 'unavailable'
+                )
+                partial = getattr(client, 'partial_jobs', [])
+                partial = jobs or (partial if isinstance(partial, list) else [])
+                count = 0
+                if partial and not network_finished:
+                    observations = observations_from(client, partial[:limit], clock(), name)
+                    import_research(database, ResearchImport(observations=tuple(observations)))
+                    acquired.extend(observations)
+                    count = len(observations)
+                owner.finish(
+                    status,
+                    retry_at=getattr(error, 'retry_at', None),
+                )
+                outcomes.append(
+                    {
+                        'provider': name,
+                        'status': status,
+                        'error_type': type(error).__name__,
+                        'preserved_count': count,
+                    }
+                )
+                continue
+            finally:
+                if client:
+                    client.close()
+            # Database errors are deliberately outside provider failure handling.
+            import_research(database, ResearchImport(observations=tuple(observations)))
+            owner.finish('success')
+            acquired.extend(observations)
+            outcomes.append({'provider': name, 'status': 'success', 'count': len(observations)})
     value = {
         'kind': 'research_feed',
         'schema_version': 1,
