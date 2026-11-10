@@ -1,8 +1,11 @@
 """Explicit authentication and offline/headless session import."""
 
 from ..domain.canonical import canonical_json
+from ..errors import ConfigError
+from ..services.provider_health import recover_authentication
 from ..services.provider_setup import import_session, session_status, setup_provider
 from ..settings import Settings
+from .database import database_path
 from .dispatch import DatabaseRequest, actions, bind
 
 
@@ -28,6 +31,7 @@ def add_parser(add):
         else:
             p.add_argument('--provider', required=True)
         p.add_argument('--json', action='store_true')
+        p.add_argument('--database')
         if action == 'provider':
             p.add_argument('--reauth', action='store_true')
         elif action == 'status':
@@ -41,10 +45,12 @@ def add_parser(add):
 
 
 def run(args, settings):
+    if args.database and settings.store == 'files':
+        raise ConfigError('--database cannot be combined with --store files')
     if args.operation == 'provider':
-        result = setup_provider(settings, args.provider, reauth=args.reauth)
+        result = setup_provider(settings, args.provider, reauth=args.reauth, database=args.database)
     elif args.operation == 'status':
-        result = session_status(settings, args.provider, check=args.check)
+        result = session_status(settings, args.provider, check=args.check, database=args.database)
     else:
         result = import_session(
             settings,
@@ -54,7 +60,33 @@ def run(args, settings):
             dry_run=args.dry_run,
             replace=args.replace,
             verify=args.verify,
+            database=args.database,
         )
+    return output_result(
+        result,
+        settings,
+        args.database,
+        recover=args.operation == 'provider' or args.check or args.verify,
+    )
+
+
+def output_result(result, settings, database=None, *, recover=True):
+    if recover and result['status'] == 'verified':
+        result['health_recovery'] = result.get('health_recovery') or (
+            {'status': 'skipped_file_only'}
+            if settings.store == 'files'
+            else recover_authentication(database_path(settings, database), result['provider'])
+        )
+        if result['health_recovery']['status'] in (
+            'database_busy',
+            'database_error',
+            'schema_incompatible',
+        ):
+            result['command'] = f'applicant setup status --provider {result["provider"]} --check'
+            if database:
+                result['command'] += f' --database "{database}"'
+            print(canonical_json(result))
+            return 8 if result['health_recovery'].get('retryable') else 1
     print(canonical_json(result))
     return 3 if result['status'] == 'needs_setup' else 0
 
@@ -81,5 +113,4 @@ def legacy_login(
         fields['cookies'] = cookies
     configured = settings.model_copy(update={'files': settings.files.model_copy(update=fields)})
     result = setup_provider(configured, name, reauth=reauth)
-    print(canonical_json(result))
-    return 3 if result['status'] == 'needs_setup' else 0
+    return output_result(result, configured)

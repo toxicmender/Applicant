@@ -17,9 +17,9 @@ class EntryEncodingTest(unittest.TestCase):
 
     def test_embedded_main_preserves_stream(self):
         output = self.child(
-            "import sys; from applicant.cli import main; "
+            'import sys; from applicant.cli import main; '
             "before=sys.stdout.encoding; main(['sources','list','--no-log-file']); "
-            "assert sys.stdout.encoding==before; print(chr(233))"
+            'assert sys.stdout.encoding==before; print(chr(233))'
         )
         self.assertTrue(output.endswith(b'\xe9\r\n') or output.endswith(b'\xe9\n'))
 
@@ -28,8 +28,9 @@ class EntryEncodingTest(unittest.TestCase):
         for encoding in ('cp1252:strict', 'utf-8'):
             with self.subTest(encoding=encoding):
                 output = self.child(
-                    "import sys; from applicant.cli import entrypoint; "
+                    'import sys; from applicant.cli import entrypoint; '
                     "sys.argv=['applicant','sources','list','--no-log-file']; "
-                    "entrypoint(); print(chr(0x20b9)+chr(233))", encoding
+                    'entrypoint(); print(chr(0x20b9)+chr(233))',
+                    encoding,
                 )
                 self.assertIn('\u20b9é', output.decode('utf-8'))

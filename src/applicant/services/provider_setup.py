@@ -27,6 +27,30 @@ PROFILES = {
 }
 
 
+def recovery_database(settings, database):
+    from ..infra.store.sqlite import DB_NAME
+
+    if settings.store == 'files':
+        if database:
+            raise ConfigError('--database cannot be combined with --store files')
+        return None
+    return (
+        Path(settings.path(database))
+        if database
+        else Path(settings.path(settings.files.listing)).resolve().parent / DB_NAME
+    )
+
+
+def recover_verified(settings, name, database, result):
+    from .provider_health import recover_authentication
+
+    path = recovery_database(settings, database)
+    result['health_recovery'] = (
+        {'status': 'skipped_file_only'} if path is None else recover_authentication(path, name)
+    )
+    return result
+
+
 def session_path(settings, name):
     item = provider(name)
     if not item.login_url:
@@ -130,6 +154,38 @@ def validate_state(value, name, format='playwright'):
 
 
 def verify_state(name, state, *, interactive=False, factory: Callable[..., Any] = BrowserSession):
+    if not provider(name).auth_selector:
+        raise ConfigError('provider has no authentication adapter')
+    if factory is BrowserSession:
+        from ..infra.owned_worker import run_worker
+
+        return run_worker(
+            _verification_worker,
+            (name, state, interactive),
+            interactive=interactive,
+            pause=Terminal().pause,
+        )
+    return _verify_inline(name, state, interactive=interactive, factory=factory)
+
+
+def _verification_worker(connection, arguments):
+    name, state, interactive = arguments
+
+    class Session(BrowserSession):
+        def __exit__(self, *args):
+            connection.send(('closing', None))
+            return super().__exit__(*args)
+
+    def pause(message):
+        connection.send(('pause', message))
+        connection.recv()
+
+    return _verify_inline(name, state, interactive=interactive, factory=Session, pause=pause)
+
+
+def _verify_inline(
+    name, state, *, interactive=False, factory: Callable[..., Any] = BrowserSession, pause=None
+):
     item = provider(name)
     if not item.login_url or not item.check_url or not item.auth_selector:
         raise ConfigError('provider has no authentication adapter')
@@ -137,7 +193,9 @@ def verify_state(name, state, *, interactive=False, factory: Callable[..., Any] 
         page = session.start()
         page.goto(item.login_url if interactive else item.check_url, wait_until='domcontentloaded')
         if interactive:
-            Terminal().pause('Complete login/MFA in the browser, then press Enter to verify: ')
+            (pause or Terminal().pause)(
+                'Complete login/MFA in the browser, then press Enter to verify: '
+            )
             page.goto(item.check_url, wait_until='domcontentloaded')
         if looks_blocked(page) or any(
             part in page.url.lower() for part in ('/login', '/authwall', '/checkpoint', '/signin')
@@ -158,7 +216,9 @@ def import_session(
     replace=False,
     verify=False,
     verifier=verify_state,
+    database=None,
 ):
+    recovery_database(settings, database)
     target = session_path(settings, name)
     if Path(source).stat().st_size > 2_000_000:
         raise ConfigError('session file exceeds 2 MB')
@@ -184,11 +244,15 @@ def import_session(
             target.with_suffix('.status.json'),
             {**result, 'state_hash': content_hash(state), 'checked_at': now().isoformat()},
         )
+        if verify:
+            recover_verified(settings, name, database, result)
     return result
 
 
-def setup_provider(settings, name, *, reauth=False, verifier=verify_state):
+def setup_provider(settings, name, *, reauth=False, verifier=verify_state, database=None):
     import sys
+
+    recovery_database(settings, database)
 
     if not sys.stdin.isatty():
         return {
@@ -214,10 +278,11 @@ def setup_provider(settings, name, *, reauth=False, verifier=verify_state):
         write_document(
             target.with_suffix('.status.json'), {**result, 'state_hash': content_hash(state)}
         )
-        return result
+        return recover_verified(settings, name, database, result)
 
 
-def session_status(settings, name, *, check=False, verifier=verify_state):
+def session_status(settings, name, *, check=False, verifier=verify_state, database=None):
+    recovery_database(settings, database)
     target = session_path(settings, name)
     if not target.exists():
         return {'provider': name, 'status': 'needs_setup'}
@@ -239,4 +304,9 @@ def session_status(settings, name, *, check=False, verifier=verify_state):
                     'checked_at': now().isoformat(),
                 },
             )
-        return {'provider': name, 'status': status, 'network_checked': check}
+        result = {'provider': name, 'status': status, 'network_checked': check}
+        return (
+            recover_verified(settings, name, database, result)
+            if check and status == 'verified'
+            else result
+        )
