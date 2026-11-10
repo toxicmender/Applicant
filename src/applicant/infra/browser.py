@@ -23,6 +23,8 @@ from typing import TYPE_CHECKING, Any
 from ..errors import SourceError
 from ..permissions import make_private
 from .http import USER_AGENT
+from .profile_lock import profile_lock
+from .ranking_documents import read_ranking_document
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle only matters to type checkers
     from playwright.sync_api import BrowserContext, Page, Playwright
@@ -66,6 +68,7 @@ class BrowserSession:
         self._closer: Any = None
         self._context: BrowserContext | None = None
         self._page: Page | None = None
+        self._profile_lock: Any = None
 
     @property
     def context(self) -> BrowserContext:
@@ -90,8 +93,14 @@ class BrowserSession:
                 'this source needs playwright: uv sync && uv run playwright install chromium'
             ) from None
 
-        self._playwright = sync_playwright().start()
         try:
+            if self.profile_dir:
+                state = Path(self.profile_dir) / STATE_FILE
+                self._profile_lock = profile_lock(state.with_suffix('.lock'))
+                self._profile_lock.__enter__()
+                if state.is_file() and self.storage_state is None:
+                    self.storage_state = read_ranking_document(state)
+            self._playwright = sync_playwright().start()
             context = self._launch(self._playwright)
             page = context.pages[0] if self.profile_dir and context.pages else context.new_page()
             page.set_default_timeout(self.timeout)
@@ -113,7 +122,7 @@ class BrowserSession:
         for channel in self.channels:
             extra: dict[str, Any] = {'channel': channel} if channel else {}
             try:
-                if self.profile_dir:
+                if self.profile_dir and self.storage_state is None:
                     context = driver.chromium.launch_persistent_context(
                         str(self.profile_dir), **options, **context_options, **extra
                     )
@@ -152,6 +161,7 @@ class BrowserSession:
             if not self.profile_dir:
                 raise SourceError('no profile directory to save the session state into')
             path = Path(self.profile_dir) / STATE_FILE
+        self.start()
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         # created 0600 before Playwright writes into it; an older file saved with
@@ -166,6 +176,9 @@ class BrowserSession:
         self._close_quietly('_closer')
         self._close_quietly('_playwright')
         self._context = self._page = None
+        if self._profile_lock is not None:
+            lock, self._profile_lock = self._profile_lock, None
+            lock.__exit__(None, None, None)
 
     def _close_quietly(self, name: str) -> None:
         handle = getattr(self, name)
