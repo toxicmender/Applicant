@@ -254,6 +254,12 @@ jobs:
             fi
             echo 'outcome=pass' >> "$GITHUB_OUTPUT"
             echo "detail=${total}% line and branch" >> "$GITHUB_OUTPUT"
+            if ! uv run --frozen python tools/check_research_coverage.py coverage-m4.json > research-coverage.json; then
+              echo 'outcome=fail' >> "$GITHUB_OUTPUT"
+              echo 'detail=Research module line or branch coverage below 90%' >> "$GITHUB_OUTPUT"
+              cat research-coverage.json >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
           else
             echo 'outcome=fail' >> "$GITHUB_OUTPUT"
             echo "detail=${total}%, under the floor" >> "$GITHUB_OUTPUT"
@@ -268,6 +274,7 @@ jobs:
             coverage.xml
             coverage-m4.json
             milestone-4-coverage.json
+            research-coverage.json
           retention-days: 30
 
   # The browser sources in a real Chromium against tests/fixtures/pages: the
