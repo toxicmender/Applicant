@@ -1,0 +1,117 @@
+{
+  "kind": "live_provider_validation",
+  "checked_at": "2026-11-10T13:02:23.529087+00:00",
+  "outcomes": [
+    {
+      "provider": "weworkremotely",
+      "status": "readable",
+      "samples": [
+        {
+          "source": "weworkremotely",
+          "title": "Marketing Designer",
+          "id": "https://weworkremotely.com/remote-jobs/anchour-marketing-designer",
+          "company": "Anchour",
+          "location": "Anywhere in the World",
+          "url": "https://weworkremotely.com/remote-jobs/anchour-marketing-designer",
+          "posted": "2026-11-09",
+          "posted_text": null,
+          "employment_type": null,
+          "salary": null,
+          "experience_text": null,
+          "experience_min": null,
+          "experience_max": null,
+          "via": null,
+          "remote": true,
+          "easy_apply": null,
+          "flags": []
+        }
+      ],
+      "requisition_metadata": {}
+    },
+    {
+      "provider": "wellfound",
+      "status": "readable",
+      "samples": [
+        {
+          "source": "wellfound",
+          "title": "Policy Director",
+          "id": "5034588",
+          "company": "AE Studio",
+          "location": "Washington, District of Columbia, United States",
+          "url": "https://wellfound.com/jobs/5034588-policy-director",
+          "posted": "2026-11-10",
+          "posted_text": null,
+          "employment_type": "FULL_TIME",
+          "salary": "USD 220000.0-350000.0 YEAR",
+          "experience_text": null,
+          "experience_min": null,
+          "experience_max": null,
+          "via": null,
+          "remote": null,
+          "easy_apply": null,
+          "flags": []
+        }
+      ],
+      "requisition_metadata": {}
+    },
+    {
+      "provider": "builtin",
+      "status": "readable",
+      "samples": [
+        {
+          "source": "builtin",
+          "title": "Staff Software Engineer",
+          "id": "12161479",
+          "company": "Rapid7",
+          "location": "USA",
+          "url": "https://builtin.com/job/staff-software-engineer/12161479",
+          "posted": "2026-11-10",
+          "posted_text": null,
+          "employment_type": "FULL_TIME",
+          "salary": "USD 164600-222600 YEAR",
+          "experience_text": null,
+          "experience_min": null,
+          "experience_max": null,
+          "via": null,
+          "remote": true,
+          "easy_apply": null,
+          "flags": []
+        }
+      ],
+      "requisition_metadata": {}
+    },
+    {
+      "provider": "welcometothejungle",
+      "status": "unavailable",
+      "error_type": "Unparseable",
+      "fallback": "research import",
+      "url": "https://www.welcometothejungle.com"
+    },
+    {
+      "provider": "arc",
+      "status": "unavailable",
+      "error_type": "Unparseable",
+      "fallback": "research import",
+      "url": "https://arc.dev"
+    },
+    {
+      "provider": "instahyre",
+      "status": "unavailable",
+      "error_type": "Blocked",
+      "fallback": "research import",
+      "url": "https://www.instahyre.com"
+    }
+  ],
+  "cross_board_gate": "blocked_pending_requisition_verification",
+  "candidate": {
+    "company": "Ethena",
+    "title": "Head of Finance",
+    "wwr_url": "https://weworkremotely.com/remote-jobs/ethena-head-of-finance",
+    "builtin_url": "https://builtin.com/job/head-finance/12139561",
+    "wwr_detail_status": 403,
+    "builtin_detail_status": 200,
+    "identity_status": "possible_match",
+    "reason": "Company/title agreement is insufficient; WWR detail access prevented verification of a shared employer requisition."
+  },
+  "note": "Individual source readability does not verify the same requisition on two boards. No independent corroboration is claimed."
+}

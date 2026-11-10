@@ -1,4 +1,7 @@
 # Applicant
+Provider setup, company history, cross-board research, technology analytics and
+optional PDF exports are described in [Research workflows](docs/research.md).
+
 It is a dynamic web scraper which gets the posted jobs which are applicable from within the site and don't redirect to another site. It then applies to them automatically with your stored (Latest) Resume.
 > _**Note: Filter operation hasn't been implemented yet for jobs**_
 
