@@ -145,13 +145,12 @@ class BackoffTest(unittest.TestCase):
         )
         self.assertEqual(self.sleeps(handler, backoff=1.0), [7.0])
 
-    def test_an_absurd_retry_after_falls_back_to_the_backoff(self):
-        """A server asking for an hour does not get to stall the run that long."""
+    def test_long_retry_after_returns_without_ignoring_server_cooldown(self):
+        """A long server interval returns promptly instead of retrying early."""
         handler, _ = counting(
             httpx.Response(429, headers={'Retry-After': '3600'}), httpx.Response(200)
         )
-        (wait,) = self.sleeps(handler, backoff=1.0)
-        self.assertLess(wait, 60)
+        self.assertEqual(self.sleeps(handler, backoff=1.0), [])
 
 
 class PacingTest(unittest.TestCase):
