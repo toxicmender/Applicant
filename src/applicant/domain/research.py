@@ -1,11 +1,11 @@
 """Versioned research contracts, deliberately independent of ranking inputs."""
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 from .canonical import content_hash
 from .company_evidence import CompanyResponse
@@ -85,6 +85,51 @@ class CompanyEvent(Record):
         if self.event_type == 'rename' and self.related_id is not None:
             raise ValueError('rename retains the subject entity')
         return self
+
+
+class CompanyEventV2(BaseModel):
+    model_config = Record.model_config
+    schema_version: Literal[2] = 2
+    kind: Literal['company_event'] = 'company_event'
+    event_id: Identity
+    event_type: Literal['rename', 'acquisition', 'merger', 'spin_off', 'subsidiary']
+    subject_id: Identity
+    related_id: Identity | None = None
+    effective_date: date | None = None
+    effective_at: str | None = None
+    effective_timezone: str | None = None
+    recorded_at: Timestamp
+    source_url: Identity
+    note: Identity
+    supersedes: Identity | None = None
+
+    @model_validator(mode='after')
+    def valid_event(self):
+        if self.effective_at is not None:
+            instant = datetime.fromisoformat(self.effective_at.replace('Z', '+00:00'))
+            if instant.utcoffset() is None:
+                raise ValueError('effective_at requires an explicit UTC offset')
+            if self.effective_date is not None or self.effective_timezone is not None:
+                raise ValueError('effective_at excludes effective_date and effective_timezone')
+        if self.effective_timezone is not None:
+            from .research_time import zone
+
+            zone(self.effective_timezone)
+            if self.effective_date is None:
+                raise ValueError('effective_timezone requires effective_date')
+        CompanyEvent.model_validate(
+            {
+                k: v
+                for k, v in self.model_dump().items()
+                if k not in ('schema_version', 'effective_at', 'effective_timezone')
+            }
+        )
+        return self
+
+
+EVENT_ADAPTER = TypeAdapter(
+    Annotated[CompanyEvent | CompanyEventV2, Field(discriminator='schema_version')]
+)
 
 
 class ListingObservation(Record):
@@ -246,3 +291,32 @@ class ResearchImport(Record):
 
 def record_hash(value):
     return content_hash(value)
+
+
+class ResearchImportV2(BaseModel):
+    model_config = Record.model_config
+    schema_version: Literal[2] = 2
+    kind: Literal['research_import'] = 'research_import'
+    companies: tuple[Company, ...] = ()
+    names: tuple[CompanyName, ...] = ()
+    identifiers: tuple[CompanyIdentifier, ...] = ()
+    events: tuple[
+        Annotated[CompanyEvent | CompanyEventV2, Field(discriminator='schema_version')], ...
+    ] = ()
+    observations: tuple[ListingObservation, ...] = ()
+    parties: tuple[JobParty, ...] = ()
+    evidence: tuple[ResearchEvidence, ...] = ()
+
+
+IMPORT_ADAPTER = TypeAdapter(ResearchImport | ResearchImportV2)
+
+
+def parse_import(value):
+    if isinstance(value, (ResearchImport, ResearchImportV2)):
+        value = value.model_dump(mode='json')
+    model = (
+        ResearchImportV2
+        if isinstance(value, dict) and value.get('schema_version') == 2
+        else ResearchImport
+    )
+    return model.model_validate(value)

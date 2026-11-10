@@ -9,6 +9,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from .canonical import canonical_json
+from .company_time import event_bounds, event_phase
 from .contracts import Timestamp
 from .providers import provider
 from .research import Record
@@ -83,9 +84,11 @@ def company_report(data, selection, *, created_at):
     versions = set(selection.get('job_version_ids', []))
     if not entities and not versions and not chosen_ids:
         raise ValueError('select company entities, job versions or evidence IDs')
-    as_of = date.fromisoformat(selection.get('as_of', created_at.date().isoformat()))
     tz = selection.get('timezone', 'UTC')
     applicant_zone = zone(tz)
+    as_of = date.fromisoformat(
+        selection.get('as_of', created_at.astimezone(applicant_zone).date().isoformat())
+    )
     if as_of > created_at.astimezone(applicant_zone).date():
         raise ValueError('report date cannot be in the future')
     cutoff = min(
@@ -121,7 +124,8 @@ def company_report(data, selection, *, created_at):
     events = [
         x
         for x in events
-        if x.event_id not in superseded and (x.effective_date is None or x.effective_date <= as_of)
+        if x.event_id not in superseded
+        and ((start := event_bounds(x)[0]) is None or start < cutoff)
     ]
     relevant_events = [
         x
@@ -205,23 +209,33 @@ def company_report(data, selection, *, created_at):
             if event.subject_id == item.entity_id
             and event.event_type != 'rename'
             and (
-                event.effective_date is None
-                or (item.observed_at is not None and item.observed_at.date() < event.effective_date)
+                item.entity_id not in entities
+                or event_phase(event, item.observed_at, cutoff) != 'post-event contextual'
             )
         ]
         if historical:
+            labels = []
             for event in historical:
+                phase = event_phase(event, item.observed_at, cutoff)
                 parent = known_entities.get(event.related_id)
                 label = (
                     f'Historical evidence prior to {event.effective_date} acquisition by {parent.name if parent else event.related_id}.'
-                    if event.event_type == 'acquisition' and event.effective_date
-                    else f'Historical context for {event.event_type}; effective date {event.effective_date or "unknown"}; related entity {parent.name if parent else event.related_id}.'
+                    if phase == 'historical'
+                    and event.event_type == 'acquisition'
+                    and event.effective_date
+                    else f'{phase.capitalize()} for {event.event_type}; effective {getattr(event, "effective_at", None) or event.effective_date or "unknown"}; related entity {parent.name if parent else event.related_id}.'
                 )
                 original = known_entities.get(item.entity_id)
                 label += f' Original entity: {original.name if original else item.entity_id}; observed: {item.observed_at.date().isoformat() if item.observed_at else "unknown"}.'
-                rows['inherited-context'].append(
-                    [item.payload.kind.title(), label, summary_text(item.payload), item.source_url]
-                )
+                labels.append(label)
+            rows['inherited-context'].append(
+                [
+                    item.payload.kind.title(),
+                    ' | '.join(dict.fromkeys(labels)),
+                    summary_text(item.payload),
+                    item.source_url,
+                ]
+            )
             continue
         section = {
             'technology': 'technologies',
@@ -290,6 +304,8 @@ def company_report(data, selection, *, created_at):
         'template_version': 'report-1',
         'sections': output,
         'manifest': {
+            'cutoff': cutoff.isoformat(),
+            'corporate_time_policy': 'event-precision-2',
             'selection': selection,
             'job_version_ids': sorted(versions),
             'job_groups': job_groups,

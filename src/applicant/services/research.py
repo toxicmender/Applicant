@@ -2,16 +2,17 @@
 
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 from ..domain.canonical import content_hash
 from ..domain.contracts import now
-from ..domain.research import ResearchImport
+from ..domain.research import parse_import
 from ..infra.store.research import RECORDS, ResearchRepository
 from ..infra.store.sqlite import Store
 
 
 def import_research(database, bundle, *, dry_run=False):
-    bundle = ResearchImport.model_validate(bundle)
+    bundle = parse_import(bundle)
     if dry_run:
         # Dry runs must not initialize or migrate the target database.
         db = sqlite3.connect(':memory:')
@@ -82,11 +83,14 @@ def template(kind):
         'employer_entity_id': 'example-company',
         'status': 'open',
     }
-    bundle = {'companies': [company]}
+    bundle: dict[str, Any] = {'companies': [company]}
     if kind in ('company_event', 'corporate-event'):
+        bundle['schema_version'] = 2
         bundle['events'] = [
             {
                 'event_id': 'example-rename',
+                'schema_version': 2,
+                'effective_at': stamp,
                 'event_type': 'rename',
                 'subject_id': 'example-company',
                 'recorded_at': stamp,
@@ -145,4 +149,4 @@ def template(kind):
                 'payload': payloads[kind],
             }
         ]
-    return ResearchImport.model_validate(bundle).model_dump(mode='json')
+    return parse_import(bundle).model_dump(mode='json')

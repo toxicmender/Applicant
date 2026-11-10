@@ -215,7 +215,9 @@ class ResearchWorkflowTest(unittest.TestCase):
             'job-party',
             'corporate-event',
         ):
-            ResearchImport.model_validate(template(kind))
+            from applicant.domain.research import parse_import
+
+            parse_import(template(kind))
         self.call(
             'research', 'template', '--output', 'template.json', '--export-schema', 'schema.json'
         )

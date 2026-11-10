@@ -8,7 +8,7 @@ from pydantic import Field, ValidationError
 
 from ..domain.canonical import canonical_json
 from ..domain.contracts import now
-from ..domain.research import ResearchImport
+from ..domain.research import IMPORT_ADAPTER
 from ..domain.research_analytics import analytics
 from ..domain.research_reports import (
     ReportDocument,
@@ -17,6 +17,7 @@ from ..domain.research_reports import (
     render_markdown,
     snapshot_report,
 )
+from ..domain.research_time import zone
 from ..errors import ConfigError
 from ..infra.ranking_documents import read_ranking_document
 from ..permissions import make_private
@@ -191,7 +192,7 @@ def execute(args, settings):
     if op == 'research.template':
         result = template(args.kind)
         if schema_path:
-            atomic_text(schema_path, canonical_json(ResearchImport.model_json_schema()) + '\n')
+            atomic_text(schema_path, canonical_json(IMPORT_ADAPTER.json_schema()) + '\n')
     elif op == 'research.import':
         result = import_research(database, read(args.from_file), dry_run=args.dry_run)
     elif op == 'research.capture-profile':
@@ -260,7 +261,8 @@ def execute(args, settings):
             database,
             analytics(
                 read_research(database),
-                as_of=args.as_of or stamp.date().isoformat(),
+                as_of=args.as_of
+                or stamp.astimezone(zone(args.timezone or settings.timezone)).date().isoformat(),
                 applicant_timezone=args.timezone or settings.timezone,
                 created_at=stamp,
                 group_by=args.group_by,

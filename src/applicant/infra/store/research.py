@@ -4,14 +4,18 @@ import json
 
 from ...domain.canonical import canonical_json, content_hash
 from ...domain.research import (
+    EVENT_ADAPTER,
     Company,
     CompanyEvent,
+    CompanyEventV2,
     CompanyIdentifier,
     CompanyName,
     JobParty,
     ListingObservation,
     ResearchEvidence,
     ResearchImport,
+    ResearchImportV2,
+    parse_import,
 )
 from ...errors import StoreError
 
@@ -95,8 +99,8 @@ class ResearchRepository:
         )
         return True
 
-    def import_bundle(self, bundle: ResearchImport):
-        bundle = ResearchImport.model_validate_json(canonical_json(bundle))
+    def import_bundle(self, bundle: ResearchImport | ResearchImportV2):
+        bundle = parse_import(json.loads(canonical_json(bundle)))
         count = 0
         for attribute, (table, identity, _) in RECORDS.items():
             seen = set()
@@ -119,7 +123,7 @@ class ResearchRepository:
                 if not self._put(table, key, value, columns):
                     continue
                 count += 1
-                if isinstance(value, CompanyEvent) and value.related_id:
+                if isinstance(value, (CompanyEvent, CompanyEventV2)) and value.related_id:
                     self.db.execute(
                         'INSERT INTO company_relationships VALUES (?,?,?,?)',
                         (key, value.subject_id, value.related_id, value.event_type),
@@ -178,7 +182,11 @@ class ResearchRepository:
         for digest, payload in self.db.execute(
             f'SELECT payload_hash,payload FROM {table} ORDER BY id'
         ).fetchall():
-            value = model.model_validate_json(payload)
+            value = (
+                EVENT_ADAPTER.validate_json(payload)
+                if attribute == 'events'
+                else model.model_validate_json(payload)
+            )
             if content_hash(value) != digest:
                 raise StoreError('research payload integrity mismatch')
             result.append(value)
