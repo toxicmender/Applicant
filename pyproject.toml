@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-applicant = "applicant.cli:main"
+applicant = "applicant.cli:entrypoint"
 
 [project.optional-dependencies]
 pdf = [

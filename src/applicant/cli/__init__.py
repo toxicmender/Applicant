@@ -154,13 +154,17 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def entrypoint() -> int:
     # CLI JSON/Markdown are UTF-8 even when redirected on a Windows host whose
     # default text encoding cannot represent currencies or international names.
     for stream in (sys.stdout, sys.stderr):
         configure_stream = getattr(stream, 'reconfigure', None)
         if sys.platform == 'win32' and callable(configure_stream):
             configure_stream(encoding='utf-8')
+    return main()
+
+
+def main(argv: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
     for index, argument in enumerate(arguments):
         option, equals, value = argument.partition('=')
