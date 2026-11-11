@@ -535,10 +535,10 @@ from applicant.search import Jobs
 
 with Jobs() as boards:
     jobs = boards.search(
-        "machine learning engineer",
-        JobFilter(location="India", experience=5),
+        'machine learning engineer',
+        JobFilter(location='India', experience=5),
     )
-    boards.apply(jobs, log="preview.csv", dry_run=True)
+    boards.apply(jobs, log='preview.csv', dry_run=True)
 ```
 
 Individual adapters also expose `search` and return the same `Job` model. Use
@@ -552,12 +552,12 @@ embedding or offline tests.
 from applicant.financials import CrunchbaseClient, FinancialsTracker
 from applicant.reviews import AmbitionBoxClient
 
-rating = AmbitionBoxClient().fetch("tcs", max_reviews=10)
+rating = AmbitionBoxClient().fetch('tcs', max_reviews=10)
 print(rating.overall_rating, rating.review_count)
 
-funding = CrunchbaseClient().fetch("zomato")
+funding = CrunchbaseClient().fetch('zomato')
 print(funding.total_funding, funding.valuation)
-changes = FinancialsTracker("company_financials.json").record(funding)
+changes = FinancialsTracker('company_financials.json').record(funding)
 ```
 
 The reviews clients return `CompanyRating`. Financials clients return
