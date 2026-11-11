@@ -5,8 +5,10 @@ import multiprocessing
 import os
 import signal
 import struct
+import sys
 import time
 from contextlib import suppress
+from typing import Any
 
 from ..errors import SourceError
 
@@ -20,7 +22,12 @@ class CleanupUnconfirmed(WorkerFailure):
 
 
 class WindowsJob:
+    kernel: Any  # ctypes resolves Win32 functions and their signatures at runtime.
+    handle: int | None
+
     def __init__(self, pid):
+        if sys.platform != 'win32':
+            raise WorkerFailure('Windows Job Objects require Windows')
         from ctypes import wintypes
 
         kernel = ctypes.WinDLL('kernel32', use_last_error=True)
@@ -112,6 +119,8 @@ def run_worker(
     parent, child = context.Pipe()
     process = context.Process(target=_child, args=(child, function))
     process.start()
+    pid = process.pid
+    assert pid is not None  # A successfully started process owns a PID.
     child.close()
     job = None
     deadline = None if timeout is None else time.monotonic() + timeout
@@ -120,7 +129,7 @@ def run_worker(
         if not parent.poll(10) or parent.recv()[0] != 'ready':
             raise WorkerFailure('browser worker startup failed')
         if os.name == 'nt':
-            job = WindowsJob(process.pid)
+            job = WindowsJob(pid)
         parent.send(arguments)
         while True:
             if check:
@@ -153,7 +162,7 @@ def run_worker(
             if job:
                 job.terminate()
             elif os.name != 'nt':
-                os.killpg(process.pid, signal.SIGKILL)
+                os.killpg(pid, signal.SIGKILL)
             else:
                 process.terminate()
             process.join(5)
@@ -163,7 +172,7 @@ def run_worker(
             job.close()
         elif os.name != 'nt':
             with suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGKILL)
+                os.killpg(pid, signal.SIGKILL)
         parent.close()
         if process.is_alive():
             raise CleanupUnconfirmed('browser cleanup could not be confirmed')
