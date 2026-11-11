@@ -96,8 +96,9 @@ network access. The context manager handles client cleanup.
 
 ```python
 from applicant.search import Jobs
-with Jobs(sources=["linkedin"]) as boards:
-    jobs = boards.search("python developer")
+
+with Jobs(sources=['linkedin']) as boards:
+    jobs = boards.search('python developer')
 ```
 
 ## Usage
