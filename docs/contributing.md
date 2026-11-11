@@ -47,3 +47,13 @@ See the [research coverage matrix](research-coverage.md),
 [Milestone 4 validation guide](milestone-4-validation.md),
 [mutation testing report](mutation-report.md), and
 [maintainer guide](maintainers.md) for the checks and release workflow.
+
+Check local documentation links and anchors after moving or renaming sections.
+
+```console
+uv run --frozen python tools/check_doc_links.py
+```
+
+Use `--legacy-readme-ref REVISION` to check that every README fragment from a
+previous Git revision still resolves. Use `--list-external` to collect external
+URLs for a separate access check.
