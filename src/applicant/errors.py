@@ -46,6 +46,14 @@ class Blocked(SourceError):
     """A bot check, captcha, login wall or rate limit stopped the request."""
 
 
+class RateLimited(Blocked):
+    """A server throttle carries its next eligible time across process boundaries."""
+
+    def __init__(self, message, *, source=None, retry_at=None):
+        super().__init__(message, source=source)
+        self.retry_at = retry_at
+
+
 class NotFound(SourceError):
     """The name, slug, url or id does not resolve to anything."""
 
@@ -70,5 +78,26 @@ class StoreError(ApplicantError):
     """A file or database this package keeps could not be read or written."""
 
 
+class DatabaseBusy(StoreError):
+    """A bounded SQLite lock wait expired; retrying the command is appropriate."""
+
+    retryable = True
+
+
+def sqlite_busy(error):
+    import sqlite3
+
+    return isinstance(error, sqlite3.OperationalError) and (
+        getattr(error, 'sqlite_errorcode', 0) & 255 in (5, 6) or 'locked' in str(error).lower()
+    )
+
+
 class ConfigError(ApplicantError):
     """The settings, flags or environment do not describe a runnable job."""
+
+
+class ProfileBusy(ConfigError):
+    """Another process owns the session profile."""
+
+    status = 'profile_busy'
+    retryable = True

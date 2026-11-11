@@ -383,7 +383,7 @@ class JobsCommandTest(unittest.TestCase):
         ):
             linkedin.return_value.__enter__.return_value = operator
             code = main(['jobs', '-c', str(cookies), '--no-log-file', '--store', 'files'])
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 3)
         self.assertIn('rerun with --overwrite', err.getvalue())
         operator.scrape_jobs.assert_not_called()
 

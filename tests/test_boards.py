@@ -608,7 +608,10 @@ class CapabilityTest(unittest.TestCase):
     """What each board declares it does, and what the declaration is used for."""
 
     def test_every_source_declares_one(self):
-        self.assertEqual(set(CAPABILITIES), set(SOURCES))
+        from applicant.domain.providers import AVAILABLE_BOARDS
+
+        self.assertEqual(set(CAPABILITIES), set(AVAILABLE_BOARDS))
+        self.assertEqual(SOURCES, ('linkedin', 'indeed', 'naukri', 'googlejobs'))
 
     def test_each_client_carries_its_own(self):
         for client, name in (
@@ -622,7 +625,8 @@ class CapabilityTest(unittest.TestCase):
 
     def test_every_board_filters_location_itself(self):
         """Which is why `Jobs.search` never re-checks it locally."""
-        for name, declared in CAPABILITIES.items():
+        for name in SOURCES:
+            declared = CAPABILITIES[name]
             with self.subTest(board=name):
                 self.assertIn('location', declared.filters)
 

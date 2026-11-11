@@ -1,4 +1,7 @@
 # Applicant
+Provider setup, company history, cross-board research, technology analytics and
+optional PDF exports are described in [Research workflows](docs/research.md).
+
 It is a dynamic web scraper which gets the posted jobs which are applicable from within the site and don't redirect to another site. It then applies to them automatically with your stored (Latest) Resume.
 > _**Note: Filter operation hasn't been implemented yet for jobs**_
 
@@ -139,7 +142,7 @@ uv sync --locked              # includes ruff, pyright, pytest, coverage
 uv run pytest tests           # or: uv run python -m unittest discover -s tests -t .
 uv run ruff check . && uv run ruff format .
 uv run pyright                # CI also runs: uv run pyright --pythonversion 3.12
-uv run --frozen coverage run -m pytest tests && uv run --frozen coverage report
+uv run --frozen coverage run -m pytest tests && uv run --frozen coverage combine && uv run --frozen coverage report
 ```
 
 Tests are `unittest.TestCase` subclasses run under pytest, so both runners work and

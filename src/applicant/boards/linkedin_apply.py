@@ -25,6 +25,7 @@ from ..domain.job import Job
 from ..domain.ports import ApplicationResult, Interrupted, easy_apply_results
 from ..errors import Blocked, SourceError
 from ..infra.browser import BrowserSession, looks_blocked
+from ..infra.profile_lock import profile_lock
 from ..interaction import Interaction, Terminal
 from .linkedin import LinkedInGuest
 
@@ -64,6 +65,8 @@ class LinkedIn(LinkedInGuest):
         # asked for the one-time code when a sign in needs two factors
         self.interaction = interaction or Terminal()
         self._browser_session: BrowserSession | None = None
+        self._session_lock = None
+        self._session_path = None
         # the last easy_apply's outcomes, kept as they happen so an interrupt
         # cannot lose them: the urls applied to, and those submitted without
         # LinkedIn confirming them - possibly sent, so never retried blindly -
@@ -124,13 +127,22 @@ class LinkedIn(LinkedInGuest):
         overwrite: bool = False,
     ) -> Path | None:
         target = Path(filepath)
-        if target.exists() and not overwrite:
-            logger.warning(
-                '{} already exists. Pass overwrite to log in again, or use '
-                'restore_session() to reuse it.'.format(filepath)
-            )
-            return None
+        self._claim_session(target)
+        try:
+            if target.exists() and not overwrite:
+                logger.warning(
+                    '{} already exists. Pass overwrite to log in again, or use '
+                    'restore_session() to reuse it.'.format(filepath)
+                )
+                if self._browser_session is None:
+                    self._close_session()
+                return None
+            return self._sign_in(target, username, password, twoFA)
+        except BaseException:
+            self._close_session()
+            raise
 
+    def _sign_in(self, target: Path, username: str, password: str, twoFA: bool) -> Path:
         session = self._session()
         page = session.page
         page.goto('https://www.linkedin.com/login', wait_until='domcontentloaded')
@@ -161,6 +173,17 @@ class LinkedIn(LinkedInGuest):
         return target
 
     def restore_session(self, filepath: str | Path = 'cookies.json'):
+        self._claim_session(Path(filepath))
+        try:
+            if self._restore_session(filepath):
+                return True
+        except BaseException:
+            self._close_session()
+            raise
+        self._close_session()
+        return False
+
+    def _restore_session(self, filepath: str | Path) -> bool:
         state = self._load_state(filepath)
         if state is None:
             logger.warning(f'linkedin: no usable session in {filepath}; call login() first')
@@ -173,6 +196,16 @@ class LinkedIn(LinkedInGuest):
             return False
         logger.info(f'linkedin: session restored from {filepath}')
         return True
+
+    def _claim_session(self, path):
+        path = Path(path).resolve()
+        if self._session_lock is not None:
+            if self._session_path != path:
+                raise SourceError('close the current session before selecting another profile')
+            return
+        lock = profile_lock(path.with_suffix('.lock'))
+        lock.__enter__()
+        self._session_lock, self._session_path = lock, path
 
     def _load_state(self, filepath: str | Path):
         """A Playwright storage_state saved by `login`, or None."""
@@ -384,14 +417,16 @@ class LinkedIn(LinkedInGuest):
 
     # -- teardown ---------------------------------------------------------
 
-    def close(self):
-        """Release the browser, if one was started, and the HTTP client.
-
-        Explicit rather than left to garbage collection: a `__del__` running at
-        interpreter shutdown meets a Playwright that is already torn down.
-        Safe to call more than once.
-        """
+    def _close_session(self):
         if self._browser_session is not None:
             self._browser_session.close()
             self._browser_session = None
+        if self._session_lock is not None:
+            lock, self._session_lock = self._session_lock, None
+            self._session_path = None
+            lock.__exit__(None, None, None)
+
+    def close(self):
+        """Release the browser and its profile lock, then close the HTTP client."""
+        self._close_session()
         super().close()

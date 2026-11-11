@@ -27,13 +27,15 @@ import random
 import threading
 import time
 from collections.abc import Callable, Collection, Mapping
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
 
 from .. import log
-from ..errors import Blocked, Unreachable
+from ..errors import RateLimited, Unreachable
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +79,21 @@ def _retry_after(response: httpx.Response) -> float | None:
     try:
         seconds = float(value)
     except ValueError:
-        return None  # an HTTP date, or nothing: fall back to our own backoff
-    return seconds if 0 <= seconds <= MAX_RETRY_AFTER else None
+        try:
+            value_date = parsedate_to_datetime(value)
+            if value_date.utcoffset() is None:
+                return None
+            seconds = max(0.0, (value_date - datetime.now(timezone.utc)).total_seconds())
+        except (ValueError, TypeError, OverflowError):
+            return None
+    return seconds if 0 <= seconds < float('inf') else None
+
+
+def _eligible_after(seconds):
+    try:
+        return datetime.now(timezone.utc) + timedelta(seconds=seconds)
+    except OverflowError:
+        return datetime.max.replace(tzinfo=timezone.utc)
 
 
 class HttpClient:
@@ -163,9 +178,11 @@ class HttpClient:
             ) from failure
         # whether it was retried or not: a rate limit is never a page to parse
         if response.status_code == 429:
-            raise Blocked(
+            asked = _retry_after(response)
+            raise RateLimited(
                 f'{self.name} is rate limiting these requests; slow down or retry later',
                 source=self.name.lower(),
+                retry_at=_eligible_after(asked if asked is not None else 3600),
             )
         return response
 
@@ -174,6 +191,12 @@ class HttpClient:
         if previous is not None and previous.status_code == 429:
             asked = _retry_after(previous)
             if asked is not None:
+                if asked > MAX_RETRY_AFTER:
+                    raise RateLimited(
+                        f'{self.name} is rate limiting requests; retry after the server cooldown',
+                        source=self.name.lower(),
+                        retry_at=_eligible_after(asked),
+                    )
                 return asked
         if self.backoff <= 0:
             return 0.0

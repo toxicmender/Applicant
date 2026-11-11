@@ -12,10 +12,18 @@ dependencies = [
     "pydantic>=2",
     # applicant.toml on Python 3.10; 3.11+ has tomllib in the standard library
     "tomli>=2; python_version < '3.11'",
+    "tzdata==2026.6",
 ]
 
 [project.scripts]
-applicant = "applicant.cli:main"
+applicant = "applicant.cli:entrypoint"
+
+[project.optional-dependencies]
+pdf = [
+    "fonttools>=4.65.0",
+    "pypdf>=7.0.0",
+    "reportlab>=5.1.0",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -45,11 +53,20 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-ra"
 
-# `uv run --frozen coverage run -m pytest tests && uv run --frozen
-# coverage report` - CI's coverage job runs exactly this, and fails under the floor
+# Run coverage combine after measuring the suite, then coverage report.
 [tool.coverage.run]
 branch = true
 source = ["src/applicant"]
+relative_files = true
+parallel = true
+concurrency = ["multiprocessing"]
+
+[tool.coverage.paths]
+source = [
+    "src/",
+    "*/work/Applicant/Applicant/src/",
+    "*/a/Applicant/Applicant/src/",
+]
 
 [tool.coverage.report]
 fail_under = 90

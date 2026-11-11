@@ -1,0 +1,195 @@
+"""Private IPC and bounded cleanup for owned browser process trees."""
+
+import ctypes
+import multiprocessing
+import os
+import signal
+import struct
+import sys
+import time
+from contextlib import suppress
+from typing import Any
+
+from ..errors import SourceError
+
+
+class WorkerFailure(SourceError):
+    """The worker failed or could not finish normal teardown."""
+
+
+class CleanupUnconfirmed(WorkerFailure):
+    cleanup_unconfirmed = True
+
+
+class WindowsJob:
+    kernel: Any  # ctypes resolves Win32 functions and their signatures at runtime.
+    handle: int | None
+
+    def __init__(self, pid):
+        if sys.platform != 'win32':
+            raise WorkerFailure('Windows Job Objects require Windows')
+        from ctypes import wintypes
+
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel.QueryInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+        ]
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        self.kernel = kernel
+        self.handle = kernel.CreateJobObjectW(None, None)
+        # JOBOBJECT_EXTENDED_LIMIT_INFORMATION: LimitFlags is at byte 16.
+        limits = ctypes.create_string_buffer(144 if ctypes.sizeof(ctypes.c_void_p) == 8 else 112)
+        struct.pack_into('I', limits, 16, 0x2000)  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not kernel.SetInformationJobObject(self.handle, 9, limits, len(limits)):
+            kernel.CloseHandle(self.handle)
+            raise OSError(ctypes.get_last_error(), 'could not configure owned worker job')
+        process = kernel.OpenProcess(0x0100 | 0x0001, False, pid)
+        try:
+            if (
+                not self.handle
+                or not process
+                or not kernel.AssignProcessToJobObject(self.handle, process)
+            ):
+                code = ctypes.get_last_error()
+                kernel.CloseHandle(self.handle)
+                raise OSError(code, 'could not assign owned worker job')
+        finally:
+            if process:
+                kernel.CloseHandle(process)
+
+    def terminate(self):
+        if not self.kernel.TerminateJobObject(self.handle, 1):
+            raise CleanupUnconfirmed('could not terminate owned worker job')
+        deadline = time.monotonic() + 5
+        while True:
+            accounting = ctypes.create_string_buffer(48)
+            if not self.kernel.QueryInformationJobObject(
+                self.handle, 1, accounting, len(accounting), None
+            ):
+                raise CleanupUnconfirmed('could not confirm owned process tree cleanup')
+            if struct.unpack_from('I', accounting, 40)[0] == 0:
+                return
+            if time.monotonic() >= deadline:
+                raise CleanupUnconfirmed('owned process tree cleanup exceeded deadline')
+            time.sleep(0.05)
+
+    def close(self):
+        self.kernel.CloseHandle(self.handle)
+
+
+def _child(connection, function):
+    if os.name != 'nt':
+        os.setsid()
+    connection.send(('ready', None))
+    arguments = connection.recv()
+    try:
+        result = function(connection, arguments)
+        connection.send(('result', result))
+    except BaseException as error:  # noqa: BLE001 - relay worker termination without secrets
+        connection.send(('error', type(error).__name__))
+    finally:
+        connection.close()
+
+
+def run_worker(
+    function,
+    arguments,
+    *,
+    interactive=False,
+    pause=None,
+    check=None,
+    progress=None,
+    timeout: float | None = 60,
+    grace: float = 5,
+    monotonic=time.monotonic,
+):
+    context = multiprocessing.get_context('spawn')
+    parent, child = context.Pipe()
+    process = context.Process(target=_child, args=(child, function))
+    try:
+        process.start()
+    except BaseException:
+        parent.close()
+        child.close()
+        process.close()
+        raise
+    pid = process.pid
+    assert pid is not None  # A successfully started process owns a PID.
+    child.close()
+    job = None
+    deadline = None if timeout is None else monotonic() + timeout
+    group_ready = False
+    try:
+        if not parent.poll(10) or parent.recv()[0] != 'ready':
+            raise WorkerFailure('browser worker startup failed')
+        group_ready = os.name != 'nt'
+        if os.name == 'nt':
+            job = WindowsJob(pid)
+        parent.send(arguments)
+        while True:
+            if check:
+                check()
+            if deadline is not None and monotonic() >= deadline:
+                raise WorkerFailure('browser worker deadline exceeded')
+            if parent.poll(0.1):
+                kind, value = parent.recv()
+                if kind == 'pause':
+                    if pause is None or not interactive:
+                        raise WorkerFailure('unexpected interactive worker request')
+                    pause(value)
+                    parent.send(None)
+                    deadline = None if timeout is None else monotonic() + timeout
+                elif kind == 'closing':
+                    deadline = monotonic() + grace
+                elif kind == 'progress' and progress is not None:
+                    progress(value)
+                elif kind == 'error':
+                    raise WorkerFailure('browser worker failed: ' + value)
+                elif kind == 'result':
+                    result = value
+                    break
+            elif not process.is_alive():
+                raise WorkerFailure('browser worker exited without a result')
+        process.join(grace)
+        if process.is_alive():
+            raise WorkerFailure('browser worker teardown exceeded deadline')
+        return result
+    except EOFError as error:
+        raise WorkerFailure('browser worker exited without a result') from error
+    finally:
+        try:
+            if job:
+                job.terminate()
+            elif os.name != 'nt' and group_ready:
+                with suppress(ProcessLookupError):
+                    os.killpg(pid, signal.SIGKILL)
+            elif process.is_alive():
+                process.terminate()
+            if process.is_alive():
+                process.join(5)
+            if process.is_alive():
+                raise CleanupUnconfirmed('browser cleanup could not be confirmed')
+        except OSError as error:
+            raise CleanupUnconfirmed('browser cleanup could not be confirmed') from error
+        finally:
+            if job:
+                job.close()
+            parent.close()
+            if not process.is_alive():
+                process.close()

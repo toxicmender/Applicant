@@ -14,6 +14,9 @@
 logs/
 .cb_profile/
 .tx_profile/
+**/*.pdf.manifest.json
+**/*.session.lock
+/output/
 
 # gitignore template for Jupyter Notebooks
 # website: http://jupyter.org/
@@ -79,6 +82,12 @@ htmlcov/
 .cache
 nosetests.xml
 coverage.xml
+/coverage-data
+/coverage-provenance.json
+/coverage-inputs/
+/combined-research-coverage.json
+/research-coverage.json
+/live-requisition.json
 coverage-m4.json
 milestone-4-coverage.json
 *.cover

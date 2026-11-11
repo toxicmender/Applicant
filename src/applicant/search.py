@@ -106,19 +106,12 @@ class Jobs:
             from .boards.linkedin import LinkedInGuest
 
             return LinkedInGuest(headless=self.headless)
-        if name == 'indeed':
-            from .boards.indeed import Indeed
+        from .infra.provider_registry import board_client
 
-            return Indeed(headless=self.headless)
-        if name == 'naukri':
-            from .boards.naukri import Naukri
-
-            return Naukri(headless=self.headless)
-        if name == 'googlejobs':
-            from .boards.googlejobs import GoogleJobs
-
-            return GoogleJobs(headless=self.headless)
-        raise SourceError('unknown source {!r}'.format(name))
+        try:
+            return board_client(name, headless=self.headless)
+        except ValueError as error:
+            raise SourceError('unknown source or unavailable acquisition: ' + str(error)) from error
 
     def search(
         self,

@@ -37,15 +37,17 @@ from typing import Any
 
 from ...domain.dedupe import fingerprint, key
 from ...domain.job import Job
-from ...errors import StoreError
+from ...errors import DatabaseBusy, StoreError, sqlite_busy
 from ...files import read_document, write_document
 from ...permissions import make_private
 from ...storage import APPLIED_COLUMNS, PROVISIONAL, ApplicationLog, plan_rows, write_rows
 from .benchmarks import BENCHMARK_MIGRATION
 from .company_evidence import COMPANY_EVIDENCE_MIGRATION
 from .feedback import FEEDBACK_MIGRATION
+from .maintenance import configure_connection
 from .personalization import PERSONALIZATION_MIGRATION
 from .ranking_schema import RANKING_MIGRATION
+from .research import RESEARCH_MIGRATION
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +127,7 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
     PERSONALIZATION_MIGRATION,
     BENCHMARK_MIGRATION,
     COMPANY_EVIDENCE_MIGRATION,
+    RESEARCH_MIGRATION,
 )
 
 
@@ -153,8 +156,7 @@ class Store:
             make_private(self.path)
             self.db = sqlite3.connect(self.path)
             try:
-                self.db.execute('PRAGMA busy_timeout = 5000')
-                self.db.execute('PRAGMA foreign_keys = ON')
+                configure_connection(self.db)
                 # REPLACE deletes conflicting rows. Fire delete guards for that
                 # path too, so it cannot bypass append-only history triggers.
                 self.db.execute('PRAGMA recursive_triggers = ON')
@@ -163,7 +165,9 @@ class Store:
                 # WAL is a persistent database setting, configured outside a
                 # transaction. Refuse an unsupported mode rather than claiming
                 # concurrent readers are supported when they are not.
-                mode = self.db.execute('PRAGMA journal_mode = WAL').fetchone()[0]
+                mode = self.db.execute('PRAGMA journal_mode').fetchone()[0]
+                if mode.lower() != 'wal':
+                    mode = self.db.execute('PRAGMA journal_mode = WAL').fetchone()[0]
                 if mode.lower() != 'wal':
                     raise sqlite3.DatabaseError(f'WAL journal mode unavailable: {mode}')
                 self._migrate()
@@ -171,6 +175,10 @@ class Store:
                 self.db.close()
                 raise
         except (OSError, sqlite3.Error) as error:
+            if sqlite_busy(error):
+                raise DatabaseBusy(
+                    f'database busy: {self.path}; retry after the writer finishes'
+                ) from error
             raise StoreError(f'could not open {self.path}: {error}') from error
 
     @classmethod
@@ -186,8 +194,7 @@ class Store:
         try:
             store.db = sqlite3.connect(store.path.resolve().as_uri() + '?mode=ro', uri=True)
             try:
-                store.db.execute('PRAGMA busy_timeout = 5000')
-                store.db.execute('PRAGMA foreign_keys = ON')
+                configure_connection(store.db, writable=False)
                 store.db.execute('PRAGMA query_only = ON')
                 version = store.db.execute('PRAGMA user_version').fetchone()[0]
                 if version < len(MIGRATIONS):
@@ -202,6 +209,10 @@ class Store:
                 store.db.close()
                 raise
         except (OSError, sqlite3.Error) as error:
+            if sqlite_busy(error):
+                raise DatabaseBusy(
+                    f'database busy: {store.path}; retry after the writer finishes'
+                ) from error
             raise StoreError(f'could not read {store.path}: {error}') from error
         return store
 

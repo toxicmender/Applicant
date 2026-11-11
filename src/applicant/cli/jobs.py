@@ -6,6 +6,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from ..domain.canonical import canonical_json
+from ..interaction import Terminal
 from ..log import get
 from ..settings import Settings
 from .common import configured_path
@@ -58,6 +60,13 @@ def run(args: JobsRequest, settings: Settings) -> int:
     from ..boards.linkedin_apply import LinkedIn
 
     fp = Path(configured_path(settings, args.cookies, settings.files.cookies))
+    if (not fp.exists() or args.overwrite) and isinstance(terminal(), Terminal):
+        from .setup import legacy_login
+
+        code = legacy_login(settings, 'linkedin', cookies=str(fp.resolve()), reauth=args.overwrite)
+        if code:
+            return code
+        args = args.model_copy(update={'overwrite': False})
     with LinkedIn(headless=not args.show, interaction=terminal()) as operator:
         if fp.exists() and not fp.is_dir() and not args.overwrite:
             logger.info(f'jobs: restoring the LinkedIn session from {fp}')
@@ -67,7 +76,16 @@ def run(args: JobsRequest, settings: Settings) -> int:
                     'rerun with --overwrite to sign in again'.format(fp),
                     file=sys.stderr,
                 )
-                return 1
+                print(
+                    canonical_json(
+                        {
+                            'provider': 'linkedin',
+                            'status': 'needs_setup',
+                            'command': 'applicant setup provider linkedin --reauth',
+                        }
+                    )
+                )
+                return 3
             print('session restored from {}'.format(fp))
         else:
             # the credentials go to the browser and nowhere else - never to a log

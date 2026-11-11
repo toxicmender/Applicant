@@ -16,6 +16,7 @@ from typing import Protocol
 from ..domain import flags
 from ..domain.capability import Capability, Field
 from ..domain.job import Job, experience_from
+from ..domain.providers import DEFAULT_BOARDS
 from ..errors import SourceError
 from ..filters import JobFilter, prepared
 from ..infra.store.repositories import Backend, listing
@@ -24,7 +25,7 @@ from .fanout import failure, fan_out
 
 logger = logging.getLogger(__name__)
 
-SOURCES = ('linkedin', 'indeed', 'naukri', 'googlejobs')
+SOURCES = DEFAULT_BOARDS
 
 
 class Board(Protocol):

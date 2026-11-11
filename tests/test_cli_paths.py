@@ -62,7 +62,7 @@ class ExitsTest(Cli):
         cookies.write_text('{"cookies": []}', encoding='utf-8')
         with mock.patch.object(LinkedIn, 'restore_session', return_value=False):
             code, _, err = self.run_main('jobs', '--cookies', str(cookies))
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 3)
         self.assertIn('rerun with --overwrite', err)
 
     def test_financials_that_found_nothing_exit_1(self):

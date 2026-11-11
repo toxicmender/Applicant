@@ -22,6 +22,9 @@ on:
 permissions:
   contents: read
 
+env:
+  APPLICANT_REQUIRE_NATIVE_CLEANUP: '1'
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -40,7 +43,7 @@ jobs:
           enable-cache: true
 
       - name: Install locked development tools
-        run: uv sync --locked
+        run: uv sync --locked --extra pdf
 
       - name: ruff check
         id: ruff
@@ -93,7 +96,7 @@ jobs:
       # without the venv every `import httpx` is an unresolved import and the
       # whole run says nothing useful
       - name: Install dependencies
-        run: uv sync --locked
+        run: uv sync --locked --extra pdf
 
       # Checked against the floor requires-python claims and against 3.12, where
       # the stdlib typeshed differs (deprecations, removed aliases). One job and
@@ -159,7 +162,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --locked --python ${{ matrix.python }}
+        run: uv sync --locked --extra pdf --python ${{ matrix.python }}
 
       - name: Windows type check
         if: runner.os == 'Windows'
@@ -195,6 +198,9 @@ jobs:
       - name: Installed Milestone 4 CLI journey
         run: uv run --frozen --isolated --no-editable --refresh-package applicant --reinstall-package applicant --python ${{ matrix.python }} python tools/smoke_milestone4.py --require-installed
 
+      - name: Installed research CLI journey
+        run: uv run --frozen --extra pdf --isolated --no-editable --refresh-package applicant --reinstall-package applicant --python ${{ matrix.python }} python tools/smoke_research.py --require-installed
+
       # proves the suite still runs on the stdlib runner alone, which is what a
       # contributor has before installing anything
       - name: unittest discover
@@ -216,7 +222,14 @@ jobs:
   # the floor never depends on a browser being installed.
   coverage:
     name: coverage
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     outputs:
       outcome: ${{ steps.coverage.outputs.outcome }}
       detail: ${{ steps.coverage.outputs.detail }}
@@ -227,7 +240,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --locked --python 3.12
+        run: uv sync --locked --extra pdf --python 3.12
 
       - name: coverage
         id: coverage
@@ -237,6 +250,8 @@ jobs:
             echo 'detail=the suite failed under coverage' >> "$GITHUB_OUTPUT"
             exit 1
           fi
+          uv run --frozen coverage combine || exit 1
+          uv run --frozen python tools/research_coverage_data.py record || exit 1
           uv run --frozen coverage xml -q
           total=$(uv run --frozen coverage report --format=total)
           echo "### Coverage: ${total}%" >> "$GITHUB_STEP_SUMMARY"
@@ -251,6 +266,12 @@ jobs:
             fi
             echo 'outcome=pass' >> "$GITHUB_OUTPUT"
             echo "detail=${total}% line and branch" >> "$GITHUB_OUTPUT"
+            if ! uv run --frozen python tools/check_research_coverage.py coverage-m4.json > research-coverage.json; then
+              echo 'outcome=fail' >> "$GITHUB_OUTPUT"
+              echo 'detail=Research module line or branch coverage below 90%' >> "$GITHUB_OUTPUT"
+              cat research-coverage.json >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
           else
             echo 'outcome=fail' >> "$GITHUB_OUTPUT"
             echo "detail=${total}%, under the floor" >> "$GITHUB_OUTPUT"
@@ -260,11 +281,33 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: coverage
+          name: coverage-${{ matrix.os }}
           path: |
             coverage.xml
             coverage-m4.json
             milestone-4-coverage.json
+            research-coverage.json
+            coverage-data
+            coverage-provenance.json
+          retention-days: 30
+
+  combined-coverage:
+    runs-on: ubuntu-latest
+    needs: coverage
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --locked --python 3.12
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          path: coverage-inputs
+      - run: uv run --frozen python tools/research_coverage_data.py combine coverage-inputs
+      - run: uv run --frozen coverage json -o combined-research-coverage.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: combined-research-coverage
+          path: combined-research-coverage.json
           retention-days: 30
 
   # The browser sources in a real Chromium against tests/fixtures/pages: the
@@ -313,7 +356,7 @@ jobs:
   status:
     name: status
     runs-on: ubuntu-latest
-    needs: [lint, types, unit, coverage, browser]
+    needs: [lint, types, unit, coverage, combined-coverage, browser]
     # the whole point of this job is to record failures, so it must run regardless
     if: always()
     steps:
@@ -322,6 +365,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: reports
+          pattern: junit-*
           merge-multiple: true
 
       # `result` is how the job ran (success/failure/skipped/cancelled) and
@@ -343,6 +387,9 @@ jobs:
               "coverage": {"result": "${{ needs.coverage.result }}",
                            "outcome": "${{ needs.coverage.outputs.outcome }}",
                            "detail": "${{ needs.coverage.outputs.detail }}"},
+              "combined-coverage": {"result": "${{ needs.combined-coverage.result }}",
+                                    "outcome": "${{ needs.combined-coverage.result }}",
+                                    "detail": "diagnostic union of native coverage reports"},
               "browser": {"result": "${{ needs.browser.result }}",
                           "outcome": "${{ needs.browser.outputs.outcome }}",
                           "detail": ""}
