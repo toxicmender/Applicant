@@ -82,6 +82,12 @@ htmlcov/
 .cache
 nosetests.xml
 coverage.xml
+/coverage-data
+/coverage-provenance.json
+/coverage-inputs/
+/combined-research-coverage.json
+/research-coverage.json
+/live-requisition.json
 coverage-m4.json
 milestone-4-coverage.json
 *.cover

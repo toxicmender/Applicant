@@ -142,7 +142,7 @@ uv sync --locked              # includes ruff, pyright, pytest, coverage
 uv run pytest tests           # or: uv run python -m unittest discover -s tests -t .
 uv run ruff check . && uv run ruff format .
 uv run pyright                # CI also runs: uv run pyright --pythonversion 3.12
-uv run --frozen coverage run -m pytest tests && uv run --frozen coverage report
+uv run --frozen coverage run -m pytest tests && uv run --frozen coverage combine && uv run --frozen coverage report
 ```
 
 Tests are `unittest.TestCase` subclasses run under pytest, so both runners work and

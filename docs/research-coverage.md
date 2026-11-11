@@ -12,11 +12,14 @@ and Milestone 4 gates remain enabled. No research runtime exclusions are approve
 | Storage validation, cookie warnings, atomic replacement | `test_provider_setup.py`, `test_setup_lifecycle.py` |
 | Shared profile contention and process death | `test_session_locking.py` |
 | Worker private IPC, exceptions and hung teardown | `test_owned_worker.py` |
+| Verification and production acquisition worker bridges | `test_verification_worker.py`, `test_worker_bridges.py` |
 | Sources list/show/health/probe | `test_research_cli_branches.py` |
-| Feed validation, partial results, leases and infrastructure failures | `test_acquisition_lifecycle.py`, `test_research_acquisition.py` |
+| Feed validation, partial results, leases and infrastructure failures | `test_feed_preflight.py`, `test_acquisition_lifecycle.py`, `test_provider_renewal.py` |
 | Corporate event versions, inherited context and local report dates | `test_research_repairs.py`, `test_research_workflows.py` |
 | Analytics cohorts, salary exclusions, FX and order invariance | `test_analytics_branches.py`, `test_research_workflows.py` |
 | Coverage threshold boundaries and invalid input | `test_research_coverage_gate.py` |
+| Child tracing and native coverage data combination | `test_owned_worker.py`, `test_research_coverage_data.py` |
+| Manual live release qualification | `test_live_requisition_gate.py` |
 
 ## Operational contracts
 
@@ -59,20 +62,43 @@ change event chronology. Predecessor evidence retains its original ownership.
 Analytics uses explicitly supplied FX only. Missing currency pairs exclude salary
 conversion while preserving demand membership. Older selected snapshots disclose
 their age; future-effective snapshots are invalid. There is no nearest-date or
-network fallback. Conversion rounds explicitly half-even to two decimal places.
+network fallback. New snapshots identify `research-analytics-2` in
+`policy_version`. This policy uses exact salary arithmetic and half-even cent
+rounding for reported amounts, and chooses equivalent compensation provenance by
+the lowest evidence ID. Reports disclose the stored policy. Replay reads the
+original bytes and membership for either policy.
 
 ## Residual branch register
 
-The generated `research-coverage.json` artifact is the authoritative list of
-remaining arcs. Worker-only execution paths may not be recorded by parent-process
-coverage; their lifecycle behavior is tested separately with owned subprocesses.
-The inline verifier's unsupported-adapter guard is defensive behind public provider
-preflight. Feed adapter-contract guards and client-creation cleanup cover extension
-failures; they must remain even when every built-in adapter satisfies the contract.
-Residual outcomes count against the permitted 10%; they are not excluded.
+The [residual coverage review and commit plan](research-residual-coverage-plan.md)
+maps the remaining branches to concrete test scenarios and distinguishes
+defensive invariants from missing production-worker coverage.
+
+The generated `research-coverage.json` lists residual arcs for the five gated
+modules on each platform. Linux and Windows independently evaluate the floors.
+The combined report checks source and configuration digests before unioning arcs.
+Clean worker exits contribute coverage. Force-killed workers are verified by
+parent assertions, including descendant exit and unrelated process survival.
+
+| Boundary | Classification | Verification |
+| --- | --- | --- |
+| `provider_setup.py:190→191`, inline verifier with an incomplete adapter | Defensive invariant behind public preflight | Setup rejects unsupported providers before dispatch. |
+| Feed cleanup with no constructed adapter | Reachable constructor failure | Acquisition tests assert token release and provider outcome. |
+| Renewal interruption and failure to persist abandonment | Infrastructure failure | Controlled waits, stale-token isolation, bounded shutdown, and expiry diagnostics. |
+| Worker cleanup on the other OS or after forced termination | Platform or instrumentation limitation | Native capability probes and synchronized process tests on both hosts. |
+
+The feed regressions cover canonical URL keys, missing capture methods, partial
+results after renewal failure, and malformed observations alongside valid jobs.
+The previous ambiguous client-cleanup condition now checks whether a client was
+constructed, and the tests exercise both outcomes.
+
+`APPLICANT_REQUIRE_NATIVE_CLEANUP=1` makes a restricted capability probe fail
+the native CI jobs. Outside CI, the probe reports a skip only for recognized OS
+restrictions. Missing readiness messages fail with the relevant lifecycle phase.
 
 ```powershell
 uv run --extra pdf coverage run -m pytest tests
+uv run coverage combine
 uv run coverage json -o coverage-m4.json
 uv run python tools/check_milestone_coverage.py coverage-m4.json
 uv run python tools/check_research_coverage.py coverage-m4.json
