@@ -1,6 +1,7 @@
 """Short SQLite transactions lease acquisition; no network work holds a writer."""
 
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Event, Thread
@@ -32,29 +33,27 @@ def recover_authentication(database, name):
     path = Path(database)
     if not path.exists():
         return {'status': 'skipped_missing_database'}
-    db = sqlite3.connect(path.resolve().as_uri() + '?mode=rw', uri=True)
     try:
-        configure_connection(db)
-        if db.execute('PRAGMA user_version').fetchone()[0] != len(MIGRATIONS):
-            return {
-                'status': 'schema_incompatible',
-                'retryable': False,
-                'command': f'applicant db upgrade --database "{path}"',
-            }
-        with db:
-            changed = db.execute(
-                "UPDATE provider_health SET status='ready',failures=0,reason=NULL "
-                "WHERE provider=? AND status='needs_setup' AND lease_token IS NULL",
-                (provider(name).id,),
-            ).rowcount
+        with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=rw', uri=True)) as db:
+            configure_connection(db)
+            if db.execute('PRAGMA user_version').fetchone()[0] != len(MIGRATIONS):
+                return {
+                    'status': 'schema_incompatible',
+                    'retryable': False,
+                    'command': f'applicant db upgrade --database "{path}"',
+                }
+            with db:
+                changed = db.execute(
+                    "UPDATE provider_health SET status='ready',failures=0,reason=NULL "
+                    "WHERE provider=? AND status='needs_setup' AND lease_token IS NULL",
+                    (provider(name).id,),
+                ).rowcount
         return {'status': 'recovered' if changed else 'unchanged'}
     except sqlite3.Error as error:
         return {
             'status': 'database_busy' if sqlite_busy(error) else 'database_error',
             'retryable': sqlite_busy(error),
         }
-    finally:
-        db.close()
 
 
 def acquire(database, name, *, clock=now, allow_degraded=False):
@@ -162,21 +161,23 @@ class Acquisition:
         self.result = acquire(self.database, self.name, clock=self.clock, allow_degraded=self.probe)
         if self.result['status'] == 'acquired':
             self.token = self.result['token']
-            self.thread = Thread(target=self._run, daemon=True)
-            self.thread.start()
+            try:
+                self.thread = Thread(target=self._run, daemon=True)
+                self.thread.start()
+            except BaseException:
+                self.stop.set()
+                self._abandon()
+                raise
         return self
 
     def tick(self):
-        for attempt in range(2):
-            try:
+        try:
+            renew(self.database, self.name, self.token, clock=self.clock)
+        except (DatabaseBusy, sqlite3.Error) as error:
+            if not isinstance(error, DatabaseBusy) and not sqlite_busy(error):
+                raise
+            if not self.stop.wait(1):
                 renew(self.database, self.name, self.token, clock=self.clock)
-                return
-            except Exception as error:
-                if attempt == 0 and (isinstance(error, DatabaseBusy) or sqlite_busy(error)):
-                    if self.stop.wait(1):
-                        return
-                else:
-                    raise
 
     def _run(self):
         try:
@@ -194,14 +195,20 @@ class Acquisition:
     def shutdown(self):
         self.stop.set()
         if self.thread:
-            self.thread.join(12)
-            if self.thread.is_alive():
+            thread, self.thread = self.thread, None
+            thread.join(12)
+            if thread.is_alive():
                 raise LeaseFailure('acquisition renewal did not stop within 12 seconds')
 
     def finish(self, outcome, **kwargs):
         self.shutdown()
         self.check()
-        result = finish(self.database, self.name, self.token, outcome, clock=self.clock, **kwargs)
+        try:
+            result = finish(
+                self.database, self.name, self.token, outcome, clock=self.clock, **kwargs
+            )
+        except ValueError as error:
+            raise LeaseFailure('provider acquisition lease ownership lost') from error
         self.token = None
         return result
 
@@ -209,5 +216,14 @@ class Acquisition:
         try:
             self.shutdown()
         finally:
-            if self.token:
+            self._abandon()
+
+    def _abandon(self):
+        if self.token:
+            try:
                 abandon(self.database, self.name, self.token)
+            except Exception as error:
+                raise LeaseFailure(
+                    'could not release acquisition lease; retry after expiry'
+                ) from error
+            self.token = None
