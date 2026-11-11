@@ -18,7 +18,11 @@ from applicant.domain.canonical import canonical_json
 from applicant.domain.research import ResearchImport, Schedule
 from applicant.domain.research_analytics import analytics
 from applicant.domain.research_identity import match_jobs, requisition_url
-from applicant.domain.research_reports import company_report, parse_markdown, render_markdown
+from applicant.domain.research_reports import (
+    company_report,
+    parse_markdown,
+    render_markdown,
+)
 from applicant.domain.research_time import convert_schedule, localize, zone
 from applicant.errors import ConfigError, StoreError
 from applicant.infra.research_pdf import render_pdf
@@ -130,7 +134,7 @@ class ResearchWorkflowTest(unittest.TestCase):
         self.assertEqual(snapshot['rows'][0]['observed_openings'], 6)
         self.assertEqual(snapshot['rows'][0]['compensation'][0]['sample_size'], 6)
         self.assertEqual(
-            snapshot['rows'][0]['compensation'][0]['median_annual_gross_base'], '112500'
+            snapshot['rows'][0]['compensation'][0]['median_annual_gross_base'], '112500.00'
         )
         before = canonical_json(read_snapshot(self.database, snapshot['snapshot_id']))
         closed = self.bundle.observations[0].model_copy(

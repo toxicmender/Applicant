@@ -13,6 +13,7 @@ from .company_time import event_bounds, event_phase
 from .contracts import Timestamp
 from .providers import provider
 from .research import Record
+from .research_analytics import KNOWN_POLICIES
 from .research_identity import match_jobs
 from .research_time import freshness, seasonal_schedules, zone
 
@@ -327,6 +328,7 @@ def company_report(data, selection, *, created_at):
 def snapshot_report(snapshot, *, limit=25, offset=0):
     if snapshot['kind'] == 'applicant_report':
         return snapshot
+    manifest = {'snapshot': snapshot, 'offset': offset, 'limit': limit}
     if snapshot['kind'] == 'research_feed':
         versions = {x['job_version_id']: x for x in snapshot['observations']}
         rows = []
@@ -347,6 +349,13 @@ def snapshot_report(snapshot, *, limit=25, offset=0):
             'rows': rows,
         }
     elif snapshot['kind'] == 'technology_analytics':
+        policy = snapshot.get('policy_version')
+        manifest['policy_version'] = policy
+        note = f'Metric policy: {policy}' if policy else 'Metric policy missing.'
+        if not isinstance(policy, str) or policy not in KNOWN_POLICIES:
+            manifest['policy_diagnostic'] = 'unknown_metric_policy'
+            if policy:
+                note = f'Unknown metric policy: {policy}'
         rows = [
             [
                 x.get('technology', x.get('stack')),
@@ -361,6 +370,7 @@ def snapshot_report(snapshot, *, limit=25, offset=0):
             'title': 'Technology Analytics',
             'columns': ['Technology / stack', 'Observed openings', 'Origins', 'Compensation'],
             'rows': rows,
+            'note': note,
         }
     else:
         raise ValueError('unsupported report snapshot kind')
@@ -371,7 +381,7 @@ def snapshot_report(snapshot, *, limit=25, offset=0):
         'created_at': snapshot['created_at'],
         'template_version': 'report-1',
         'sections': [section],
-        'manifest': {'snapshot': snapshot, 'offset': offset, 'limit': limit},
+        'manifest': manifest,
     }
 
 

@@ -1,8 +1,14 @@
 import unittest
 from datetime import timedelta
+from decimal import ROUND_UP, Inexact, localcontext
+from fractions import Fraction
+
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from applicant.domain.research import ResearchImport
-from applicant.domain.research_analytics import analytics
+from applicant.domain.research_analytics import analytics, money_text
+from applicant.domain.research_reports import render_markdown, snapshot_report
 from tests.research_fixtures import NOW, bundle
 
 
@@ -105,9 +111,38 @@ class AnalyticsBranchesTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.analyze(fx=future)
 
-    def test_input_order_does_not_change_metrics(self):
+    @settings(max_examples=20)
+    @given(st.randoms())
+    def test_input_order_does_not_change_snapshot(self, randomizer):
         value = bundle().model_dump(mode='json')
         first = self.analyze(value)
         for key in ('observations', 'evidence', 'parties'):
-            value[key].reverse()
-        self.assertEqual(first['rows'], self.analyze(value)['rows'])
+            randomizer.shuffle(value[key])
+        self.assertEqual(first, self.analyze(value))
+
+    def test_decimal_context_and_half_even(self):
+        expected = self.analyze()
+        with localcontext() as caller:
+            caller.prec, caller.rounding = 3, ROUND_UP
+            caller.traps[Inexact] = True
+            self.assertEqual(expected, self.analyze())
+            self.assertEqual((caller.prec, caller.rounding), (3, ROUND_UP))
+            self.assertTrue(caller.traps[Inexact])
+        self.assertEqual(money_text(Fraction(1005, 1000)), '1.00')
+        self.assertEqual(money_text(Fraction(1015, 1000)), '1.02')
+
+    def test_render_discloses_policy_without_rewriting_snapshot(self):
+        expected = self.analyze()
+        for policy in ('research-analytics-1', 'research-analytics-2', 'future', None):
+            with self.subTest(policy=policy):
+                value = {**expected, 'policy_version': policy}
+                if policy is None:
+                    value.pop('policy_version')
+                original = value.copy()
+                report = snapshot_report(value)
+                self.assertEqual(value, original)
+                self.assertEqual(report['manifest']['policy_version'], policy)
+                self.assertIn(policy or 'Metric policy missing', render_markdown(report))
+                self.assertEqual(
+                    'policy_diagnostic' in report['manifest'], policy in ('future', None)
+                )

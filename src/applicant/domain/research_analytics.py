@@ -2,7 +2,7 @@
 
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta, timezone
-from decimal import ROUND_HALF_EVEN, Decimal, localcontext
+from fractions import Fraction
 from statistics import median
 
 from .fx import FXSnapshot
@@ -20,6 +20,16 @@ ALIASES = {
     'tf': 'tensorflow',
     'pytorch': 'pytorch',
 }
+
+POLICY_VERSION = 'research-analytics-2'
+KNOWN_POLICIES = frozenset(('research-analytics-1', POLICY_VERSION))
+
+
+def money_text(amount: Fraction) -> str:
+    cents = round(amount * 100)
+    sign = '-' if cents < 0 else ''
+    units, remainder = divmod(abs(cents), 100)
+    return f'{sign}{units}.{remainder:02d}'
 
 
 def technology_name(value: str) -> str:
@@ -139,23 +149,18 @@ def analytics(
         for e in compensation:
             p = e.payload
             key = (p.minimum, p.maximum, p.currency, p.period)
-            candidates[key] = e
+            if key not in candidates or e.evidence_id < candidates[key].evidence_id:
+                candidates[key] = e
         salary, pay_currency, reason, salary_id = None, None, 'missing_comparable_salary', None
         if len(candidates) == 1:
             chosen = next(iter(candidates.values()))
             p = chosen.payload
-            salary = (
-                (p.minimum + p.maximum) / 2 * {'annual': 1, 'monthly': 12, 'weekly': 52}[p.period]
-            )
+            salary = (Fraction(p.minimum) + Fraction(p.maximum)) / 2
+            salary *= {'annual': 1, 'monthly': 12, 'weekly': 52}[p.period]
             pay_currency, salary_id, reason = p.currency, chosen.evidence_id, 'range_midpoint'
             if currency and currency != pay_currency:
                 if rates and pay_currency in rates.rates and currency in rates.rates:
-                    with localcontext() as context:
-                        context.prec = 50
-                        context.rounding = ROUND_HALF_EVEN
-                        salary = (
-                            salary * rates.rates[currency] / rates.rates[pay_currency]
-                        ).quantize(Decimal('.01'), rounding=ROUND_HALF_EVEN)
+                    salary *= Fraction(rates.rates[currency]) / Fraction(rates.rates[pay_currency])
                     pay_currency = currency
                 else:
                     salary, reason = None, 'missing_fx'
@@ -173,7 +178,7 @@ def analytics(
                     'party_ids': sorted(p.party_id for p in parties),
                     'compensation_evidence_id': salary_id,
                     'compensation_reason': reason,
-                    'normalized_salary': str(salary) if salary is not None else None,
+                    'normalized_salary': money_text(salary) if salary is not None else None,
                     'currency': pay_currency,
                 }
             )
@@ -198,7 +203,9 @@ def analytics(
                 'currency': c,
                 'sample_size': len(values),
                 'coverage': len(values) / metric['openings'],
-                'median_annual_gross_base': str(median(values)) if len(values) >= 5 else None,
+                'median_annual_gross_base': money_text(median(values))
+                if len(values) >= 5
+                else None,
                 'status': 'available' if len(values) >= 5 else 'insufficient_sample',
             }
             for c, values in sorted(metric['pay'].items())
@@ -222,19 +229,19 @@ def analytics(
         'window_start_inclusive': start.isoformat(),
         'window_end_exclusive': cutoff.isoformat(),
         'timezone': applicant_timezone,
-        'policy_version': 'research-analytics-1',
+        'policy_version': POLICY_VERSION,
         'taxonomy_version': 'tech-1',
         'group_by': group_by,
         'filters': {'origin': origin, 'role': role, 'geography': geography},
         'fx': rates.model_dump(mode='json') if rates else None,
         'fx_age_days': (day - rates.effective_date).days if rates else None,
-        'rounding': 'Decimal half-even to 0.01 after conversion',
-        'members': members,
-        'job_version_ids': [x['job_version_id'] for x in members],
+        'rounding': 'Half-even to 0.01 for reported salaries and medians',
+        'members': sorted(members, key=lambda x: x['job_version_id']),
+        'job_version_ids': sorted(x['job_version_id'] for x in members),
         'groups': groups,
         'evidence': [
             e.model_dump(mode='json')
-            for e in evidence
+            for e in sorted(evidence, key=lambda e: e.evidence_id)
             if any(e.evidence_id in m['evidence_ids'] for m in members)
         ],
         'rows': rows,
