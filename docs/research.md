@@ -217,6 +217,7 @@ modules identified in the coverage review.
 uv run --extra pdf pytest tests
 uv run --extra pdf pyright
 uv run --extra pdf coverage run -m pytest tests
+uv run --extra pdf coverage combine
 uv run --extra pdf coverage report
 uv run --extra pdf python tools/smoke_research.py
 uv run --extra pdf python tools/probe_research_providers.py --export docs/research-provider-validation.json
@@ -226,3 +227,31 @@ Required tests are offline: unittest under pytest, mock HTTP/browser dependencie
 temporary SQLite stores, injected clocks, and Hypothesis properties. Live probes
 are explicit operational checks and never required CI. Synthetic two-board
 fixtures do not satisfy the separate live cross-board acceptance gate.
+
+### Live release checklist
+
+1. Select two currently readable listings that may share an employer requisition.
+   Use canonical provider IDs and HTTPS listing URLs without query strings.
+2. From the default branch, dispatch **Live requisition release check** with the
+   release commit SHA and candidate JSON. The commit must be reachable from the
+   default branch. Use public access by default. For an explicitly provisioned
+   LinkedIn session, set `LINKEDIN_STORAGE_STATE` in the `live-requisition`
+   environment and enable the session input.
+3. Download `live-requisition.json` from the run. With the release commit checked
+   out, run the artifact check below. Record the successful run and artifact link
+   in the release checklist. Eligibility expires after 24 hours. A blocked or
+   failed result leaves the release gate pending.
+
+```json
+{"listings":{"builtin":"https://builtin.com/job/example/123","wellfound":"https://wellfound.com/jobs/456-example"}}
+```
+
+```powershell
+uv run --frozen python tools/probe_research_providers.py --candidate candidate.json --export live-requisition.json
+uv run --frozen python tools/probe_research_providers.py --release-report live-requisition.json
+```
+
+The artifact records both acquisitions and their match revision. It discloses
+direct, agency, and unknown origins and the available syndication evidence.
+Only confirmed employer requisition identity qualifies the pair. Candidate probe
+exit codes are 0 for verified, 3 for blocked, 1 for failed, and 2 for invalid input.

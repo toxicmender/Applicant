@@ -1,0 +1,61 @@
+name: Live requisition release check
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: Full commit SHA reachable from the default branch
+        required: true
+        type: string
+      candidate:
+        description: JSON object with two canonical provider IDs and listing URLs under listings
+        required: true
+        type: string
+      linkedin_session:
+        description: Use the explicitly provisioned LinkedIn storage state
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    environment: live-requisition
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select trusted release candidate
+        env:
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "$RELEASE_SHA" HEAD
+          git checkout --detach "$RELEASE_SHA"
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --locked --python 3.12
+      - run: uv run --frozen playwright install chromium
+      - name: Verify both listings
+        env:
+          CANDIDATE: ${{ inputs.candidate }}
+          APPLICANT_USE_LINKEDIN_SESSION: ${{ inputs.linkedin_session }}
+          APPLICANT_LIVE_LINKEDIN_STATE: ${{ inputs.linkedin_session && secrets.LINKEDIN_STORAGE_STATE || '' }}
+        run: |
+          if [[ "$APPLICANT_USE_LINKEDIN_SESSION" == true && -z "$APPLICANT_LIVE_LINKEDIN_STATE" ]]; then
+            echo 'LinkedIn session requested but LINKEDIN_STORAGE_STATE is unavailable.' >&2
+            exit 2
+          fi
+          printf '%s\n' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
+          uv run --frozen python tools/probe_research_providers.py \
+            --candidate "$RUNNER_TEMP/candidate.json" --export live-requisition.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-requisition-${{ inputs.release_sha }}
+          path: live-requisition.json
+          retention-days: 30

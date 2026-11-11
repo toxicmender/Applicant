@@ -102,6 +102,8 @@ class PublicBoard:
             x in str(response.url) for x in ('/login', '/signin', '/authwall')
         ):
             raise AuthFailed(f'{self.name}: authentication required')
+        if response.url.scheme != 'https' or response.url.host.removeprefix('www.') != host:
+            raise Unparseable(f'{self.name}: listing redirected outside the selected board')
         if response.status_code >= 400:
             raise Unparseable(f'{self.name}: HTTP {response.status_code}; not closure evidence')
         if len(response.content) > 8_000_000:
@@ -112,7 +114,10 @@ class PublicBoard:
         return response.text
 
     def capture(self, url):
-        records, _ = structured_records(self._read(url), 'JobPosting')
+        return self.parse_listing(self._read(url), url)
+
+    def parse_listing(self, body, url):
+        records, _ = structured_records(body, 'JobPosting')
         if not records:
             raise Unparseable(f'{self.name}: no public structured JobPosting; use research import')
         return [self._job(record, url) for record in records]

@@ -2,6 +2,8 @@
 
 import argparse
 import json
+import os
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -11,9 +13,42 @@ from applicant.infra.provider_registry import board_client
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--export', required=True)
+    parser.add_argument('--export')
     parser.add_argument('--provider', action='append')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--candidate', type=Path)
+    mode.add_argument('--release-report', type=Path)
     args = parser.parse_args()
+    if args.release_report:
+        from live_requisition import release_eligible
+
+        if args.provider or args.export:
+            parser.error('--release-report checks an existing artifact')
+        try:
+            report = json.loads(args.release_report.read_text(encoding='utf-8'))
+            sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+            verified = isinstance(report, dict) and release_eligible(report, sha)
+        except (OSError, ValueError):
+            parser.error('invalid release artifact or checkout')
+        print('verified' if verified else 'pending')
+        return 0 if verified else 1
+    if not args.export:
+        parser.error('--export is required for acquisition')
+    if args.candidate:
+        from live_requisition import verify
+
+        if args.provider:
+            parser.error('--candidate supplies its own providers')
+        try:
+            candidate = json.loads(args.candidate.read_text(encoding='utf-8'))
+            sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+            result = verify(
+                candidate, sha, session=os.environ.pop('APPLICANT_LIVE_LINKEDIN_STATE', None)
+            )
+        except (ValueError, OSError):
+            parser.error('invalid candidate, session input or checkout')
+        Path(args.export).write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
+        return {'verified': 0, 'blocked': 3, 'failed': 1}[result['status']]
     outcomes = []
     for name in args.provider or [
         'weworkremotely',
