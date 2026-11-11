@@ -17,6 +17,7 @@ from .research import import_research, read_research, save_snapshot
 
 def observations_from(client, jobs, stamp, name):
     observations = []
+    invalid = None
     for job in jobs:
         data = {
             'job': job.model_dump(),
@@ -34,8 +35,11 @@ def observations_from(client, jobs, stamp, name):
         if isinstance(body, bytes) and body:
             data['content_sha256'] = sha256(body).hexdigest()
             data['content_representation'] = 'http_response'
-        observations.append(ListingObservation(job_version_id=content_hash(data), **data))
-    return observations
+        try:
+            observations.append(ListingObservation(job_version_id=content_hash(data), **data))
+        except ValueError as error:
+            invalid = error
+    return observations, invalid
 
 
 def collect_feed(database, query, *, factory=board_client, clock=now, parent=None, probe=False):
@@ -88,7 +92,7 @@ def collect_feed(database, query, *, factory=board_client, clock=now, parent=Non
                 continue
             client = None
             jobs = []
-            network_finished = False
+            status, error, retry_at = 'success', None, None
             try:
                 client = (
                     OwnedBoard(name, owner.check)
@@ -97,7 +101,7 @@ def collect_feed(database, query, *, factory=board_client, clock=now, parent=Non
                 )
                 if query.get('urls', {}).get(name):
                     if not callable(getattr(client, 'capture', None)):
-                        raise ValueError('provider does not support explicit public job URLs')
+                        raise Unparseable('provider capture adapter is missing')
                     urls = query['urls'][name]
                     for url in urls:
                         owner.check()
@@ -110,64 +114,50 @@ def collect_feed(database, query, *, factory=board_client, clock=now, parent=Non
                         query.get('keywords', ''), location=query.get('location', ''), limit=limit
                     )
                 owner.check()
-                network_finished = True
-                observations = observations_from(client, jobs, clock(), name)
-            except (LeaseFailure, WorkerFailure) as error:
-                if jobs:
-                    observations = observations_from(client, jobs[:limit], clock(), name)
-                    import_research(database, ResearchImport(observations=tuple(observations)))
-                    acquired.extend(observations)
-                outcomes.append(
-                    {
-                        'provider': name,
-                        'status': 'infrastructure_failure',
-                        'retryable': True,
-                        'error_type': type(error).__name__,
-                        'preserved_count': len(jobs[:limit]),
-                    }
-                )
-                continue
-            except (SourceError, OSError, ValueError) as error:
+            except (LeaseFailure, WorkerFailure) as failure:
+                status, error = 'infrastructure_failure', failure
+            except (SourceError, OSError, ValueError) as failure:
+                error = failure
+                retry_at = getattr(failure, 'retry_at', None)
                 status = (
                     'needs_setup'
-                    if isinstance(error, AuthFailed)
+                    if isinstance(failure, AuthFailed)
                     else 'adapter_degraded'
-                    if isinstance(error, Unparseable)
+                    if isinstance(failure, Unparseable)
                     else 'throttled'
-                    if 'rate limit' in str(error).lower()
+                    if 'rate limit' in str(failure).lower()
                     else 'blocked'
-                    if isinstance(error, Blocked)
+                    if isinstance(failure, Blocked)
                     else 'unavailable'
                 )
-                partial = getattr(client, 'partial_jobs', [])
-                partial = jobs or (partial if isinstance(partial, list) else [])
-                count = 0
-                if partial and not network_finished:
-                    observations = observations_from(client, partial[:limit], clock(), name)
-                    import_research(database, ResearchImport(observations=tuple(observations)))
-                    acquired.extend(observations)
-                    count = len(observations)
-                owner.finish(
-                    status,
-                    retry_at=getattr(error, 'retry_at', None),
-                )
-                outcomes.append(
-                    {
-                        'provider': name,
-                        'status': status,
-                        'error_type': type(error).__name__,
-                        'preserved_count': count,
-                    }
-                )
-                continue
             finally:
-                if client:
-                    client.close()
+                if client is not None:
+                    try:
+                        client.close()
+                    except Exception as failure:  # noqa: BLE001 - adapter teardown boundary
+                        status, error = 'infrastructure_failure', failure
+            partial = getattr(client, 'partial_jobs', [])
+            if error is not None and isinstance(partial, list):
+                jobs = [*jobs, *partial]
+            observations, invalid = observations_from(client, jobs[:limit], clock(), name)
+            if invalid is not None and status != 'infrastructure_failure':
+                status, error = 'adapter_degraded', invalid
             # Database errors are deliberately outside provider failure handling.
             import_research(database, ResearchImport(observations=tuple(observations)))
-            owner.finish('success')
             acquired.extend(observations)
-            outcomes.append({'provider': name, 'status': 'success', 'count': len(observations)})
+            if status != 'infrastructure_failure':
+                try:
+                    owner.finish(status, retry_at=retry_at)
+                except LeaseFailure as failure:
+                    status, error = 'infrastructure_failure', failure
+            outcome: dict[str, str | int] = {'provider': name, 'status': status}
+            if error is None:
+                outcome['count'] = len(observations)
+            else:
+                outcome.update(error_type=type(error).__name__, preserved_count=len(observations))
+                if status == 'infrastructure_failure':
+                    outcome['retryable'] = True
+            outcomes.append(outcome)
     value = {
         'kind': 'research_feed',
         'schema_version': 1,
