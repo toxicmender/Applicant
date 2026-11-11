@@ -66,7 +66,9 @@ class WindowsJob:
                 or not process
                 or not kernel.AssignProcessToJobObject(self.handle, process)
             ):
-                raise OSError(ctypes.get_last_error(), 'could not assign owned worker job')
+                code = ctypes.get_last_error()
+                kernel.CloseHandle(self.handle)
+                raise OSError(code, 'could not assign owned worker job')
         finally:
             if process:
                 kernel.CloseHandle(process)
@@ -112,29 +114,38 @@ def run_worker(
     interactive=False,
     pause=None,
     check=None,
+    progress=None,
     timeout: float | None = 60,
     grace: float = 5,
+    monotonic=time.monotonic,
 ):
     context = multiprocessing.get_context('spawn')
     parent, child = context.Pipe()
     process = context.Process(target=_child, args=(child, function))
-    process.start()
+    try:
+        process.start()
+    except BaseException:
+        parent.close()
+        child.close()
+        process.close()
+        raise
     pid = process.pid
     assert pid is not None  # A successfully started process owns a PID.
     child.close()
     job = None
-    deadline = None if timeout is None else time.monotonic() + timeout
-    result = None
+    deadline = None if timeout is None else monotonic() + timeout
+    group_ready = False
     try:
         if not parent.poll(10) or parent.recv()[0] != 'ready':
             raise WorkerFailure('browser worker startup failed')
+        group_ready = os.name != 'nt'
         if os.name == 'nt':
             job = WindowsJob(pid)
         parent.send(arguments)
         while True:
             if check:
                 check()
-            if deadline is not None and time.monotonic() >= deadline:
+            if deadline is not None and monotonic() >= deadline:
                 raise WorkerFailure('browser worker deadline exceeded')
             if parent.poll(0.1):
                 kind, value = parent.recv()
@@ -143,9 +154,11 @@ def run_worker(
                         raise WorkerFailure('unexpected interactive worker request')
                     pause(value)
                     parent.send(None)
-                    deadline = None if timeout is None else time.monotonic() + timeout
+                    deadline = None if timeout is None else monotonic() + timeout
                 elif kind == 'closing':
-                    deadline = time.monotonic() + grace
+                    deadline = monotonic() + grace
+                elif kind == 'progress' and progress is not None:
+                    progress(value)
                 elif kind == 'error':
                     raise WorkerFailure('browser worker failed: ' + value)
                 elif kind == 'result':
@@ -157,23 +170,26 @@ def run_worker(
         if process.is_alive():
             raise WorkerFailure('browser worker teardown exceeded deadline')
         return result
+    except EOFError as error:
+        raise WorkerFailure('browser worker exited without a result') from error
     finally:
-        if process.is_alive():
+        try:
             if job:
                 job.terminate()
-            elif os.name != 'nt':
-                os.killpg(pid, signal.SIGKILL)
-            else:
+            elif os.name != 'nt' and group_ready:
+                with suppress(ProcessLookupError):
+                    os.killpg(pid, signal.SIGKILL)
+            elif process.is_alive():
                 process.terminate()
-            process.join(5)
-        # Kill any descendants left behind even after normal worker exit.
-        if job:
-            job.terminate()
-            job.close()
-        elif os.name != 'nt':
-            with suppress(ProcessLookupError):
-                os.killpg(pid, signal.SIGKILL)
-        parent.close()
-        if process.is_alive():
-            raise CleanupUnconfirmed('browser cleanup could not be confirmed')
-        process.close()
+            if process.is_alive():
+                process.join(5)
+            if process.is_alive():
+                raise CleanupUnconfirmed('browser cleanup could not be confirmed')
+        except OSError as error:
+            raise CleanupUnconfirmed('browser cleanup could not be confirmed') from error
+        finally:
+            if job:
+                job.close()
+            parent.close()
+            if not process.is_alive():
+                process.close()
