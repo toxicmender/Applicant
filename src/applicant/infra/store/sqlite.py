@@ -44,6 +44,7 @@ from ...storage import APPLIED_COLUMNS, PROVISIONAL, ApplicationLog, plan_rows, 
 from .benchmarks import BENCHMARK_MIGRATION
 from .company_evidence import COMPANY_EVIDENCE_MIGRATION
 from .feedback import FEEDBACK_MIGRATION
+from .financials_lock import financials_lock
 from .maintenance import configure_connection
 from .personalization import PERSONALIZATION_MIGRATION
 from .ranking_schema import RANKING_MIGRATION
@@ -559,7 +560,12 @@ class Store:
 
     def financials_document(self, file: str | os.PathLike[str]) -> dict:
         """The history document, rebuilt exactly as the file holds it."""
-        return self._financials_from_db(self._sync_financials(Path(file)))
+        target = Path(file).resolve()
+        with financials_lock(target):
+            return self._load_financials(target)
+
+    def _load_financials(self, target: Path) -> dict:
+        return self._financials_from_db(self._sync_financials(target))
 
     def _financials_from_db(self, name: str) -> dict:
         extra = self.db.execute(
@@ -590,7 +596,11 @@ class Store:
         The export is `document` itself, written the way the file backend
         writes it, so the two backends' files are the same bytes.
         """
-        target = Path(file)
+        target = Path(file).resolve()
+        with financials_lock(target):
+            self._save_financials(document, target)
+
+    def _save_financials(self, document: dict, target: Path) -> None:
         name = self._sync_financials(target)
         with self._transaction() as db:
             self._replace_financials(db, name, document)
@@ -599,15 +609,17 @@ class Store:
 
     def financial_history(self, file: str | os.PathLike[str], company: str) -> list[dict]:
         """Every snapshot of one company (`<source>:<id>`), oldest first."""
-        name = self._sync_financials(Path(file))
-        return [
-            json.loads(snapshot)
-            for (snapshot,) in self.db.execute(
-                'SELECT snapshot FROM financial_snapshots WHERE document = ? AND key = ? '
-                'ORDER BY seq',
-                (name, company),
-            )
-        ]
+        target = Path(file).resolve()
+        with financials_lock(target):
+            name = self._sync_financials(target)
+            return [
+                json.loads(snapshot)
+                for (snapshot,) in self.db.execute(
+                    'SELECT snapshot FROM financial_snapshots WHERE document = ? AND key = ? '
+                    'ORDER BY seq',
+                    (name, company),
+                )
+            ]
 
     def _replace_financials(self, db: sqlite3.Connection, name: str, document: dict) -> None:
         db.execute('DELETE FROM financial_documents WHERE document = ?', (name,))

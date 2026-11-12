@@ -84,6 +84,12 @@ class DatabaseBusy(StoreError):
     retryable = True
 
 
+class FinancialsBusy(DatabaseBusy):
+    """Another process owns the financials export."""
+
+    status = 'financials_busy'
+
+
 def sqlite_busy(error):
     import sqlite3
 

@@ -245,7 +245,11 @@ def main(argv: list[str] | None = None) -> int:
 
             print(
                 canonical_json(
-                    {'status': 'database_busy', 'retryable': True, 'message': str(error)}
+                    {
+                        'status': getattr(error, 'status', 'database_busy'),
+                        'retryable': True,
+                        'message': str(error),
+                    }
                 )
             )
             return 8

@@ -15,11 +15,14 @@ from __future__ import annotations
 
 import logging
 import re
+from contextlib import contextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 
 from pydantic import ValidationError
 
 from ..files import read_document, write_document
+from ..infra.store.financials_lock import financials_lock
 from .models import CompanyFinancials, FundingRound, Money
 
 logger = logging.getLogger(__name__)
@@ -58,30 +61,41 @@ class FinancialsTracker:
     def __init__(self, path='company_financials.json', backend: str = 'files'):
         self.path = path
         self.backend = backend
-        self.data = self._load()
+        self.target = Path(path).resolve()
+        with self._storage() as store:
+            self.data = self._load(store)
 
-    def _load(self):
+    @contextmanager
+    def _storage(self):
+        with financials_lock(self.target):
+            if self.backend == 'sqlite':
+                from ..infra.store.sqlite import Store
+
+                with Store.beside(self.target) as store:
+                    yield store
+            else:
+                yield None
+
+    def _load(self, store):
         # the tracker exists to write: an unreadable history is moved aside
         # rather than replaced, since it is the only copy of every snapshot
-        if self.backend == 'sqlite':
-            from ..infra.store.sqlite import Store
-
-            with Store.beside(self.path) as store:
-                data = store.financials_document(self.path)
+        if store is not None:
+            data = store._load_financials(self.target)
         else:
-            data = read_document(self.path, quarantine=True)
+            data = read_document(self.target, quarantine=True)
         if not isinstance(data.get('companies'), dict):
             data['companies'] = {}
         return data
 
     def save(self):
-        if self.backend == 'sqlite':
-            from ..infra.store.sqlite import Store
+        with self._storage() as store:
+            self._save(store)
 
-            with Store.beside(self.path) as store:
-                store.save_financials(self.data, self.path)
+    def _save(self, store):
+        if store is not None:
+            store._save_financials(self.data, self.target)
         else:
-            write_document(self.path, self.data)
+            write_document(self.target, self.data)
 
     def latest(self, key):
         entry = self.data['companies'].get(key)
@@ -108,6 +122,15 @@ class FinancialsTracker:
         could not read keeps its previous value instead of being reported as a
         change - a logged out page hiding a figure is not the figure disappearing.
         """
+        if not save:
+            return self._record(financials)
+        with self._storage() as store:
+            self.data = self._load(store)
+            changes = self._record(financials)
+            self._save(store)
+            return changes
+
+    def _record(self, financials):
         key = company_key(financials)
         entry = self.data['companies'].get(key)
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -134,8 +157,6 @@ class FinancialsTracker:
             'latest': merged.to_dict(),
             'snapshots': snapshots,
         }
-        if save:
-            self.save()
         logger.debug(
             f'{key}: '
             + (

@@ -385,6 +385,37 @@ class FinancialsHistoryTest(TempDir):
         self.assertEqual(plain.read_bytes(), stored.read_bytes())
         self.assertTrue((self.root / 'stored' / DB_NAME).exists())
 
+    def test_stale_trackers_keep_independent_company_updates(self):
+        from applicant.financials import FinancialsTracker
+
+        for backend in ('files', 'sqlite'):
+            with self.subTest(backend=backend):
+                path = self.root / backend / 'history.json'
+                first = FinancialsTracker(path, backend=backend)
+                second = FinancialsTracker(path, backend=backend)
+                first.record(self.financials(1))
+                second.record(
+                    self.financials(2).model_copy(update={'company_id': 'other', 'company': 'Other'})
+                )
+                self.assertEqual(
+                    set(second.data['companies']), {'crunchbase:zomato', 'crunchbase:other'}
+                )
+
+    def test_financials_contention_at_load_and_save(self):
+        from applicant.errors import FinancialsBusy
+        from applicant.financials import FinancialsTracker
+        from applicant.infra.store.financials_lock import financials_lock
+
+        path = self.root / 'history.json'
+        tracker = FinancialsTracker(path, backend='sqlite')
+        with financials_lock(path):
+            with self.assertRaises(FinancialsBusy):
+                FinancialsTracker(path, backend='sqlite')
+            with self.assertRaises(FinancialsBusy):
+                tracker.record(self.financials(1))
+        tracker.record(self.financials(1))
+        self.assertEqual(len(tracker.history('crunchbase:zomato')), 1)
+
     def test_the_database_holds_the_change_log(self):
         path = self.track(self.root / 'stored', 'sqlite')
         with Store.beside(path) as store:
