@@ -242,9 +242,12 @@ class LauncherEdgesTest(unittest.TestCase):
         broken = mock.Mock()
         broken.close.side_effect = RuntimeError('already closed')
         session._closer = broken
-        with self.assertLogs('applicant.infra.browser', 'DEBUG') as logged:
+        with self.assertLogs('applicant.browser', 'DEBUG') as logged:
             session.close()
-        self.assertIn('already closed', '\n'.join(logged.output))
+        output = '\n'.join(logged.output)
+        self.assertIn('browser_teardown failed', output)
+        self.assertIn('RuntimeError', output)
+        self.assertNotIn('already closed', output)
 
 
 def posting(job_id: str) -> Job:

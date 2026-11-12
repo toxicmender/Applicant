@@ -10,6 +10,9 @@ import unittest
 from contextlib import suppress
 from unittest.mock import Mock, patch
 
+from playwright.sync_api import Error
+
+from applicant.infra.browser_diagnostics import QUEUE_SIZE, event, stage
 from applicant.infra.owned_worker import WorkerFailure, run_worker
 
 
@@ -25,6 +28,32 @@ def hanging(connection, arguments):
 
 def failing(connection, arguments):
     raise ValueError('private data must not leave the worker')
+
+
+def overflowing(connection, address):
+    connection.send(('pause', 'fill diagnostic queue'))
+    with socket.create_connection(address, timeout=10) as signal_socket:
+        try:
+            with stage('verification_navigation'):
+                for _ in range(QUEUE_SIZE + 12):
+                    event('request', 'failed')
+                raise Error('navigation net::ERR_CONNECTION_RESET at ?token=private-value')
+        finally:
+            signal_socket.sendall(b'1')
+            connection.recv()
+
+
+def exit_abruptly(connection, arguments):
+    os._exit(5)
+
+
+def failing_during_cleanup(connection, arguments):
+    try:
+        with stage('login_navigation'):
+            raise Error('net::ERR_NAME_NOT_RESOLVED')
+    finally:
+        with suppress(RuntimeError), stage('browser_teardown'):
+            raise RuntimeError('private cleanup details')
 
 
 def held_child(connection):
@@ -133,6 +162,55 @@ class OwnedWorkerTest(unittest.TestCase):
         with self.assertRaisesRegex(WorkerFailure, 'ValueError') as raised:
             run_worker(failing, None)
         self.assertNotIn('private data', str(raised.exception))
+
+    def test_saturated_queue_preserves_failure_and_drop_summary(self):
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1', 0))
+            listener.listen()
+            listener.settimeout(15)
+
+            def pause(message):
+                self.assertEqual(message, 'fill diagnostic queue')
+                with listener.accept()[0] as channel:
+                    channel.settimeout(15)
+                    self.assertEqual(channel.recv(1), b'1')
+
+            with (
+                self.assertLogs('applicant.browser.worker', level='DEBUG') as logs,
+                self.assertRaisesRegex(
+                    WorkerFailure, 'verification_navigation.*ERR_CONNECTION_RESET'
+                ),
+            ):
+                run_worker(
+                    overflowing,
+                    listener.getsockname(),
+                    interactive=True,
+                    pause=pause,
+                    provider='tracxn',
+                )
+        text = '\n'.join(logs.output)
+        self.assertIn('Diagnostic queue saturated: 14 events dropped', text)
+        self.assertIn(f'emitted={QUEUE_SIZE} received={QUEUE_SIZE} dropped=14', text)
+        self.assertIn("'provider': 'tracxn'", text)
+        self.assertNotIn('private-value', text)
+
+    def test_abrupt_exit_leaves_final_drop_count_unknown(self):
+        with (
+            self.assertLogs('applicant.browser.worker', level='DEBUG') as logs,
+            self.assertRaisesRegex(WorkerFailure, 'exited without a result'),
+        ):
+            run_worker(exit_abruptly, None, provider='tracxn')
+        self.assertIn('final_drop_count=unknown', '\n'.join(logs.output))
+
+    def test_cleanup_failure_preserves_original_browser_stage(self):
+        with (
+            self.assertLogs('applicant.browser.worker', level='DEBUG') as logs,
+            self.assertRaisesRegex(WorkerFailure, 'login_navigation.*ERR_NAME_NOT_RESOLVED'),
+        ):
+            run_worker(failing_during_cleanup, None, provider='tracxn')
+        text = '\n'.join(logs.output)
+        self.assertIn("'cleanup_failures': [{'operation': 'browser_teardown'", text)
+        self.assertNotIn('private cleanup details', text)
 
     def test_interrupt_terminates_only_owned_tree(self):
         context = multiprocessing.get_context('spawn')
