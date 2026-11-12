@@ -12,6 +12,7 @@ from ..domain.providers import provider
 from ..errors import ConfigError
 from ..files import write_document
 from ..infra.browser import BrowserSession, looks_blocked
+from ..infra.browser_diagnostics import event, safe_origin, stage
 from ..infra.profile_lock import profile_lock
 from ..infra.ranking_documents import read_ranking_document
 from ..interaction import Terminal
@@ -164,6 +165,7 @@ def verify_state(name, state, *, interactive=False, factory: Callable[..., Any] 
             (name, state, interactive),
             interactive=interactive,
             pause=Terminal().pause,
+            provider=name,
         )
     return _verify_inline(name, state, interactive=interactive, factory=factory)
 
@@ -191,19 +193,30 @@ def _verify_inline(
         raise ConfigError('provider has no authentication adapter')
     with factory(headless=not interactive, storage_state=state) as session:
         page = session.start()
-        page.goto(item.login_url if interactive else item.check_url, wait_until='domcontentloaded')
         if interactive:
-            (pause or Terminal().pause)(
-                'Complete login/MFA in the browser, then press Enter to verify: '
-            )
+            with stage('login_navigation', origin=safe_origin(item.login_url)):
+                page.goto(item.login_url, wait_until='domcontentloaded')
+            with stage('login_acknowledgement'):
+                (pause or Terminal().pause)(
+                    'Complete login/MFA in the browser, then press Enter to verify: '
+                )
+        with stage('verification_navigation', origin=safe_origin(item.check_url)):
             page.goto(item.check_url, wait_until='domcontentloaded')
-        if looks_blocked(page) or any(
-            part in page.url.lower() for part in ('/login', '/authwall', '/checkpoint', '/signin')
-        ):
-            return None
-        if not page.locator(item.auth_selector).count():
-            return None
-        return session.context.storage_state()
+        with stage('authentication_check'):
+            if looks_blocked(page):
+                event('authentication_check', 'blocked')
+                return None
+            if any(
+                part in page.url.lower()
+                for part in ('/login', '/authwall', '/checkpoint', '/signin')
+            ):
+                event('authentication_check', 'login_redirect', origin=safe_origin(page.url))
+                return None
+            if not page.locator(item.auth_selector).count():
+                event('authentication_check', 'marker_missing')
+                return None
+        with stage('storage_export'):
+            return session.context.storage_state()
 
 
 def import_session(

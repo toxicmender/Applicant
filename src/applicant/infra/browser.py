@@ -13,15 +13,16 @@ to Easy Apply); `browser()` is the everyday one-page form built on it.
 
 from __future__ import annotations
 
-import logging
 import os
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from contextvars import copy_context
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..errors import SourceError
 from ..permissions import make_private
+from .browser_diagnostics import event, network_code, safe_origin, stage
 from .http import USER_AGENT
 from .profile_lock import profile_lock
 from .ranking_documents import read_ranking_document
@@ -40,7 +41,45 @@ BLOCKED_SELECTORS = '#challenge-platform, #cf-challenge-running, form#captcha-fo
 # where a profile's signed in state is exported, inside the profile itself
 STATE_FILE = 'storage_state.json'
 
-logger = logging.getLogger(__name__)
+
+def _observe_page(page: Page) -> None:
+    from playwright.sync_api import Error
+
+    # Sync Playwright can dispatch events on a different greenlet.
+    notify = copy_context().run
+
+    def failed_request(request):
+        code = network_code(request.failure or '')
+        if code:
+            notify(event, 'request', 'failed', origin=safe_origin(request.url), network_code=code)
+
+    def response_received(response):
+        try:
+            main_document = (
+                response.status >= 400
+                and response.request.is_navigation_request()
+                and response.frame == page.main_frame
+            )
+        except Error:  # Playwright may not have an associated frame yet.
+            return
+        if main_document:
+            notify(
+                event,
+                'navigation',
+                'http_error',
+                origin=safe_origin(response.url),
+                status=response.status,
+            )
+
+    page.on('requestfailed', failed_request)
+    page.on('response', response_received)
+    page.on('crash', lambda *_: notify(event, 'page', 'crashed'))
+
+
+def _observe_browser(browser) -> None:
+    if browser is not None:
+        notify = copy_context().run
+        browser.on('disconnected', lambda *_: notify(event, 'browser', 'disconnected'))
 
 
 class BrowserSession:
@@ -100,10 +139,15 @@ class BrowserSession:
                 self._profile_lock.__enter__()
                 if state.is_file() and self.storage_state is None:
                     self.storage_state = read_ranking_document(state)
-            self._playwright = sync_playwright().start()
+            with stage('playwright_startup'):
+                self._playwright = sync_playwright().start()
             context = self._launch(self._playwright)
-            page = context.pages[0] if self.profile_dir and context.pages else context.new_page()
-            page.set_default_timeout(self.timeout)
+            with stage('page_creation'):
+                page = (
+                    context.pages[0] if self.profile_dir and context.pages else context.new_page()
+                )
+                page.set_default_timeout(self.timeout)
+                _observe_page(page)
         except BaseException:
             self.close()
             raise
@@ -121,34 +165,32 @@ class BrowserSession:
 
         for channel in self.channels:
             extra: dict[str, Any] = {'channel': channel} if channel else {}
+            label = channel if channel in ('chrome', 'msedge', 'chromium') else 'bundled'
             try:
-                if self.profile_dir and self.storage_state is None:
-                    context = driver.chromium.launch_persistent_context(
-                        str(self.profile_dir), **options, **context_options, **extra
-                    )
-                    self._closer = context
-                else:
-                    instance = driver.chromium.launch(**options, **extra)
-                    self._closer = instance
-                    context = instance.new_context(
-                        **context_options, storage_state=self.storage_state
-                    )
-            except Exception as error:  # noqa: BLE001 - the channel is simply not installed
+                with stage('browser_launch', channel=label, headless=self.headless):
+                    if self.profile_dir and self.storage_state is None:
+                        with stage('context_creation', persistent=True):
+                            context = driver.chromium.launch_persistent_context(
+                                str(self.profile_dir), **options, **context_options, **extra
+                            )
+                            self._closer = context
+                            _observe_browser(context.browser)
+                    else:
+                        instance = driver.chromium.launch(**options, **extra)
+                        self._closer = instance
+                        _observe_browser(instance)
+                        with stage('context_creation', persistent=False):
+                            context = instance.new_context(
+                                **context_options, storage_state=self.storage_state
+                            )
+            except Exception as error:  # noqa: BLE001 - try the next browser channel
                 self._close_quietly('_closer')
-                logger.debug(f'browser: {channel or "bundled"} unavailable: {error}')
-                failures.append(
-                    '{}: {}'.format(channel or 'bundled', str(error).split('\n')[0][:80])
-                )
+                failures.append(f'{label}: {type(error).__name__}')
                 continue
-            logger.debug(
-                f'browser: launched {channel or "bundled chromium"}'
-                + (f' with profile {self.profile_dir}' if self.profile_dir else '')
-            )
             return context
 
-        logger.error(f'browser: no browser could be launched ({len(failures)} tried)')
-        # one line: the log escapes newlines, so a list would read as \x0a runs
-        raise SourceError('could not launch a browser - ' + '; '.join(failures))
+        with stage('browser_launch'):
+            raise SourceError('could not launch a browser - ' + '; '.join(failures))
 
     def save_state(self, path: str | os.PathLike[str] | None = None) -> Path:
         """Export the signed in state (cookies, local storage) to a file.
@@ -186,12 +228,13 @@ class BrowserSession:
         if handle is None:
             return
         try:
-            if name == '_playwright':
-                handle.stop()
-            else:
-                handle.close()
-        except Exception as error:  # noqa: BLE001 - teardown is best effort
-            logger.debug(f'browser: closing {name[1:]} failed: {error}')
+            with stage('browser_teardown', component=name[1:]):
+                if name == '_playwright':
+                    handle.stop()
+                else:
+                    handle.close()
+        except Exception:  # noqa: BLE001 - teardown is best effort and already logged
+            pass
 
     def __enter__(self) -> BrowserSession:
         return self
@@ -219,9 +262,9 @@ def looks_blocked(page) -> bool:
     except Exception:  # noqa: BLE001 - a page mid-navigation has no title yet
         return False
     if any(flag in title for flag in BLOCKED_TITLES):
-        logger.info(f'browser: bot check detected by page title {title!r}')
+        event('challenge_detection', 'blocked', marker='title')
         return True
     if page.locator(BLOCKED_SELECTORS).count() > 0:
-        logger.info('browser: bot check detected by challenge element')
+        event('challenge_detection', 'blocked', marker='element')
         return True
     return False

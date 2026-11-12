@@ -90,7 +90,7 @@ class ChannelTest(TempDir):
 
     def test_nothing_launching_is_a_source_error_naming_each_try(self):
         fake = FakePlaywright(missing={'chrome', 'msedge', None})
-        with fake.patch(), self.assertRaisesRegex(SourceError, 'chrome: chrome is not installed'):
+        with fake.patch(), self.assertRaisesRegex(SourceError, 'chrome: RuntimeError'):
             BrowserSession().start()
         fake.driver.stop.assert_called_once()  # the driver is not leaked
 

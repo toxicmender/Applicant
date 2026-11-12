@@ -49,6 +49,7 @@ class OwnedBoard:
             timeout=None,
             check=self.check,
             progress=self._receive,
+            provider=self.name,
         )
         jobs = self._receive(result)
         if result['error']:
