@@ -50,43 +50,62 @@ class Terminal:
         sys.stderr.write(f'{question}\n')
         sys.stderr.flush()
         if os.name == 'nt':
-            return self._read_windows_command(poll)
+            from msvcrt import getwch, kbhit
 
-        from select import select
-
-        while True:
-            poll()
-            if select([sys.stdin], [], [], 0)[0]:
-                reply = sys.stdin.readline()
-                if not reply:
-                    raise EOFError
-                return reply.rstrip('\r\n')
-
-    @staticmethod
-    def _read_windows_command(poll: Callable[[], None]) -> str:
-        from msvcrt import getwch, kbhit
-
-        letters: list[str] = []
-        while True:
-            poll()
-            while kbhit():
+            def read():
+                if not kbhit():
+                    return None
                 key = getwch()
                 if key in ('\x00', '\xe0'):
                     getwch()  # Extended console key, such as an arrow.
-                elif key == '\x03':
+                    return None
+                return key
+
+            return self._read_command(read, poll)
+
+        import termios
+        import tty
+        from select import select
+
+        descriptor = sys.stdin.fileno()
+        modes = termios.tcgetattr(descriptor)
+
+        def read():
+            if not select([descriptor], [], [], 0)[0]:
+                return None
+            return os.read(descriptor, 1).decode('ascii', errors='replace')
+
+        try:
+            tty.setcbreak(descriptor)
+            return self._read_command(read, poll)
+        finally:
+            termios.tcsetattr(descriptor, termios.TCSAFLUSH, modes)
+
+    @staticmethod
+    def _read_command(read: Callable[[], str | None], poll: Callable[[], None]) -> str:
+        letters: list[str] = []
+        try:
+            while True:
+                poll()
+                key = read()
+                if key is None:
+                    continue
+                if key == '\x03':
                     raise KeyboardInterrupt
-                elif key == '\x1a':
+                if key in ('', '\x04', '\x1a'):
                     raise EOFError
-                elif key in ('\r', '\n'):
-                    sys.stderr.write('\n')
+                if key in ('\r', '\n'):
                     return ''.join(letters)
-                elif key == '\b' and letters:
+                if key in ('\b', '\x7f') and letters:
                     letters.pop()
                     sys.stderr.write('\b \b')
                 elif key.isascii() and key.isprintable() and len(letters) < 32:
                     letters.append(key)
                     sys.stderr.write(key)
                 sys.stderr.flush()
+        finally:
+            sys.stderr.write('\n')
+            sys.stderr.flush()
 
 
 class Scripted:
