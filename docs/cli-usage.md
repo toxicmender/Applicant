@@ -169,6 +169,20 @@ uv run applicant financials "https://tracxn.com/d/companies/COMPANY/__ENTITY_ID"
 uv run applicant financials zomato --source crunchbase --login
 ```
 
+For Tracxn company names without an API key, run from a terminal. Applicant
+offers to open your saved Tracxn session when it first needs a profile URL.
+Set up that session with `uv run applicant setup provider tracxn` if needed.
+
+```console
+uv run applicant financials --from-jobs job_listing.json -s tracxn
+```
+
+Search in the browser and open the company profile. Press Enter in the terminal
+to inspect it. Review the company heading, tab title, and URL, then type `yes`
+to read the available financials. Use `back` to choose another result, `skip`
+to move past a company, or `stop` to end interactive lookup. Use the profile
+reader only where your Tracxn account permits browser extraction.
+
 #### Verified company evidence for ranking (`company-evidence`)
 
 Associate a provider company ID with an exact job version, capture or import

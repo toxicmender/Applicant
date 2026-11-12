@@ -14,7 +14,9 @@ carries only the command's answer, and the reply comes from stdin.
 from __future__ import annotations
 
 import getpass
+import os
 import sys
+from collections.abc import Callable
 from typing import Protocol
 
 
@@ -42,6 +44,49 @@ class Terminal:
         sys.stderr.write(question)
         sys.stderr.flush()
         return input()
+
+    def ask_interruptibly(self, question: str, poll: Callable[[], None]) -> str:
+        """Read a terminal command while allowing the browser owner to check liveness."""
+        sys.stderr.write(f'{question}\n')
+        sys.stderr.flush()
+        if os.name == 'nt':
+            return self._read_windows_command(poll)
+
+        from select import select
+
+        while True:
+            poll()
+            if select([sys.stdin], [], [], 0)[0]:
+                reply = sys.stdin.readline()
+                if not reply:
+                    raise EOFError
+                return reply.rstrip('\r\n')
+
+    @staticmethod
+    def _read_windows_command(poll: Callable[[], None]) -> str:
+        from msvcrt import getwch, kbhit
+
+        letters: list[str] = []
+        while True:
+            poll()
+            while kbhit():
+                key = getwch()
+                if key in ('\x00', '\xe0'):
+                    getwch()  # Extended console key, such as an arrow.
+                elif key == '\x03':
+                    raise KeyboardInterrupt
+                elif key == '\x1a':
+                    raise EOFError
+                elif key in ('\r', '\n'):
+                    sys.stderr.write('\n')
+                    return ''.join(letters)
+                elif key == '\b' and letters:
+                    letters.pop()
+                    sys.stderr.write('\b \b')
+                elif key.isascii() and key.isprintable() and len(letters) < 32:
+                    letters.append(key)
+                    sys.stderr.write(key)
+                sys.stderr.flush()
 
 
 class Scripted:

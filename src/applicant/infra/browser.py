@@ -20,7 +20,7 @@ from contextvars import copy_context
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..errors import SourceError
+from ..errors import AuthFailed, SourceError
 from ..permissions import make_private
 from .browser_diagnostics import event, network_code, safe_origin, stage
 from .http import USER_AGENT
@@ -97,12 +97,14 @@ class BrowserSession:
         timeout: int = 45000,
         channels: Sequence[str | None] = CHANNELS,
         storage_state: Any = None,
+        require_saved_state: bool = False,
     ):
         self.profile_dir = profile_dir
         self.headless = headless
         self.timeout = timeout
         self.channels = tuple(channels)
         self.storage_state = storage_state
+        self.require_saved_state = require_saved_state
         self._playwright: Playwright | None = None
         self._closer: Any = None
         self._context: BrowserContext | None = None
@@ -139,6 +141,8 @@ class BrowserSession:
                 self._profile_lock.__enter__()
                 if state.is_file() and self.storage_state is None:
                     self.storage_state = read_ranking_document(state)
+            if self.require_saved_state and self.storage_state is None:
+                raise AuthFailed('no saved browser session')
             with stage('playwright_startup'):
                 self._playwright = sync_playwright().start()
             context = self._launch(self._playwright)
