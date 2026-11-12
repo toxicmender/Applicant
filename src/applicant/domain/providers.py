@@ -100,8 +100,8 @@ PROVIDERS = {
             ('company',),
             'session_api_import',
             login_url='https://tracxn.com/login',
-            check_url='https://tracxn.com/',
-            auth_selector='a[href*="logout"], [data-testid="user-menu"]',
+            check_url='https://platform.tracxn.com/a/dashboard',
+            auth_selector='#r-dashboard-wrap .txn--home-dashboard',
             validation='existing_adapter',
         ),
         Provider(

@@ -8,6 +8,7 @@ from queue import Queue
 from unittest.mock import MagicMock, Mock
 
 from playwright.sync_api import Error
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
 from applicant import log
 from applicant.infra.browser import _observe_browser, _observe_page
@@ -72,7 +73,7 @@ class BrowserDiagnosticsTest(unittest.TestCase):
         self.assertNotIn('secret', json.dumps(records))
 
     def test_setup_reports_marker_missing_and_export_failure(self):
-        session, page = Mock(), Mock(url='https://tracxn.com/')
+        session, page = Mock(), Mock(url='https://platform.tracxn.com/a/dashboard')
         session.start.return_value = page
         factory = MagicMock()
         factory.return_value.__enter__.return_value = session
@@ -81,14 +82,17 @@ class BrowserDiagnosticsTest(unittest.TestCase):
             self.assertIsNone(_verify_inline('tracxn', None, factory=factory))
         self.assertIn('authentication_check blocked', '\n'.join(logs.output))
         page.title.return_value = 'Home'
-        page.locator.return_value.count.return_value = 0
+        marker = Mock()
+        marker.first.wait_for.side_effect = PlaywrightTimeout('marker not attached')
+        page.locator.side_effect = lambda selector: (
+            marker
+            if selector == '#r-dashboard-wrap .txn--home-dashboard'
+            else Mock(count=Mock(return_value=0))
+        )
         with self.assertLogs('applicant.browser', 'DEBUG') as logs:
             self.assertIsNone(_verify_inline('tracxn', None, factory=factory))
         self.assertIn('marker_missing', '\n'.join(logs.output))
-        page.locator.side_effect = [
-            Mock(count=Mock(return_value=0)),
-            Mock(count=Mock(return_value=1)),
-        ]
+        marker.first.wait_for.side_effect = None
         session.context.storage_state.side_effect = Error('sensitive content')
         with self.assertLogs('applicant.browser', 'DEBUG') as logs, self.assertRaises(Error):
             _verify_inline('tracxn', None, factory=factory)

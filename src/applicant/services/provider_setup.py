@@ -27,6 +27,8 @@ PROFILES = {
     'tracxn': 'tracxn_profile',
 }
 
+TRACXN_AUTH_WAIT_MS = 10_000
+
 
 def recovery_database(settings, database):
     from ..infra.store.sqlite import DB_NAME
@@ -61,13 +63,37 @@ def session_path(settings, name):
     return Path(settings.path(getattr(settings.files, PROFILES[item.id]))) / 'storage_state.json'
 
 
-def validate_state(value, name, format='playwright'):
-    root = (urlsplit(provider(name).url).hostname or '').removeprefix('www.')
+def _provider_root(name: str) -> str:
+    return (urlsplit(provider(name).url).hostname or '').removeprefix('www.')
 
-    def allowed(host):
-        return isinstance(host, str) and (
-            host.lstrip('.') == root or host.lstrip('.').endswith('.' + root)
-        )
+
+def _provider_host(host: str | None, root: str) -> bool:
+    if not isinstance(host, str):
+        return False
+    host = host.lstrip('.')
+    return bool(root) and (host == root or host.endswith('.' + root))
+
+
+def _scope_captured_state(value, name: str):
+    # A browser context also sees cookies and local storage from identity
+    # providers and embedded services. Retain only this provider's state.
+    root = _provider_root(name)
+    cookies, origins = value['cookies'], value['origins']
+    scoped_cookies = [cookie for cookie in cookies if _provider_host(cookie['domain'], root)]
+    scoped_origins = [
+        entry for entry in origins if _provider_host(urlsplit(entry['origin']).hostname, root)
+    ]
+    event(
+        'storage_export',
+        'scoped',
+        excluded_cookies=len(cookies) - len(scoped_cookies),
+        excluded_origins=len(origins) - len(scoped_origins),
+    )
+    return {**value, 'cookies': scoped_cookies, 'origins': scoped_origins}
+
+
+def validate_state(value, name, format='playwright'):
+    root = _provider_root(name)
 
     warnings = []
     if format == 'cookies':
@@ -96,12 +122,11 @@ def validate_state(value, name, format='playwright'):
         if (
             not all(isinstance(cookie.get(k), str) for k in ('name', 'value', 'domain', 'path'))
             or not cookie['name']
-            or not allowed(cookie['domain'])
             or not cookie['path'].startswith('/')
         ):
-            raise ConfigError(
-                'cookie has invalid fields or a domain outside the provider allowlist'
-            )
+            raise ConfigError('cookie has invalid fields')
+        if not _provider_host(cookie['domain'], root):
+            raise ConfigError('cookie domain is outside the provider allowlist')
         expires = cookie.get('expires', -1)
         if (
             isinstance(expires, bool)
@@ -128,7 +153,7 @@ def validate_state(value, name, format='playwright'):
         url = urlsplit(origin['origin'])
         if (
             url.scheme != 'https'
-            or not allowed(url.hostname)
+            or not _provider_host(url.hostname, root)
             or url.username
             or url.password
             or url.path
@@ -188,9 +213,18 @@ def _verification_worker(connection, arguments):
 def _verify_inline(
     name, state, *, interactive=False, factory: Callable[..., Any] = BrowserSession, pause=None
 ):
+    from playwright.sync_api import TimeoutError as PlaywrightTimeout
+
     item = provider(name)
     if not item.login_url or not item.check_url or not item.auth_selector:
         raise ConfigError('provider has no authentication adapter')
+    check_url = item.check_url
+    check_origin = safe_origin(check_url)
+    check_path = urlsplit(check_url).path
+
+    def on_tracxn_dashboard(url: str) -> bool:
+        return safe_origin(url) == check_origin and urlsplit(url).path.rstrip('/') == check_path
+
     with factory(headless=not interactive, storage_state=state) as session:
         page = session.start()
         if interactive:
@@ -200,23 +234,50 @@ def _verify_inline(
                 (pause or Terminal().pause)(
                     'Complete login/MFA in the browser, then press Enter to verify: '
                 )
-        with stage('verification_navigation', origin=safe_origin(item.check_url)):
-            page.goto(item.check_url, wait_until='domcontentloaded')
+        if item.id == 'tracxn' and interactive:
+            # A second navigation can interrupt the login flow's own dashboard redirect.
+            with stage('verification_wait', origin=check_origin):
+                try:
+                    page.wait_for_url(
+                        on_tracxn_dashboard, wait_until='commit', timeout=TRACXN_AUTH_WAIT_MS
+                    )
+                except PlaywrightTimeout:
+                    event('verification_wait', 'app_not_reached', origin=safe_origin(page.url))
+                    return None
+        else:
+            with stage('verification_navigation', origin=check_origin):
+                wait_until = 'commit' if item.id == 'tracxn' else 'domcontentloaded'
+                page.goto(check_url, wait_until=wait_until)
         with stage('authentication_check'):
             if looks_blocked(page):
                 event('authentication_check', 'blocked')
                 return None
+            current_url = page.url
+            auth_location = urlsplit(current_url).path if item.id == 'tracxn' else current_url
             if any(
-                part in page.url.lower()
+                part in auth_location.lower()
                 for part in ('/login', '/authwall', '/checkpoint', '/signin')
             ):
                 event('authentication_check', 'login_redirect', origin=safe_origin(page.url))
                 return None
-            if not page.locator(item.auth_selector).count():
+            marker = page.locator(item.auth_selector)
+            if item.id == 'tracxn':
+                if not on_tracxn_dashboard(page.url):
+                    event('authentication_check', 'unexpected_page', origin=safe_origin(page.url))
+                    return None
+                try:
+                    marker.first.wait_for(state='attached', timeout=TRACXN_AUTH_WAIT_MS)
+                except PlaywrightTimeout:
+                    event('authentication_check', 'marker_missing')
+                    return None
+                if not on_tracxn_dashboard(page.url):
+                    event('authentication_check', 'left_app', origin=safe_origin(page.url))
+                    return None
+            elif not marker.count():
                 event('authentication_check', 'marker_missing')
                 return None
         with stage('storage_export'):
-            return session.context.storage_state()
+            return _scope_captured_state(session.context.storage_state(), item.id)
 
 
 def import_session(
