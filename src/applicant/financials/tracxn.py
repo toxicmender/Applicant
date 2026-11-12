@@ -47,6 +47,14 @@ PLATFORM_PROFILE_URL = re.compile(
 )
 
 
+class FinancialsInterrupted(KeyboardInterrupt):
+    """An interrupted browser already sent a completed financials capture."""
+
+    def __init__(self, financials):
+        super().__init__()
+        self.financials = financials
+
+
 class TracxnLookupRequired(SourceError):
     """A name needs a Tracxn profile URL when no API key is configured."""
 
@@ -175,7 +183,7 @@ class TracxnClient:
     def __init__(
         self,
         api_key=None,
-        profile_dir='.tx_profile',
+        profile_dir: str | None = '.tx_profile',
         login=False,
         headless=True,
         timeout=30.0,

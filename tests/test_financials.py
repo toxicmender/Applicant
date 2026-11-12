@@ -359,7 +359,7 @@ class Tracxn(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
     def test_name_without_token_is_explained(self):
-        with self.assertRaisesRegex(SourceError, 'profile url'):
+        with self.assertRaisesRegex(SourceError, '(?i)profile url'):
             TracxnClient(api_key='').fetch('Zomato')
 
 

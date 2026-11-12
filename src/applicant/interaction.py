@@ -61,7 +61,14 @@ class Terminal:
                     return None
                 return key
 
-            return self._read_command(read, poll)
+            completed = False
+            try:
+                answer = self._read_command(read, poll)
+                completed = True
+                return answer
+            finally:
+                if not completed and sys.stdin.isatty():
+                    _discard_windows_input()
 
         import termios
         import tty
@@ -129,3 +136,16 @@ class Scripted:
         if not self.answers:
             raise RuntimeError(f'no scripted answer left for {question!r}')
         return self.answers.pop(0)
+
+
+def _discard_windows_input() -> None:
+    if os.name != 'nt':
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL('kernel32')
+    kernel.GetStdHandle.argtypes = [wintypes.DWORD]
+    kernel.GetStdHandle.restype = wintypes.HANDLE
+    kernel.FlushConsoleInputBuffer.argtypes = [wintypes.HANDLE]
+    kernel.FlushConsoleInputBuffer(kernel.GetStdHandle(wintypes.DWORD(-10)))  # STD_INPUT_HANDLE

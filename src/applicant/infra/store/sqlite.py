@@ -172,8 +172,16 @@ def _replace_financial_export(temporary: str, target: Path) -> None:
     try:
         os.replace(temporary, target)
     except OSError as error:
-        if error.errno != errno.ENOSPC and getattr(error, 'winerror', None) in (32, 33):
+        winerror = getattr(error, 'winerror', None)
+        if error.errno == errno.ENOSPC or winerror == 112:
+            raise
+        if winerror in (32, 33):
             raise ExportPending(f'{target}: close applications using it and rerun') from error
+        if winerror == 5:
+            raise StoreError(
+                f'{target}: access denied while publishing the pending export. '
+                'Close applications using it or check file permissions, then rerun.'
+            ) from error
         raise
 
 

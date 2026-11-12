@@ -96,6 +96,12 @@ class ExportPending(DatabaseBusy):
     status = 'export_pending'
 
 
+class ExportConflict(StoreError):
+    """A manual edit conflicts with a staged financials export."""
+
+    status = 'export_conflict'
+
+
 class StorageFull(StoreError):
     """The filesystem or SQLite cannot allocate space for a write."""
 

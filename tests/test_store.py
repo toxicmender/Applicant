@@ -462,8 +462,77 @@ class FinancialsHistoryTest(TempDir):
             len(FinancialsTracker(path, backend='sqlite').history('crunchbase:zomato')), 1
         )
 
+    def test_windows_disk_full_code_takes_precedence_over_permission_error(self):
+        from applicant.errors import StorageFull
+        from applicant.financials import FinancialsTracker
+
+        path = self.root / 'history.json'
+        tracker = FinancialsTracker(path, backend='sqlite')
+        error = PermissionError('volume full')
+        error.winerror = 112
+        with (
+            mock.patch('applicant.infra.store.sqlite.os.replace', side_effect=error),
+            mock.patch('applicant.infra.store.sqlite.time.sleep') as sleep,
+            self.assertRaisesRegex(StorageFull, 'free disk space'),
+        ):
+            tracker.record(self.financials(1))
+        sleep.assert_not_called()
+        self.assertEqual(
+            len(FinancialsTracker(path, backend='sqlite').history('crunchbase:zomato')), 1
+        )
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows sharing rules')
+    def test_native_windows_handle_blocks_atomic_export_until_closed(self):
+        from applicant.errors import ExportPending, StoreError
+        from applicant.financials import FinancialsTracker
+
+        path = self.root / 'history.json'
+        tracker = FinancialsTracker(path, backend='sqlite')
+        tracker.record(self.financials(1))
+        original = path.read_bytes()
+        with (
+            path.open('rb'),
+            mock.patch('applicant.infra.store.sqlite.time.sleep') as sleep,
+            self.assertRaises(StoreError) as failure,
+        ):
+            tracker.record(self.financials(2))
+        if isinstance(failure.exception, ExportPending):
+            self.assertEqual(sleep.call_count, 4)
+        else:
+            self.assertEqual(getattr(failure.exception.__cause__, 'winerror', None), 5)
+            self.assertIn('pending export', str(failure.exception))
+            sleep.assert_not_called()
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(
+            len(FinancialsTracker(path, backend='sqlite').history('crunchbase:zomato')), 2
+        )
+
+    def test_disk_full_during_export_acknowledgement_needs_no_republish(self):
+        import sqlite3
+
+        from applicant.errors import StorageFull
+        from applicant.financials import FinancialsTracker
+
+        path = self.root / 'history.json'
+        tracker = FinancialsTracker(path, backend='sqlite')
+        tracker.record(self.financials(1))
+
+        class FullDisk(sqlite3.OperationalError):
+            sqlite_errorcode = 13
+
+        error = FullDisk('database or disk is full')
+        with (
+            mock.patch.object(Store, '_remember_financials', side_effect=error),
+            self.assertRaises(StorageFull),
+        ):
+            tracker.record(self.financials(2))
+        with mock.patch('applicant.infra.store.sqlite.write_document_bytes') as publish:
+            recovered = FinancialsTracker(path, backend='sqlite')
+        publish.assert_not_called()
+        self.assertEqual(len(recovered.history('crunchbase:zomato')), 2)
+
     def test_pending_recovery_merges_disjoint_edits_and_preserves_conflicts(self):
-        from applicant.errors import StoreError
+        from applicant.errors import ExportConflict, StoreError
         from applicant.financials import FinancialsTracker
 
         path = self.root / 'history.json'
@@ -479,7 +548,7 @@ class FinancialsHistoryTest(TempDir):
         document['schema_version'] = 2
         path.write_text(json.dumps(document), encoding='utf-8')
         conflict = path.read_bytes()
-        with self.assertRaisesRegex(StoreError, r'export_conflict: .*metadata.schema_version'):
+        with self.assertRaisesRegex(ExportConflict, r'metadata\.schema_version'):
             FinancialsTracker(path, backend='sqlite')
         self.assertEqual(path.read_bytes(), conflict)
 

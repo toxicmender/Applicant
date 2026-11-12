@@ -37,11 +37,17 @@ class _PromptFinished(Exception):
 def _protect_connection(connection):
     if os.name == 'nt':
         os.set_handle_inheritable(connection.fileno(), False)
+        inheritable = os.get_handle_inheritable(connection.fileno())
     else:
         os.set_inheritable(connection.fileno(), False)
+        inheritable = os.get_inheritable(connection.fileno())
+    if inheritable:
+        raise OSError('browser control pipe is inheritable')
 
 
 def _group_has_live_members(pid):
+    if os.name == 'nt':
+        return False
     try:
         os.killpg(pid, 0)
     except ProcessLookupError:
@@ -281,6 +287,7 @@ def run_worker(
                 elif kind == 'prompt':
                     if prompt is None or not interactive:
                         raise WorkerFailure('unexpected interactive worker prompt')
+                    deadline = None  # A live interactive prompt may take as long as the user needs.
                     heartbeat_deadline = monotonic() + 5
 
                     def poll_prompt():
@@ -411,13 +418,10 @@ def run_worker(
                 logger.debug('browser worker cleanup completed provider=%s pid=%s', provider, pid)
             except (OSError, CleanupUnconfirmed) as error:
                 logger.error('browser worker cleanup unconfirmed provider=%s pid=%s', provider, pid)
+                message = f'browser cleanup could not be confirmed for worker PID {pid}'
                 if isinstance(original, WorkerFailure):
-                    raise CleanupUnconfirmed(
-                        f'{original}; browser cleanup could not be confirmed'
-                    ) from original
-                raise CleanupUnconfirmed('browser cleanup could not be confirmed') from (
-                    original or error
-                )
+                    message = f'{original}; {message}'
+                raise CleanupUnconfirmed(message) from (original or error)
             finally:
                 if job:
                     job.close()

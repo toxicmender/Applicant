@@ -8,7 +8,10 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from ..errors import ApplicantError
 from ..financials import FinancialsTracker
+from ..financials.tracxn import FinancialsInterrupted
+from ..infra.interrupts import defer_interrupt
 from ..infra.store.repositories import Backend, listing
 from .events import Emit, FinancialsTracked, ignore
 from .fanout import failure, fan_out
@@ -90,16 +93,25 @@ def track_financials(
             client = clients[source]
             requires_lookup = getattr(client, 'requires_lookup', None)
             use_history = (
-                source == 'tracxn' and callable(requires_lookup) and requires_lookup(company)
+                source == 'tracxn' and callable(requires_lookup) and bool(requires_lookup(company))
             )
             if use_history and not refresh and (cached := tracker.cached_tracxn(company)):
                 financials, checked = cached
-                financials.rounds = financials.rounds[:max_rounds]
+                financials.rounds = financials.rounds[: max(0, max_rounds)]
                 emit(FinancialsTracked(source, financials, cached_at=checked))
                 return financials
             logger.info(f'financials: fetching {company!r} from {source}')
-            financials = client.fetch(company, max_rounds=max_rounds)
-            changes = tracker.record(financials, require_complete=use_history)
+            try:
+                financials = client.fetch(company, max_rounds=max_rounds)
+            except FinancialsInterrupted as interrupt:
+                try:
+                    with defer_interrupt():
+                        tracker.record(interrupt.financials, require_complete=use_history)
+                except ApplicantError as error:
+                    logger.error('could not save the interrupted Tracxn capture: %s', error)
+                raise
+            with defer_interrupt():
+                changes = tracker.record(financials, require_complete=use_history)
             logger.info(f'financials: {source} {company!r}: {len(changes)} change(s) recorded')
             emit(FinancialsTracked(source, financials, changes))
             return financials

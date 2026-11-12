@@ -8,6 +8,8 @@ from pathlib import Path
 from ...errors import DatabaseBusy, FinancialsBusy, StorageFull, StoreError, sqlite_busy
 from ..advisory_lock import advisory_lock
 
+SQLITE_FULL = getattr(sqlite3, 'SQLITE_FULL', 13)
+
 
 @contextmanager
 def financials_lock(file):
@@ -24,12 +26,14 @@ def financials_lock(file):
             cause.errno == errno.ENOSPC or getattr(cause, 'winerror', None) == 112
         ):
             raise StorageFull(f'{cause.filename or target}: free disk space and rerun') from error
-        if isinstance(cause, sqlite3.Error) and (
-            getattr(cause, 'sqlite_errorcode', 0) & 255 == sqlite3.SQLITE_FULL
-        ):
-            raise StorageFull(f'{target.parent}: free disk space and rerun') from error
-        if isinstance(error, StoreError):
-            raise
+        if isinstance(cause, sqlite3.Error):
+            code = getattr(cause, 'sqlite_errorcode', None)
+            if (code is not None and code & 255 == SQLITE_FULL) or (
+                code is None and str(cause) == 'database or disk is full'
+            ):
+                raise StorageFull(f'{target.parent}: free disk space and rerun') from error
         if sqlite_busy(cause):
             raise DatabaseBusy(f'{target}: database is busy; rerun the command') from error
+        if isinstance(error, StoreError):
+            raise
         raise StoreError(f'{target}: {error}') from error

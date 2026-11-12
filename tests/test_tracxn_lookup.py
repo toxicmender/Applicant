@@ -14,7 +14,7 @@ from applicant.cli import main
 from applicant.cli.tracxn_lookup import InteractiveTracxn, LookupStopped, SessionEnded, company_name
 from applicant.domain.job import Job
 from applicant.errors import ProfileBusy, SourceError
-from applicant.financials import TracxnClient
+from applicant.financials import CompanyFinancials, Money, TracxnClient
 from applicant.financials.tracxn import TracxnLookupRequired, confirmed_profile_url
 from applicant.interaction import Scripted, Terminal
 from applicant.storage import save_jobs
@@ -225,7 +225,8 @@ class TracxnLookupTest(unittest.TestCase):
         self.assertIn('does not match', prompts)
         self.assertIn('Tab title:', prompts)
         self.assertIn('Selection was not confirmed', prompts)
-        self.browser.assert_called_once()
+        self.assertEqual(self.browser.call_count, 2)
+        self.assertEqual(self.session.close.call_count, 2)
         self.assertTrue(self.browser.call_args.kwargs['require_saved_state'])
         self.assertFalse(self.browser.call_args.kwargs['headless'])
 
@@ -266,7 +267,7 @@ class TracxnLookupTest(unittest.TestCase):
         with self.assertRaisesRegex(SourceError, 'Skipped'):
             resolver.fetch(COMPANY)
         self.assertEqual(sum('does not identify' in line for line in interaction.said), 2)
-        self.session.close.assert_not_called()
+        self.session.close.assert_called_once()
         self.browser.assert_called_once()
 
     def test_wrong_tab_rejection_is_logged_without_url_query_or_title(self):
@@ -339,6 +340,31 @@ class TracxnLookupTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             listing = Path(folder) / 'jobs.json'
             history = Path(folder) / 'financials.json'
+            profile = Path(folder) / 'custom'
+            profile.mkdir()
+            state = {'cookies': [], 'origins': []}
+            (profile / 'storage_state.json').write_text(json.dumps(state), encoding='utf-8')
+
+            def drive_worker(function, arguments, *, prompt, progress, **kwargs):
+                from applicant.errors import ProfileBusy
+                from applicant.infra.profile_lock import profile_lock
+
+                with self.assertRaises(ProfileBusy), profile_lock(profile / 'storage_state.lock'):
+                    pass
+                connection = Mock()
+                connection.poll.return_value = True
+
+                def send(event):
+                    kind, value = event
+                    if kind == 'prompt':
+                        connection.recv.return_value = prompt(value, lambda: None)
+                    elif kind == 'progress':
+                        progress(value)
+
+                connection.send.side_effect = send
+                with patch('applicant.cli.tracxn_lookup.signal.signal'):
+                    return function(connection, arguments)
+
             save_jobs(
                 [
                     Job(source='indeed', title='Engineer', company=COMPANY, id='first'),
@@ -350,6 +376,7 @@ class TracxnLookupTest(unittest.TestCase):
                 patch('applicant.cli.financials.terminal', return_value=interaction),
                 patch('applicant.cli.tracxn_lookup.terminal_available', return_value=True),
                 patch('applicant.cli.tracxn_lookup.BrowserSession', self.browser),
+                patch('applicant.cli.tracxn_lookup.run_worker', side_effect=drive_worker) as worker,
                 patch('applicant.settings.Settings.secret', return_value=''),
                 patch.object(TracxnClient, '_fetch_api') as api,
                 redirect_stdout(io.StringIO()),
@@ -377,8 +404,59 @@ class TracxnLookupTest(unittest.TestCase):
             )['latest']
             self.assertEqual(latest['url'], PROFILE)
             self.assertEqual(latest['revenue']['amount'], 2_000_000)
-            self.assertEqual(
-                self.browser.call_args.kwargs['profile_dir'], str(Path(folder) / 'custom')
-            )
+            self.assertEqual(worker.call_count, 2)
+            self.assertEqual(self.browser.call_count, 2)
+            self.assertIsNone(self.browser.call_args.kwargs['profile_dir'])
+            self.assertEqual(self.browser.call_args.kwargs['storage_state'], state)
             api.assert_not_called()
-            self.session.close.assert_called_once()
+            self.assertEqual(self.session.close.call_count, 2)
+
+    def test_interrupted_worker_capture_is_reused_and_refresh_bypasses_it(self):
+        financials = CompanyFinancials(
+            source='tracxn',
+            company=COMPANY,
+            company_id='profile-1',
+            url=PROFILE,
+            revenue=Money(amount=0, currency='USD'),
+        )
+
+        def capture_then_interrupt(*args, progress, **kwargs):
+            progress(financials.to_dict())
+            raise KeyboardInterrupt
+
+        with tempfile.TemporaryDirectory() as folder:
+            profile = Path(folder) / 'profile'
+            profile.mkdir()
+            (profile / 'storage_state.json').write_text('{}', encoding='utf-8')
+            history = Path(folder) / 'financials.json'
+            args = [
+                '--no-log-file',
+                '--store',
+                'files',
+                'financials',
+                COMPANY,
+                '-s',
+                'tracxn',
+                '--output',
+                str(history),
+                '--tx-profile',
+                str(profile),
+            ]
+            with (
+                patch('applicant.cli.financials.terminal', return_value=Scripted('yes', 'yes')),
+                patch('applicant.cli.tracxn_lookup.terminal_available', return_value=True),
+                patch('applicant.settings.Settings.secret', return_value=''),
+                patch(
+                    'applicant.cli.tracxn_lookup.run_worker', side_effect=capture_then_interrupt
+                ) as worker,
+                redirect_stdout(io.StringIO()) as output,
+                redirect_stderr(io.StringIO()),
+            ):
+                self.assertEqual(main(args), 130)
+                original = history.read_bytes()
+                self.assertEqual(main(args), 0)
+                self.assertIn('cached financials retrieved at', output.getvalue())
+                worker.assert_called_once()
+                self.assertEqual(history.read_bytes(), original)
+                self.assertEqual(main([*args, '--refresh']), 130)
+                self.assertEqual(worker.call_count, 2)

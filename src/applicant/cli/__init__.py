@@ -27,6 +27,7 @@ from ..errors import (
     Blocked,
     ConfigError,
     DatabaseBusy,
+    ExportConflict,
     NotFound,
     SourceError,
     StorageFull,
@@ -241,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
     # a store that cannot be written, a setting that does not hold: expected
     # failures with a message that says what to fix, not bugs to trace
     except ApplicantError as error:
-        if isinstance(error, (DatabaseBusy, StorageFull)):
+        if isinstance(error, (DatabaseBusy, ExportConflict, StorageFull)):
             from ..domain.canonical import canonical_json
 
             print(

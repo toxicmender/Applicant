@@ -21,9 +21,8 @@ class SessionLockingTest(unittest.TestCase):
     def test_nested_alias_and_recreated_directory(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'new' / 'session.lock'
-            with profile_lock(path):
-                with self.assertRaises(ProfileBusy), profile_lock(path.absolute()):
-                    pass
+            with profile_lock(path), self.assertRaises(ProfileBusy), profile_lock(path.absolute()):
+                pass
             path.unlink()
             path.parent.rmdir()
             with profile_lock(path):

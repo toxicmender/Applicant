@@ -2,7 +2,7 @@
 
 import json
 
-from ...errors import StoreError
+from ...errors import ExportConflict
 
 _MISSING = object()
 
@@ -69,25 +69,26 @@ def merge_financial_exports(path, baseline, current, intended):
     try:
         base, edited, new = (_document(raw) for raw in (baseline, current, intended))
     except ValueError as error:
-        raise StoreError(f'export_conflict: {path}: {error}') from error
+        raise ExportConflict(f'{path}: {error}') from error
 
     conflicts: list[str] = []
     if not _same(base.get('schema_version', _MISSING), edited.get('schema_version', _MISSING)):
         conflicts.append('metadata.schema_version')
     companies = _merge(
-        *(item.get('companies', {}) for item in (base, edited, new)), 'companies', conflicts
-    )
-    # Merge a presence marker with the metadata so the existing key order is kept.
-    metadata = _merge(
-        *(
-            {key: (None if key == 'companies' else value) for key, value in item.items()}
-            for item in (base, edited, new)
-        ),
-        'metadata',
+        base.get('companies', {}),
+        edited.get('companies', {}),
+        new.get('companies', {}),
+        'companies',
         conflicts,
     )
+    # Merge a presence marker with the metadata so the existing key order is kept.
+    old_meta, edited_meta, new_meta = (
+        {key: (None if key == 'companies' else value) for key, value in item.items()}
+        for item in (base, edited, new)
+    )
+    metadata = _merge(old_meta, edited_meta, new_meta, 'metadata', conflicts)
     if conflicts:
-        raise StoreError(f'export_conflict: {path}: {", ".join(dict.fromkeys(conflicts))}')
+        raise ExportConflict(f'{path}: conflicting edits to {", ".join(dict.fromkeys(conflicts))}')
     if companies or 'companies' in metadata:
         metadata['companies'] = companies
     return metadata

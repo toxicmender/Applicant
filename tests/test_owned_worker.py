@@ -8,12 +8,13 @@ import subprocess
 import sys
 import unittest
 from contextlib import suppress
+from threading import Event
 from unittest.mock import Mock, patch
 
 from playwright.sync_api import Error
 
 from applicant.infra.browser_diagnostics import QUEUE_SIZE, event, stage
-from applicant.infra.owned_worker import WorkerFailure, run_worker
+from applicant.infra.owned_worker import WorkerFailure, _ControlPipe, run_worker
 
 
 def echo(connection, arguments):
@@ -60,6 +61,11 @@ def prompt_then_exit(connection, arguments):
     with socket.create_connection(arguments, timeout=10) as channel:
         channel.recv(1)
     os._exit(5)
+
+
+def prompt_then_stall(connection, arguments):
+    connection.send(('prompt', 'choose'))
+    connection.recv()
 
 
 def failing_during_cleanup(connection, arguments):
@@ -196,6 +202,17 @@ class OwnedWorkerTest(unittest.TestCase):
                 )
         self.assertEqual(flags, [False])
 
+    def test_prompt_heartbeat_deadline_uses_injected_clock(self):
+        clock = Mock(return_value=0)
+
+        def prompt(question, poll):
+            self.assertEqual(question, 'choose')
+            clock.return_value = 5
+            poll()
+
+        with self.assertRaisesRegex(WorkerFailure, 'stopped responding'):
+            run_worker(prompt_then_stall, None, interactive=True, prompt=prompt, monotonic=clock)
+
     def test_failure_does_not_disclose_payload(self):
         with self.assertRaisesRegex(WorkerFailure, 'ValueError') as raised:
             run_worker(failing, None)
@@ -300,6 +317,24 @@ class OwnedWorkerTest(unittest.TestCase):
 
 
 class OwnedWorkerBoundaryTest(unittest.TestCase):
+    def test_control_pipe_waiting_for_partial_message_keeps_supervisor_responsive(self):
+        entered, release = Event(), Event()
+        connection = Mock()
+
+        def recv():
+            entered.set()
+            release.wait(60)
+            raise EOFError
+
+        connection.recv.side_effect = recv
+        transport = _ControlPipe(connection)
+        try:
+            self.assertTrue(entered.wait(60))
+            self.assertIsNone(transport.receive(timeout=0))
+        finally:
+            release.set()
+            transport.close()
+
     def test_spawn_failure_closes_both_pipe_ends(self):
         context = Mock()
         parent, child = Mock(), Mock()

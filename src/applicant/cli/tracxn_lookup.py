@@ -2,24 +2,35 @@
 
 from __future__ import annotations
 
+import logging
 import re
+import signal
 import sys
+import time
 from dataclasses import dataclass
+from functools import partial
+from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from ..domain.providers import provider
 from ..errors import AuthFailed, Blocked, ProfileBusy, SourceError, Unparseable
+from ..financials import CompanyFinancials, TracxnClient
 from ..financials.identity import company_name
+from ..financials.tracker import has_financial_data
 from ..financials.tracxn import (
     PLATFORM_PROFILE_URL,
     PROFILE_HOSTS,
+    FinancialsInterrupted,
     TracxnLookupRequired,
     confirmed_profile_url,
     profile_match,
 )
-from ..infra.browser import BrowserSession, looks_blocked
+from ..infra.browser import STATE_FILE, BrowserSession, looks_blocked
 from ..infra.browser_diagnostics import event, safe_origin, stage
+from ..infra.owned_worker import CleanupUnconfirmed, WorkerFailure, run_worker
+from ..infra.profile_lock import profile_lock
+from ..infra.ranking_documents import read_ranking_document
 from ..interaction import Terminal
 from .render import shown
 
@@ -28,8 +39,9 @@ if TYPE_CHECKING:
 
     from playwright.sync_api import Frame, Page, Response
 
-    from ..financials import TracxnClient
     from ..interaction import Interaction
+
+logger = logging.getLogger(__name__)
 
 WRONG_PAGE = re.compile(
     r'\b(?:no (?:matching )?results(?: found)?|page not found|404 not found|investor profile|'
@@ -72,7 +84,7 @@ class InteractiveTracxn:
         self.interaction = interaction
         self.reauth = reauth
         self.eligible = eligible or terminal_available
-        self.browser_factory = browser_factory or BrowserSession
+        self.browser_factory = browser_factory
         self.session: BrowserSession | None = None
         self.page: Page | None = None
         self.offered = False
@@ -95,14 +107,15 @@ class InteractiveTracxn:
         if session is not None:
             session.close()
 
-    def _stop(self) -> None:
-        self.stopped = True
-        self.close()
-
     def _open(self) -> None:
         from playwright.sync_api import Error
 
-        self.session = self.browser_factory(
+        self.crashed = False
+        self.revision = 0
+        self.document_status = None
+        self.document_url = ''
+        factory = self.browser_factory or BrowserSession
+        self.session = factory(
             profile_dir=self.client.profile_dir,
             headless=False,
             timeout=int(self.client.timeout * 1000),
@@ -111,7 +124,6 @@ class InteractiveTracxn:
         try:
             page = self.session.start()
         except ProfileBusy:
-            self._stop()
             raise ProfileBusy(
                 f'profile_busy: {self.client.profile_dir} is in use. '
                 'Close the other Applicant run and retry.'
@@ -120,9 +132,6 @@ class InteractiveTracxn:
             raise SessionEnded(f'No saved Tracxn session. Run: {self.reauth}') from None
         except Error:
             raise LookupStopped('Could not open the Tracxn browser.') from None
-        except SourceError:
-            self._stop()
-            raise
         self.page = page
 
         def on_response(response: Response) -> None:
@@ -174,7 +183,7 @@ class InteractiveTracxn:
             raise LookupStopped('The Tracxn tab crashed. Completed results were kept.')
         address = urlsplit(self.page.url)
         if address.hostname in ('accounts.google.com', 'login.microsoftonline.com'):
-            raise SessionEnded(f'Tracxn sign-in is required. Run: {self.reauth}')
+            raise SessionEnded(f'needs_setup: Tracxn sign-in is required. Run: {self.reauth}')
         if address.hostname not in PROFILE_HOSTS:
             return
         if (
@@ -185,14 +194,14 @@ class InteractiveTracxn:
             ).count()
             or self._status() == 401
         ):
-            raise SessionEnded(f'Tracxn sign-in is required. Run: {self.reauth}')
+            raise SessionEnded(f'needs_setup: Tracxn sign-in is required. Run: {self.reauth}')
         if self._status() in (403, 429):
             raise SessionEnded('Tracxn restricted browser access. Completed results were kept.')
 
     def _poll(self) -> None:
         assert self.page is not None
         if not self.page.is_closed():
-            self.page.wait_for_timeout(100)
+            self.page.wait_for_timeout(50)
         self._check_session()
 
     def _ask(self, prompt: str) -> str:
@@ -319,35 +328,103 @@ class InteractiveTracxn:
             raise SourceError(f'Skipped Tracxn lookup for {shown(company)!r}.')
 
     def fetch(self, company: str, max_rounds: int = 20):
+        try:
+            return self.client.fetch(company, max_rounds=max_rounds)
+        except TracxnLookupRequired:
+            if self.stopped or not self.eligible():
+                raise
+            if not self.offered:
+                self.offered = True
+                try:
+                    accepted = (
+                        self.interaction.ask(
+                            'Look up companies in your saved Tracxn browser session? '
+                            'Continue if your account permits browser extraction. [y/N] '
+                        )
+                        .strip()
+                        .lower()
+                    )
+                except EOFError:
+                    accepted = ''
+                if accepted not in ('y', 'yes'):
+                    self.stopped = True
+                    raise
+        if self.browser_factory is None:
+            return self._fetch_owned(company, max_rounds)
+        try:
+            return self._capture(company, max_rounds)
+        finally:
+            self.close()
+
+    def _prompt(self, question, poll):
+        if isinstance(self.interaction, Terminal):
+            return self.interaction.ask_interruptibly(question, poll)
+        return self.interaction.ask(question)
+
+    def _fetch_owned(self, company, max_rounds):
+        profile = Path(self.client.profile_dir or '.tx_profile').resolve()
+        state_file = profile / STATE_FILE
+        captures: list[CompanyFinancials] = []
+
+        def progress(payload):
+            captures.append(CompanyFinancials.model_validate(payload))
+
+        try:
+            with profile_lock(state_file.with_suffix('.lock')):
+                if not state_file.is_file():
+                    self.stopped = True
+                    raise SessionEnded(f'needs_setup: No saved Tracxn session. Run: {self.reauth}')
+                state = read_ranking_document(state_file)
+                outcome, message = run_worker(
+                    _lookup_worker,
+                    (state, company, max_rounds, self.client.timeout, self.reauth, self.captured),
+                    interactive=True,
+                    prompt=self._prompt,
+                    progress=progress,
+                    provider='tracxn',
+                )
+        except ProfileBusy:
+            self.stopped = True
+            raise ProfileBusy(
+                f'profile_busy: {profile} is in use. Close the other Applicant run and retry.'
+            ) from None
+        except KeyboardInterrupt:
+            if captures:
+                raise FinancialsInterrupted(captures[-1]) from None
+            raise
+        except WorkerFailure as error:
+            self.stopped = True
+            if isinstance(error, CleanupUnconfirmed):
+                logger.error('%s: %s', profile, error)
+                if isinstance(error.__cause__, KeyboardInterrupt):
+                    if captures:
+                        raise FinancialsInterrupted(captures[-1]) from None
+                    raise KeyboardInterrupt from None
+            if not captures:
+                raise LookupStopped(f'Tracxn browser ended: {error}') from None
+            logger.warning('Tracxn browser ended after capture: %s', error)
+        else:
+            if outcome == 'session':
+                self.stopped = True
+                raise SessionEnded(message)
+            if outcome == 'stopped':
+                self.stopped = True
+                raise LookupStopped(message)
+            if outcome == 'source':
+                raise SourceError(message)
+
+        if not captures:
+            raise LookupStopped('The Tracxn worker did not return financials.')
+        captured = captures[-1]
+        if captured.company_id:
+            self.captured.add(captured.company_id)
+        return captured
+
+    def _capture(self, company: str, max_rounds: int):
         from playwright.sync_api import Error
 
         try:
-            if self.page is not None and (profile := profile_match(company.strip())):
-                return self.client.fetch_open_profile(
-                    profile.group('base'), self.page, max_rounds, check=self._check_session
-                )
-            try:
-                return self.client.fetch(company, max_rounds=max_rounds)
-            except TracxnLookupRequired:
-                if self.stopped or not self.eligible():
-                    raise
-                if not self.offered:
-                    self.offered = True
-                    try:
-                        accepted = (
-                            self.interaction.ask(
-                                'Look up companies in your saved Tracxn browser session? '
-                                'Continue if your account permits browser extraction. [y/N] '
-                            )
-                            .strip()
-                            .lower()
-                        )
-                    except EOFError:
-                        accepted = ''
-                    if accepted not in ('y', 'yes'):
-                        self._stop()
-                        raise
-                    self._open()
+            self._open()
             with stage('tracxn_profile_selection'):
                 selected = self._select(company)
             profile = profile_match(selected.url)
@@ -366,16 +443,20 @@ class InteractiveTracxn:
                 )
             if company_name(result.company) != company_name(selected.name):
                 raise Unparseable('Captured company identity does not match the confirmed profile')
+            if result.company_id != identity or not has_financial_data(result):
+                raise Unparseable(
+                    'Tracxn did not return usable financials for the confirmed company.'
+                )
             self.captured.add(identity)
             return result
         except (LookupStopped, Blocked):
-            self._stop()
+            self.stopped = True
             raise
         except Error as error:
             if type(error).__name__ == 'TargetClosedError' or (
                 self.page is not None and self.page.is_closed()
             ):
-                self._stop()
+                self.stopped = True
                 raise LookupStopped(
                     'The Tracxn browser was closed. Completed results were kept.'
                 ) from None
@@ -383,10 +464,65 @@ class InteractiveTracxn:
                 try:
                     self._check_session()
                 except (LookupStopped, Blocked):
-                    self._stop()
+                    self.stopped = True
                     raise
                 except Error:
                     pass  # The page may still be navigating.
             raise SourceError(
                 'Tracxn browser operation failed. See the run log for its stage.'
             ) from None
+
+
+class _WorkerInteraction:
+    def __init__(self, connection, check):
+        self.connection = connection
+        self.check = check
+
+    def pause(self, message: str) -> None:
+        self.ask(message)
+
+    def ask(self, question: str, *, secret: bool = False) -> str:
+        self.connection.send(('prompt', question))
+        heartbeat = time.monotonic() + 0.25
+        while not self.connection.poll(0):
+            self.check()
+            if time.monotonic() >= heartbeat:
+                self.connection.send(('heartbeat', None))
+                heartbeat = time.monotonic() + 0.25
+        answer = self.connection.recv()
+        if answer is None:
+            raise LookupStopped('Tracxn lookup was cancelled.')
+        return answer
+
+
+def _lookup_worker(connection, arguments):
+    state, company, max_rounds, timeout, reauth, previously_captured = arguments
+    signal.signal(signal.SIGINT, signal.SIG_IGN)  # The parent owns terminal cancellation.
+    client = TracxnClient(api_key='', profile_dir=None, timeout=timeout)
+
+    def check():
+        resolver._poll()
+
+    resolver = InteractiveTracxn(
+        client,
+        _WorkerInteraction(connection, check),
+        reauth,
+        browser_factory=partial(BrowserSession, storage_state=state),
+    )
+    resolver.captured.update(previously_captured)
+    outcome: tuple[str, str | None] = ('complete', None)
+    try:
+        financials = resolver._capture(company, max_rounds)
+        connection.send(('progress', financials.to_dict()))
+    except SessionEnded as error:
+        outcome = 'session', str(error)
+    except LookupStopped as error:
+        outcome = 'stopped', str(error)
+    except SourceError as error:
+        outcome = 'source', str(error)
+    finally:
+        try:
+            connection.send(('closing', None))
+        finally:
+            resolver.close()
+    return outcome

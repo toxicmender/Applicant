@@ -67,7 +67,7 @@ class FinancialsTracker:
     rules below are the same either way - only loading and saving differ.
     """
 
-    def __init__(self, path='company_financials.json', backend: str = 'files'):
+    def __init__(self, path: str | Path = 'company_financials.json', backend: str = 'files'):
         self.path = path
         self.backend = backend
         self.target = Path(path).resolve()
@@ -148,7 +148,13 @@ class FinancialsTracker:
         if age >= timedelta(days=30):
             return None
         result = self._previous(key, entry)
-        if result is None or result.source != 'tracxn' or not has_financial_data(result):
+        if (
+            result is None
+            or result.source != 'tracxn'
+            or company_key(result) != key
+            or company_name(result.company) != requested
+            or not has_financial_data(result)
+        ):
             return None
         return result, checked.isoformat()
 
