@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import re
 import sys
-import unicodedata
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from ..domain.providers import provider
 from ..errors import AuthFailed, Blocked, ProfileBusy, SourceError, Unparseable
+from ..financials.identity import company_name
 from ..financials.tracxn import (
     PLATFORM_PROFILE_URL,
     PROFILE_HOSTS,
@@ -31,36 +31,11 @@ if TYPE_CHECKING:
     from ..financials import TracxnClient
     from ..interaction import Interaction
 
-LEGAL_SUFFIXES = (
-    ('private', 'limited'),
-    ('pvt', 'ltd'),
-    ('l', 'l', 'c'),
-    ('inc',),
-    ('incorporated',),
-    ('llc',),
-    ('corp',),
-    ('corporation',),
-    ('ltd',),
-    ('limited',),
-    ('llp',),
-    ('plc',),
-)
 WRONG_PAGE = re.compile(
     r'\b(?:no (?:matching )?results(?: found)?|page not found|404 not found|investor profile|'
     r'acquisition announcement|search results)\b',
     re.IGNORECASE,
 )
-STOCK_LABEL = re.compile(r'\s+\([A-Z0-9][A-Z0-9./-]{0,14}:[A-Z0-9][A-Z0-9.-]{0,14}\)$')
-
-
-def company_name(value: str) -> tuple[str, ...]:
-    normalized = STOCK_LABEL.sub('', unicodedata.normalize('NFKC', value).strip())
-    normalized = normalized.casefold().replace('&', ' and ')
-    words = tuple(''.join(char if char.isalnum() else ' ' for char in normalized).split())
-    for suffix in LEGAL_SUFFIXES:
-        if len(words) > len(suffix) and words[-len(suffix) :] == suffix:
-            return words[: -len(suffix)]
-    return words
 
 
 def terminal_available() -> bool:
@@ -110,6 +85,9 @@ class InteractiveTracxn:
 
     def accepts(self, company: str) -> bool:
         return self.client.accepts(company)
+
+    def requires_lookup(self, company: str) -> bool:
+        return self.client.requires_lookup(company)
 
     def close(self) -> None:
         session, self.session = self.session, None

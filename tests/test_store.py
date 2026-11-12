@@ -492,6 +492,45 @@ class FinancialsHistoryTest(TempDir):
         self.assertIsNone(restored.data['notes'])
         self.assertEqual(len(restored.history('crunchbase:zomato')), 2)
 
+    def test_tracxn_legacy_timestamp_becomes_reusable_only_after_refresh(self):
+        from datetime import timedelta
+
+        from applicant.errors import Unparseable
+        from applicant.financials import CompanyFinancials, FinancialsTracker
+
+        path = self.root / 'history.json'
+        tracker = FinancialsTracker(path)
+        result = self.financials(0).model_copy(
+            update={'source': 'tracxn', 'company': 'Acme', 'company_id': 'acme'}
+        )
+        tracker.record(result)
+        entry = tracker.data['companies']['tracxn:acme']
+        del entry['last_checked']
+        entry['latest']['fetched_at'] = '2026-11-01T12:00:00'
+        tracker.save()
+        original = path.read_bytes()
+        with self.assertLogs('applicant.financials.tracker', 'WARNING') as warning:
+            self.assertIsNone(tracker.cached_tracxn('Acme Corp Ltd.', now=FIXED))
+        self.assertIn('timezone-naive', warning.output[0])
+        with self.assertRaises(Unparseable):
+            tracker.record(
+                CompanyFinancials(source='tracxn', company='Acme', company_id='acme'),
+                require_complete=True,
+            )
+        self.assertEqual(path.read_bytes(), original)
+        with mock.patch('applicant.financials.tracker.datetime') as clock:
+            clock.now.return_value = FIXED
+            tracker.record(result, require_complete=True)
+        saved = path.read_bytes()
+        self.assertIsNotNone(
+            tracker.cached_tracxn('Acme Corp Ltd.', now=FIXED + timedelta(days=29))
+        )
+        self.assertIsNone(tracker.cached_tracxn('Acme', now=FIXED + timedelta(days=30)))
+        with self.assertLogs('applicant.financials.tracker', 'WARNING') as warning:
+            self.assertIsNone(tracker.cached_tracxn('Acme', now=FIXED - timedelta(seconds=1)))
+        self.assertIn('system clock', warning.output[0])
+        self.assertEqual(path.read_bytes(), saved)
+
     def test_the_database_holds_the_change_log(self):
         path = self.track(self.root / 'stored', 'sqlite')
         with Store.beside(path) as store:

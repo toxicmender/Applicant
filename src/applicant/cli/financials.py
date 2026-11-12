@@ -29,6 +29,7 @@ class FinancialsRequest(Request):
     max_rounds: int = 20
     output: str | None = None
     rounds: bool = False
+    refresh: bool = False
     login: bool = False
     show: bool = False
     cb_profile: str | None = None
@@ -67,6 +68,9 @@ def add_parser(add: AddParser) -> argparse.ArgumentParser:
         'financials, company_financials.json)',
     )
     financials.add_argument('--rounds', action='store_true', help='print each funding round too')
+    financials.add_argument(
+        '--refresh', action='store_true', help='bypass saved Tracxn financials for company names'
+    )
     financials.add_argument(
         '--crunchbase-key',
         help='Crunchbase API key (default: $CRUNCHBASE_API_KEY); without one the website is read',
@@ -176,6 +180,7 @@ def run(args: FinancialsRequest, settings: Settings) -> int:
             max_rounds=args.max_rounds,
             emit=Renderer(rounds=args.rounds, failures=True),
             backend=settings.store,
+            refresh=args.refresh,
         )
     if not tracked.found:
         return 1

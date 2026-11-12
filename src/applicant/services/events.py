@@ -56,6 +56,7 @@ class FinancialsTracked(Event):
     source: str
     financials: Any  # applicant.financials.CompanyFinancials
     changes: list[str] = field(default_factory=list)
+    cached_at: str | None = None
 
 
 @dataclass(frozen=True)

@@ -16,13 +16,15 @@ from __future__ import annotations
 import logging
 import re
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from pydantic import ValidationError
 
+from ..errors import Unparseable
 from ..files import read_document, write_document
 from ..infra.store.financials_lock import financials_lock
+from .identity import company_name
 from .models import CompanyFinancials, FundingRound, Money
 
 logger = logging.getLogger(__name__)
@@ -40,6 +42,13 @@ TRACKED = [
     ('stage', 'stage'),
     ('ipo_status', 'IPO status'),
 ]
+HEADLINES = ('total_funding', 'valuation', 'revenue', 'revenue_range')
+
+
+def has_financial_data(financials: CompanyFinancials) -> bool:
+    return any(getattr(financials, field) is not None for field in HEADLINES) or any(
+        round_.date for round_ in financials.rounds
+    )
 
 
 def company_key(financials):
@@ -103,6 +112,46 @@ class FinancialsTracker:
         entry = self.data['companies'].get(key)
         return self._previous(key, entry) if entry else None
 
+    def cached_tracxn(self, company: str, *, now: datetime | None = None):
+        requested = company_name(company)
+        if not requested:
+            return None
+        matches = [
+            (key, entry)
+            for key, entry in self.data['companies'].items()
+            if key.startswith('tracxn:')
+            and isinstance(entry, dict)
+            and isinstance(entry.get('company'), str)
+            and company_name(entry['company']) == requested
+        ]
+        if len(matches) != 1:
+            return None
+        key, entry = matches[0]
+        latest = entry.get('latest')
+        raw = entry.get(
+            'last_checked', latest.get('fetched_at') if isinstance(latest, dict) else None
+        )
+        if raw is None:
+            return None
+        try:
+            checked = datetime.fromisoformat(raw)
+            if checked.utcoffset() is None:
+                raise ValueError('missing UTC offset')
+            checked = checked.astimezone(timezone.utc)
+        except (TypeError, ValueError, OverflowError):
+            logger.warning('%s: invalid or timezone-naive Tracxn timestamp; refreshing', key)
+            return None
+        age = (now or datetime.now(timezone.utc)) - checked
+        if age < timedelta():
+            logger.warning('%s: future Tracxn timestamp; check the system clock', key)
+            return None
+        if age >= timedelta(days=30):
+            return None
+        result = self._previous(key, entry)
+        if result is None or result.source != 'tracxn' or not has_financial_data(result):
+            return None
+        return result, checked.isoformat()
+
     def _previous(self, key, entry):
         """The stored latest record, or None if it no longer validates."""
         try:
@@ -117,7 +166,7 @@ class FinancialsTracker:
     def history(self, key):
         return list((self.data['companies'].get(key) or {}).get('snapshots', []))
 
-    def record(self, financials, save=True):
+    def record(self, financials, save=True, *, require_complete=False):
         """Store a fetch and return what changed since the last one, as readable lines.
 
         The first fetch of a company returns an empty list. A field the new fetch
@@ -125,19 +174,31 @@ class FinancialsTracker:
         change - a logged out page hiding a figure is not the figure disappearing.
         """
         if not save:
-            return self._record(financials)
+            return self._record(financials, require_complete=require_complete)
         with self._storage() as store:
             self.data, baseline = self._load(store)
-            changes = self._record(financials)
+            changes = self._record(financials, require_complete=require_complete)
             self._save(store, baseline)
             return changes
 
-    def _record(self, financials):
+    def _record(self, financials, *, require_complete):
         key = company_key(financials)
         entry = self.data['companies'].get(key)
         now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
         previous = self._previous(key, entry) if entry else None
+        if require_complete and (
+            not financials.company_id
+            or not has_financial_data(financials)
+            or (
+                previous is not None
+                and any(
+                    getattr(previous, field) is not None and getattr(financials, field) is None
+                    for field in HEADLINES
+                )
+            )
+        ):
+            raise Unparseable('Tracxn financials were incomplete. Existing history was kept.')
         if previous is None:
             merged, changes = financials, []
             first_seen = True

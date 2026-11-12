@@ -204,6 +204,16 @@ class TracxnClient:
         """Whether Tracxn can look this up: anything but a profile url on crunchbase.com."""
         return 'crunchbase.com' not in company.lower()
 
+    def requires_lookup(self, company: str) -> bool:
+        value = company.strip()
+        return (
+            not self.api_key
+            and '://' not in value
+            and not value.startswith('/')
+            and not DOMAIN.fullmatch(value)
+            and not ENTITY_ID.fullmatch(value)
+        )
+
     def fetch(self, company, max_rounds=20):
         """Every failure leaves as a SourceError, so a caller trying several
         sources can report this one and carry on with the rest."""
@@ -226,13 +236,7 @@ class TracxnClient:
         elif profile_match(company.strip()):
             financials = self._fetch_web(company.strip(), max_rounds)
         else:
-            name_only = (
-                '://' not in company
-                and not company.strip().startswith('/')
-                and not DOMAIN.fullmatch(company.strip())
-                and not ENTITY_ID.fullmatch(company.strip())
-            )
-            error = TracxnLookupRequired if name_only else SourceError
+            error = TracxnLookupRequired if self.requires_lookup(company) else SourceError
             raise error(
                 'Tracxn needs a company profile URL or an API token (TRACXN_API_KEY / --tracxn-key). '
                 'Pass the profile URL or run financials in a terminal to look up a company name.'

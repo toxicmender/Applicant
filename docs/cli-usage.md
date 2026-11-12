@@ -169,8 +169,10 @@ uv run applicant financials "https://tracxn.com/d/companies/COMPANY/__ENTITY_ID"
 uv run applicant financials zomato --source crunchbase --login
 ```
 
-For Tracxn company names without an API key, run from a terminal. Applicant
-offers to open your saved Tracxn session when it first needs a profile URL.
+For Tracxn company names without an API key, Applicant reuses a uniquely matched
+saved result checked less than 30 days ago. Pass `--refresh` to bypass it.
+Legacy records with no timezone offset stay stale until a successful refresh.
+In a terminal, Applicant offers to open your saved session when it first needs a profile URL.
 Set up that session with `uv run applicant setup provider tracxn` if needed.
 
 ```console
