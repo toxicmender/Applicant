@@ -562,7 +562,7 @@ class FinancialsHistoryTest(TempDir):
         self.assertEqual(len(restored.history('crunchbase:zomato')), 2)
 
     def test_tracxn_legacy_timestamp_becomes_reusable_only_after_refresh(self):
-        from datetime import timedelta
+        from datetime import timedelta, timezone
 
         from applicant.errors import Unparseable
         from applicant.financials import CompanyFinancials, FinancialsTracker
@@ -598,6 +598,13 @@ class FinancialsHistoryTest(TempDir):
         with self.assertLogs('applicant.financials.tracker', 'WARNING') as warning:
             self.assertIsNone(tracker.cached_tracxn('Acme', now=FIXED - timedelta(seconds=1)))
         self.assertIn('system clock', warning.output[0])
+        entry = tracker.data['companies']['tracxn:acme']
+        entry['last_checked'] = FIXED.astimezone(
+            timezone(timedelta(hours=5, minutes=30))
+        ).isoformat()
+        self.assertIsNotNone(tracker.cached_tracxn('Acme', now=FIXED))
+        entry['last_checked'] = FIXED.isoformat().replace('+00:00', 'Z')
+        self.assertIsNotNone(tracker.cached_tracxn('Acme', now=FIXED))
         self.assertEqual(path.read_bytes(), saved)
 
     def test_the_database_holds_the_change_log(self):

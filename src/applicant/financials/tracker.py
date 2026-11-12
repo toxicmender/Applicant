@@ -134,6 +134,8 @@ class FinancialsTracker:
         if raw is None:
             return None
         try:
+            if isinstance(raw, str) and raw.endswith('Z'):
+                raw = raw[:-1] + '+00:00'  # Python 3.10 requires the numeric offset.
             checked = datetime.fromisoformat(raw)
             if checked.utcoffset() is None:
                 raise ValueError('missing UTC offset')

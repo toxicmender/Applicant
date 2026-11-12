@@ -93,7 +93,9 @@ def track_financials(
             client = clients[source]
             requires_lookup = getattr(client, 'requires_lookup', None)
             use_history = (
-                source == 'tracxn' and callable(requires_lookup) and bool(requires_lookup(company))
+                source == 'tracxn'
+                and callable(requires_lookup)
+                and requires_lookup(company) is True
             )
             if use_history and not refresh and (cached := tracker.cached_tracxn(company)):
                 financials, checked = cached
