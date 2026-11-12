@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 from ..domain.providers import provider
 from ..errors import AuthFailed, Blocked, ProfileBusy, SourceError, Unparseable
 from ..financials.tracxn import (
+    PLATFORM_PROFILE_URL,
     PROFILE_HOSTS,
     TracxnLookupRequired,
     confirmed_profile_url,
@@ -49,10 +50,12 @@ WRONG_PAGE = re.compile(
     r'acquisition announcement|search results)\b',
     re.IGNORECASE,
 )
+STOCK_LABEL = re.compile(r'\s+\([A-Z0-9][A-Z0-9./-]{0,14}:[A-Z0-9][A-Z0-9.-]{0,14}\)$')
 
 
 def company_name(value: str) -> tuple[str, ...]:
-    normalized = unicodedata.normalize('NFKC', value).casefold().replace('&', ' and ')
+    normalized = STOCK_LABEL.sub('', unicodedata.normalize('NFKC', value).strip())
+    normalized = normalized.casefold().replace('&', ' and ')
     words = tuple(''.join(char if char.isalnum() else ' ' for char in normalized).split())
     for suffix in LEGAL_SUFFIXES:
         if len(words) > len(suffix) and words[-len(suffix) :] == suffix:
@@ -225,6 +228,29 @@ class InteractiveTracxn:
         except EOFError:
             raise LookupStopped('Tracxn lookup input ended. Completed results were kept.') from None
 
+    def _company_headings(self, url: str, title: str) -> list[str]:
+        assert self.page is not None
+        platform = PLATFORM_PROFILE_URL.fullmatch(url)
+        if platform is not None:
+            links = self.page.locator(
+                'a.txn--dp-profile-card__company-name[href]:visible'
+            ).evaluate_all('(links) => links.map(link => [link.href, link.innerText])')
+            if links:
+                names = []
+                for href, name in links:
+                    destination = PLATFORM_PROFILE_URL.fullmatch(confirmed_profile_url(href) or '')
+                    if destination is not None and destination['id'] == platform['id']:
+                        names.append(name)
+                return names
+        headings = self.page.locator(
+            '[data-testid="company-profile-name"]:visible'
+        ).all_text_contents()
+        if not headings and ('company profile' in title.casefold() or platform is not None):
+            headings = self.page.locator('h1:visible').all_text_contents()
+            if not headings:
+                headings = self.page.get_by_role('heading', level=1).all_text_contents()
+        return headings
+
     def _selection(self, company: str) -> Selection:
         assert self.page is not None
         self._check_session()
@@ -256,16 +282,7 @@ class InteractiveTracxn:
         if looks_blocked(self.page):
             raise SessionEnded('Tracxn restricted browser access. Completed results were kept.')
         title = self.page.title()
-        headings = self.page.locator(
-            '[data-testid="company-profile-name"]:visible'
-        ).all_text_contents()
-        if not headings and (
-            'company profile' in title.casefold() or path.startswith('/a/d/company/')
-        ):
-            headings = self.page.locator('h1:visible').all_text_contents()
-            if not headings:
-                headings = self.page.get_by_role('heading', level=1).all_text_contents()
-        names = [text.strip() for text in headings if text.strip()]
+        names = [text.strip() for text in self._company_headings(url, title) if text.strip()]
         wrong_page = any(WRONG_PAGE.search(x) for x in [title, *names])
         if not names or len(set(names)) != 1 or wrong_page:
             event(

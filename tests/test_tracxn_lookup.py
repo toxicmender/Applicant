@@ -35,6 +35,7 @@ class Tab:
         self.visited = []
         self.heading = 'Booz Allen Hamilton, Inc.'
         self.page_title = 'Booz Allen Hamilton - Company Profile'
+        self.profile_card_links = []
 
     def on(self, event, callback):
         self.listeners.setdefault(event, []).append(callback)
@@ -63,6 +64,7 @@ class Tab:
         node = Mock()
         node.count.return_value = 0
         node.all_text_contents.return_value = [self.heading] if selector == 'h1:visible' else []
+        node.evaluate_all.return_value = self.profile_card_links
         return node
 
     def wait_for_load_state(self, *args, **kwargs):
@@ -115,6 +117,10 @@ class TracxnLookupTest(unittest.TestCase):
     def test_normalization_and_canonical_routes(self):
         self.assertEqual(company_name('  Ａ&B-Hamilton, Inc. '), company_name('a and b hamilton'))
         self.assertEqual(company_name('Alpha L.L.C.'), company_name('Alpha'))
+        self.assertEqual(company_name('Booz Allen Hamilton (BAH:NYSE)'), company_name(COMPANY))
+        self.assertNotEqual(
+            company_name('Booz Allen Hamilton India (BAH:NYSE)'), company_name(COMPANY)
+        )
         self.assertNotEqual(company_name('Alpha India Ltd.'), company_name('Alpha'))
         self.assertEqual(confirmed_profile_url(PROFILE + '/?token=secret#section'), PROFILE)
         self.assertEqual(
@@ -152,6 +158,26 @@ class TracxnLookupTest(unittest.TestCase):
         self.assertEqual(result.company_id, 'profile-1')
         self.assertEqual(self.page.visited[-1], SIGNED_IN_PROFILE + '#a:funding-and-investors')
         self.assertNotIn('private=ignored', '\n'.join(interaction.said))
+
+    def test_signed_in_profile_card_requires_a_link_to_the_open_company(self):
+        self.page.page_title = 'Tracxn'
+        self.page.heading = ''
+        actual_profile = (
+            'https://platform.tracxn.com/a/d/company/52d69058e4b07c90e4b084f3/boozallen.com'
+        )
+        wrong_profile = actual_profile.replace('52d69058e4b07c90e4b084f3', 'other-id')
+
+        def select_link(url):
+            self.page.profile_card_links = [[url, 'Booz Allen Hamilton (BAH:NYSE)']]
+            return self.visit(actual_profile)()
+
+        resolver, interaction = self.resolver(
+            'yes', lambda: select_link(wrong_profile), lambda: select_link(actual_profile), 'yes'
+        )
+        result = resolver.fetch(COMPANY)
+        self.assertEqual(result.url, actual_profile)
+        self.assertIn('does not identify', '\n'.join(interaction.said))
+        self.assertIn('Profile: Booz Allen Hamilton (BAH:NYSE)', '\n'.join(interaction.said))
 
     def test_noninteractive_and_declined_never_open_a_browser(self):
         for steps, eligible in (((), lambda: False), (('n',), lambda: True)):
