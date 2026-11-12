@@ -1,6 +1,8 @@
 """Private IPC and bounded cleanup for owned browser process trees."""
 
 import ctypes
+import json
+import logging
 import multiprocessing
 import os
 import signal
@@ -8,9 +10,13 @@ import struct
 import sys
 import time
 from contextlib import suppress
+from queue import Empty
 from typing import Any
 
 from ..errors import SourceError
+from .browser_diagnostics import QUEUE_SIZE, WorkerDiagnostics, active_diagnostics, failure_details
+
+logger = logging.getLogger('applicant.browser.worker')
 
 
 class WorkerFailure(SourceError):
@@ -93,18 +99,41 @@ class WindowsJob:
         self.kernel.CloseHandle(self.handle)
 
 
-def _child(connection, function):
+def _child(connection, function, diagnostics_queue, provider):
     if os.name != 'nt':
         os.setsid()
     connection.send(('ready', None))
-    arguments = connection.recv()
+    diagnostics = WorkerDiagnostics(diagnostics_queue, provider)
+    token = active_diagnostics.set(diagnostics)
     try:
-        result = function(connection, arguments)
-        connection.send(('result', result))
+        kind, value = 'result', function(connection, connection.recv())
     except BaseException as error:  # noqa: BLE001 - relay worker termination without secrets
-        connection.send(('error', type(error).__name__))
+        kind = 'error'
+        captured = diagnostics.failures.get(id(error))
+        value = captured[1] if captured else failure_details(error, 'worker')
+        if diagnostics.cleanup_failures:
+            value = {**value, 'cleanup_failures': diagnostics.cleanup_failures}
     finally:
+        active_diagnostics.reset(token)
+    try:
+        connection.send(
+            (kind, (value, diagnostics.emitted, diagnostics.dropped, diagnostics.discarded))
+        )
+    finally:
+        diagnostics_queue.close()
         connection.close()
+
+
+def _drain_diagnostics(queue) -> int:
+    count = 0
+    for _ in range(QUEUE_SIZE):
+        try:
+            record = json.loads(queue.get_nowait())
+        except (Empty, EOFError, OSError, TypeError, ValueError):
+            break
+        logger.log(record.pop('severity'), 'browser diagnostic %s', record)
+        count += 1
+    return count
 
 
 def run_worker(
@@ -118,15 +147,18 @@ def run_worker(
     timeout: float | None = 60,
     grace: float = 5,
     monotonic=time.monotonic,
+    provider: str = 'unknown',
 ):
     context = multiprocessing.get_context('spawn')
     parent, child = context.Pipe()
-    process = context.Process(target=_child, args=(child, function))
+    diagnostics = context.Queue(maxsize=QUEUE_SIZE)
+    process = context.Process(target=_child, args=(child, function, diagnostics, provider))
     try:
         process.start()
     except BaseException:
         parent.close()
         child.close()
+        diagnostics.close()
         process.close()
         raise
     pid = process.pid
@@ -135,6 +167,9 @@ def run_worker(
     job = None
     deadline = None if timeout is None else monotonic() + timeout
     group_ready = False
+    emitted = dropped = discarded = None
+    received = 0
+    failure = None
     try:
         if not parent.poll(10) or parent.recv()[0] != 'ready':
             raise WorkerFailure('browser worker startup failed')
@@ -143,6 +178,7 @@ def run_worker(
             job = WindowsJob(pid)
         parent.send(arguments)
         while True:
+            received += _drain_diagnostics(diagnostics)
             if check:
                 check()
             if deadline is not None and monotonic() >= deadline:
@@ -152,6 +188,7 @@ def run_worker(
                 if kind == 'pause':
                     if pause is None or not interactive:
                         raise WorkerFailure('unexpected interactive worker request')
+                    received += _drain_diagnostics(diagnostics)
                     pause(value)
                     parent.send(None)
                     deadline = None if timeout is None else monotonic() + timeout
@@ -159,21 +196,65 @@ def run_worker(
                     deadline = monotonic() + grace
                 elif kind == 'progress' and progress is not None:
                     progress(value)
-                elif kind == 'error':
-                    raise WorkerFailure('browser worker failed: ' + value)
-                elif kind == 'result':
-                    result = value
+                elif kind in ('error', 'result'):
+                    result, emitted, dropped, discarded = value
+                    if kind == 'error':
+                        logger.debug(
+                            'browser worker error provider=%s pid=%s %s', provider, pid, result
+                        )
+                        failure = WorkerFailure(
+                            'browser worker failed: {exception_class} during {operation}'.format(
+                                **result
+                            )
+                            + (f' ({result["network_code"]})' if result['network_code'] else '')
+                        )
                     break
             elif not process.is_alive():
                 raise WorkerFailure('browser worker exited without a result')
-        process.join(grace)
+        # The child can only finish flushing its queue while the parent drains it.
+        flush_deadline = time.monotonic() + grace
+        while process.is_alive() and time.monotonic() < flush_deadline:
+            received += _drain_diagnostics(diagnostics)
+            process.join(min(0.05, max(0.0, flush_deadline - time.monotonic())))
+        received += _drain_diagnostics(diagnostics)
+        if failure:
+            if process.is_alive():
+                logger.warning('browser worker teardown exceeded deadline after failure')
+            raise failure
         if process.is_alive():
             raise WorkerFailure('browser worker teardown exceeded deadline')
         return result
     except EOFError as error:
         raise WorkerFailure('browser worker exited without a result') from error
     finally:
+        original = sys.exc_info()[1]
         try:
+            if emitted is None:
+                logger.debug(
+                    'browser diagnostics incomplete provider=%s pid=%s final_drop_count=unknown',
+                    provider,
+                    pid,
+                )
+            else:
+                if dropped:
+                    logger.warning('Diagnostic queue saturated: %d events dropped', dropped)
+                logger.debug(
+                    'browser diagnostic summary provider=%s pid=%s emitted=%s received=%s '
+                    'dropped=%s discarded=%s',
+                    provider,
+                    pid,
+                    emitted,
+                    received,
+                    dropped,
+                    discarded,
+                )
+                if received < emitted:
+                    logger.debug(
+                        'browser diagnostic delivery incomplete provider=%s pid=%s', provider, pid
+                    )
+            logger.debug('browser worker cleanup started provider=%s pid=%s', provider, pid)
+            if original is not None:
+                logger.debug('browser worker failure cleanup provider=%s pid=%s', provider, pid)
             if job:
                 job.terminate()
             elif os.name != 'nt' and group_ready:
@@ -185,11 +266,20 @@ def run_worker(
                 process.join(5)
             if process.is_alive():
                 raise CleanupUnconfirmed('browser cleanup could not be confirmed')
-        except OSError as error:
-            raise CleanupUnconfirmed('browser cleanup could not be confirmed') from error
+            logger.debug('browser worker cleanup completed provider=%s pid=%s', provider, pid)
+        except (OSError, CleanupUnconfirmed) as error:
+            logger.error('browser worker cleanup unconfirmed provider=%s pid=%s', provider, pid)
+            if isinstance(original, WorkerFailure):
+                raise CleanupUnconfirmed(
+                    f'{original}; browser cleanup could not be confirmed'
+                ) from original
+            raise CleanupUnconfirmed('browser cleanup could not be confirmed') from (
+                original or error
+            )
         finally:
             if job:
                 job.close()
             parent.close()
+            diagnostics.close()
             if not process.is_alive():
                 process.close()
