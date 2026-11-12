@@ -63,7 +63,7 @@ class FinancialsTracker:
         self.backend = backend
         self.target = Path(path).resolve()
         with self._storage() as store:
-            self.data = self._load(store)
+            self.data, _ = self._load(store)
 
     @contextmanager
     def _storage(self):
@@ -80,20 +80,22 @@ class FinancialsTracker:
         # the tracker exists to write: an unreadable history is moved aside
         # rather than replaced, since it is the only copy of every snapshot
         if store is not None:
-            data = store._load_financials(self.target)
+            data, baseline = store._load_financials(self.target)
         else:
             data = read_document(self.target, quarantine=True)
+            baseline = None
         if not isinstance(data.get('companies'), dict):
             data['companies'] = {}
-        return data
+        return data, baseline
 
     def save(self):
         with self._storage() as store:
-            self._save(store)
+            _, baseline = store._sync_financials(self.target) if store is not None else (None, None)
+            self._save(store, baseline)
 
-    def _save(self, store):
+    def _save(self, store, baseline):
         if store is not None:
-            store._save_financials(self.data, self.target)
+            store._save_financials(self.data, self.target, baseline)
         else:
             write_document(self.target, self.data)
 
@@ -125,9 +127,9 @@ class FinancialsTracker:
         if not save:
             return self._record(financials)
         with self._storage() as store:
-            self.data = self._load(store)
+            self.data, baseline = self._load(store)
             changes = self._record(financials)
-            self._save(store)
+            self._save(store, baseline)
             return changes
 
     def _record(self, financials):

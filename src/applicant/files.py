@@ -35,11 +35,17 @@ def read_document(path: str | Path, *, quarantine: bool = False) -> dict[str, An
     are not allowed to read is not one we should write over either.
     """
     try:
-        with open(path, encoding='utf-8') as handle:
-            payload = json.load(handle)
+        raw = Path(path).read_bytes()
     except FileNotFoundError:
         return {}
-    except (ValueError, UnicodeDecodeError) as error:
+    return decode_document(path, raw, quarantine=quarantine)
+
+
+def decode_document(path: str | Path, raw: bytes, *, quarantine: bool = False) -> dict[str, Any]:
+    """Decode the exact bytes read from a file, with the usual quarantine policy."""
+    try:
+        payload = json.loads(raw.decode('utf-8'))
+    except ValueError as error:
         reason = f'{type(error).__name__}: {error}'
     else:
         if isinstance(payload, dict):
@@ -58,6 +64,18 @@ def read_document(path: str | Path, *, quarantine: bool = False) -> dict[str, An
 
 def write_document(path: str | Path, document: Any, *, trailing_newline: bool = False) -> None:
     """Replace `path` with `document`, all at once or not at all."""
+    write_document_bytes(path, document_bytes(document, trailing_newline=trailing_newline))
+
+
+def document_bytes(document: Any, *, trailing_newline: bool = False) -> bytes:
+    text = json.dumps(document, indent=2, ensure_ascii=False)
+    if trailing_newline:
+        text += '\n'
+    return text.replace('\n', os.linesep).encode('utf-8')
+
+
+def write_document_bytes(path: str | Path, content: bytes, *, replace=None) -> None:
+    """Publish previously serialized JSON without changing its digest."""
     target = Path(path)
     # a data directory named for the first time does not exist yet
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -65,20 +83,21 @@ def write_document(path: str | Path, document: Any, *, trailing_newline: bool = 
         prefix=f'.{target.name}.', suffix='.tmp', dir=target.parent
     )
     try:
-        with os.fdopen(descriptor, 'w', encoding='utf-8') as handle:
+        with os.fdopen(descriptor, 'wb') as handle:
             # Own the descriptor even if permission setup fails.
             if target.exists():
                 copy_permissions(target, temporary)
             else:
                 make_private(temporary)
-            json.dump(document, handle, indent=2, ensure_ascii=False)
-            if trailing_newline:
-                handle.write('\n')
+            handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, target)
+        (replace or os.replace)(temporary, target)
     except BaseException:
         # includes KeyboardInterrupt: the half written temp file must not linger
-        Path(temporary).unlink(missing_ok=True)
+        try:
+            Path(temporary).unlink(missing_ok=True)
+        except OSError as error:
+            logger.warning('could not remove temporary file %s: %s', temporary, error)
         raise
     logger.debug(f'wrote {target}')

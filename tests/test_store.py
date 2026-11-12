@@ -395,7 +395,9 @@ class FinancialsHistoryTest(TempDir):
                 second = FinancialsTracker(path, backend=backend)
                 first.record(self.financials(1))
                 second.record(
-                    self.financials(2).model_copy(update={'company_id': 'other', 'company': 'Other'})
+                    self.financials(2).model_copy(
+                        update={'company_id': 'other', 'company': 'Other'}
+                    )
                 )
                 self.assertEqual(
                     set(second.data['companies']), {'crunchbase:zomato', 'crunchbase:other'}
@@ -415,6 +417,50 @@ class FinancialsHistoryTest(TempDir):
                 tracker.record(self.financials(1))
         tracker.record(self.financials(1))
         self.assertEqual(len(tracker.history('crunchbase:zomato')), 1)
+
+    def test_disk_full_keeps_pending_financials_for_next_run(self):
+        import errno
+
+        from applicant.errors import StorageFull
+        from applicant.financials import FinancialsTracker
+
+        path = self.root / 'history.json'
+        tracker = FinancialsTracker(path, backend='sqlite')
+        tracker.record(self.financials(1))
+        original = path.read_bytes()
+        error = OSError(errno.ENOSPC, 'no space', str(path))
+        with (
+            mock.patch('applicant.infra.store.sqlite.os.replace', side_effect=error) as replace,
+            mock.patch('applicant.infra.store.sqlite.time.sleep') as sleep,
+            self.assertRaises(StorageFull),
+        ):
+            tracker.record(self.financials(2))
+        replace.assert_called_once()
+        sleep.assert_not_called()
+        self.assertEqual(path.read_bytes(), original)
+        restored = FinancialsTracker(path, backend='sqlite')
+        self.assertEqual(len(restored.history('crunchbase:zomato')), 2)
+
+    def test_windows_sharing_retry_preserves_pending_record(self):
+        from applicant.errors import ExportPending
+        from applicant.financials import FinancialsTracker
+
+        path = self.root / 'history.json'
+        tracker = FinancialsTracker(path, backend='sqlite')
+        error = PermissionError('file is open')
+        error.winerror = 32
+        with (
+            mock.patch('applicant.infra.store.sqlite.os.replace', side_effect=error) as replace,
+            mock.patch('applicant.infra.store.sqlite.time.sleep') as sleep,
+            self.assertRaises(ExportPending),
+        ):
+            tracker.record(self.financials(2))
+        self.assertEqual(replace.call_count, 5)
+        self.assertEqual(sleep.call_args_list, [mock.call(n) for n in (0.05, 0.1, 0.2, 0.4)])
+        self.assertFalse(path.exists())
+        self.assertEqual(
+            len(FinancialsTracker(path, backend='sqlite').history('crunchbase:zomato')), 1
+        )
 
     def test_the_database_holds_the_change_log(self):
         path = self.track(self.root / 'stored', 'sqlite')

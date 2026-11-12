@@ -90,6 +90,18 @@ class FinancialsBusy(DatabaseBusy):
     status = 'financials_busy'
 
 
+class ExportPending(DatabaseBusy):
+    """SQLite committed financials that are still waiting to be exported."""
+
+    status = 'export_pending'
+
+
+class StorageFull(StoreError):
+    """The filesystem or SQLite cannot allocate space for a write."""
+
+    status = 'storage_full'
+
+
 def sqlite_busy(error):
     import sqlite3
 
