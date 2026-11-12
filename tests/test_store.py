@@ -462,6 +462,36 @@ class FinancialsHistoryTest(TempDir):
             len(FinancialsTracker(path, backend='sqlite').history('crunchbase:zomato')), 1
         )
 
+    def test_pending_recovery_merges_disjoint_edits_and_preserves_conflicts(self):
+        from applicant.errors import StoreError
+        from applicant.financials import FinancialsTracker
+
+        path = self.root / 'history.json'
+        tracker = FinancialsTracker(path, backend='sqlite')
+        tracker.record(self.financials(1))
+        with (
+            mock.patch('applicant.infra.store.sqlite.write_document_bytes', side_effect=OSError),
+            self.assertRaises(StoreError),
+        ):
+            tracker.record(self.financials(2))
+
+        document = json.loads(path.read_bytes())
+        document['schema_version'] = 2
+        path.write_text(json.dumps(document), encoding='utf-8')
+        conflict = path.read_bytes()
+        with self.assertRaisesRegex(StoreError, r'export_conflict: .*metadata.schema_version'):
+            FinancialsTracker(path, backend='sqlite')
+        self.assertEqual(path.read_bytes(), conflict)
+
+        del document['schema_version']
+        document['companies']['tracxn:another'] = {'company': 'Another', 'snapshots': []}
+        document['notes'] = None
+        path.write_text(json.dumps(document), encoding='utf-8')
+        restored = FinancialsTracker(path, backend='sqlite')
+        self.assertIn('tracxn:another', restored.data['companies'])
+        self.assertIsNone(restored.data['notes'])
+        self.assertEqual(len(restored.history('crunchbase:zomato')), 2)
+
     def test_the_database_holds_the_change_log(self):
         path = self.track(self.root / 'stored', 'sqlite')
         with Store.beside(path) as store:

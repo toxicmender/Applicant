@@ -53,6 +53,7 @@ from .benchmarks import BENCHMARK_MIGRATION
 from .company_evidence import COMPANY_EVIDENCE_MIGRATION
 from .feedback import FEEDBACK_MIGRATION
 from .financials_lock import financials_lock
+from .financials_merge import merge_financial_exports
 from .maintenance import configure_connection
 from .personalization import PERSONALIZATION_MIGRATION
 from .ranking_schema import RANKING_MIGRATION
@@ -606,29 +607,36 @@ class Store:
             (name, digest),
         )
 
-    def _stage_financials(self, name: str, document: dict, baseline: bytes | None) -> None:
+    def _stage_financials(
+        self, name: str, document: dict, baseline: bytes | None
+    ) -> tuple[bytes, str]:
         intended = document_bytes(document)
+        intended_digest = hashlib.sha256(intended).hexdigest()
         with self._transaction() as db:
             self._replace_financials(db, name, document)
             db.execute(
                 'INSERT OR REPLACE INTO financial_pending_exports VALUES (?, ?, ?, ?, ?)',
-                (name, baseline, _bytes_digest(baseline), intended, _bytes_digest(intended)),
+                (name, baseline, _bytes_digest(baseline), intended, intended_digest),
             )
+        return intended, intended_digest
 
     def _reconcile_financials(self, name: str, file: Path) -> None:
         pending = self.db.execute(
-            'SELECT baseline_digest, intended, intended_digest '
+            'SELECT baseline, baseline_digest, intended, intended_digest '
             'FROM financial_pending_exports WHERE document = ?',
             (name,),
         ).fetchone()
         if pending is None:
             return
-        baseline_digest, intended, intended_digest = pending
+        baseline, baseline_digest, intended, intended_digest = pending
         for delay in (0.05, 0.1, 0.2, 0.4, None):
-            current = _digest(file)
-            if current != intended_digest:
-                if current is not None and current != baseline_digest:
-                    raise StoreError(f'export_conflict: {file} changed during pending publication')
+            current = _financials_bytes(file)
+            current_digest = _bytes_digest(current)
+            if current_digest != intended_digest:
+                if current is not None and current_digest != baseline_digest:
+                    merged = merge_financial_exports(file, baseline, current, intended)
+                    intended, intended_digest = self._stage_financials(name, merged, current)
+                    baseline, baseline_digest = current, current_digest
                 try:
                     write_document_bytes(file, intended, replace=_replace_financial_export)
                 except ExportPending:
