@@ -7,6 +7,7 @@ those files from before the database existed is picked up on first use.
 
 from __future__ import annotations
 
+import errno
 import io
 import json
 import os
@@ -32,6 +33,12 @@ from applicant.storage import ApplicationLog, load_jobs, save_jobs
 from tests.permissions import assert_private
 
 FIXED = datetime(2026, 9, 27, 8, 0, 0, tzinfo=timezone.utc)
+
+
+class WindowsFileError(PermissionError):
+    def __init__(self, winerror: int, posix_errno: int):
+        super().__init__(posix_errno, 'synthetic Windows file error')
+        self.winerror: int = winerror
 
 
 class TempDir(unittest.TestCase):
@@ -419,8 +426,6 @@ class FinancialsHistoryTest(TempDir):
         self.assertEqual(len(tracker.history('crunchbase:zomato')), 1)
 
     def test_disk_full_keeps_pending_financials_for_next_run(self):
-        import errno
-
         from applicant.errors import StorageFull
         from applicant.financials import FinancialsTracker
 
@@ -445,41 +450,47 @@ class FinancialsHistoryTest(TempDir):
         from applicant.errors import ExportPending
         from applicant.financials import FinancialsTracker
 
-        path = self.root / 'history.json'
-        tracker = FinancialsTracker(path, backend='sqlite')
-        error = PermissionError('file is open')
-        error.winerror = 32
-        with (
-            mock.patch('applicant.infra.store.sqlite.os.replace', side_effect=error) as replace,
-            mock.patch('applicant.infra.store.sqlite.time.sleep') as sleep,
-            self.assertRaises(ExportPending),
-        ):
-            tracker.record(self.financials(2))
-        self.assertEqual(replace.call_count, 5)
-        self.assertEqual(sleep.call_args_list, [mock.call(n) for n in (0.05, 0.1, 0.2, 0.4)])
-        self.assertFalse(path.exists())
-        self.assertEqual(
-            len(FinancialsTracker(path, backend='sqlite').history('crunchbase:zomato')), 1
-        )
+        for code in (32, 33):
+            with self.subTest(code=code):
+                path = self.root / f'history-{code}.json'
+                tracker = FinancialsTracker(path, backend='sqlite')
+                error = WindowsFileError(code, errno.EACCES)
+                with (
+                    mock.patch(
+                        'applicant.infra.store.sqlite.os.replace', side_effect=error
+                    ) as replace,
+                    mock.patch('applicant.infra.store.sqlite.time.sleep') as sleep,
+                    self.assertRaises(ExportPending),
+                ):
+                    tracker.record(self.financials(2))
+                self.assertEqual(replace.call_count, 5)
+                self.assertEqual(
+                    sleep.call_args_list, [mock.call(n) for n in (0.05, 0.1, 0.2, 0.4)]
+                )
+                self.assertFalse(path.exists())
+                self.assertEqual(
+                    len(FinancialsTracker(path, backend='sqlite').history('crunchbase:zomato')), 1
+                )
 
     def test_windows_disk_full_code_takes_precedence_over_permission_error(self):
         from applicant.errors import StorageFull
         from applicant.financials import FinancialsTracker
 
-        path = self.root / 'history.json'
-        tracker = FinancialsTracker(path, backend='sqlite')
-        error = PermissionError('volume full')
-        error.winerror = 112
-        with (
-            mock.patch('applicant.infra.store.sqlite.os.replace', side_effect=error),
-            mock.patch('applicant.infra.store.sqlite.time.sleep') as sleep,
-            self.assertRaisesRegex(StorageFull, 'free disk space'),
-        ):
-            tracker.record(self.financials(1))
-        sleep.assert_not_called()
-        self.assertEqual(
-            len(FinancialsTracker(path, backend='sqlite').history('crunchbase:zomato')), 1
-        )
+        for posix_errno in (errno.ENOSPC, errno.EACCES):
+            with self.subTest(posix_errno=posix_errno):
+                path = self.root / f'history-{posix_errno}.json'
+                tracker = FinancialsTracker(path, backend='sqlite')
+                error = WindowsFileError(112, posix_errno)
+                with (
+                    mock.patch('applicant.infra.store.sqlite.os.replace', side_effect=error),
+                    mock.patch('applicant.infra.store.sqlite.time.sleep') as sleep,
+                    self.assertRaisesRegex(StorageFull, 'free disk space'),
+                ):
+                    tracker.record(self.financials(1))
+                sleep.assert_not_called()
+                self.assertEqual(
+                    len(FinancialsTracker(path, backend='sqlite').history('crunchbase:zomato')), 1
+                )
 
     @unittest.skipUnless(os.name == 'nt', 'Windows sharing rules')
     def test_native_windows_handle_blocks_atomic_export_until_closed(self):
