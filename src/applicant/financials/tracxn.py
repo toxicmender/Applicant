@@ -423,6 +423,34 @@ class TracxnClient:
     def _rounds(self, payload):
         return [item for item in (self._read_round(node) for node in walk(payload)) if item]
 
+    def _profile_data(self, node, entity_id, financials, rounds, *, scoped=False):
+        """Collect fields only within a subtree attributed to the selected company."""
+        if isinstance(node, list):
+            matched_company = False
+            for child in node:
+                found = self._profile_data(child, entity_id, financials, rounds, scoped=scoped)
+                matched_company = matched_company or found
+            return matched_company
+        if not isinstance(node, dict):
+            return False
+        company = isinstance(node.get('id'), str) and bool(first(node, *NAME_KEYS))
+        identifiers = [
+            value.removeprefix('__')
+            for key in ('companyId', 'entityId', *(('id',) if company else ()))
+            if isinstance(value := node.get(key), str)
+        ]
+        if identifiers:
+            scoped = all(value == entity_id for value in identifiers)
+        matched_company = bool(company and scoped)
+        if matched_company:
+            self._read_company(node, financials, set_id=False)
+        if scoped and (round_ := self._read_round(node)) is not None:
+            rounds.append(round_)
+        for child in node.values():
+            found = self._profile_data(child, entity_id, financials, rounds, scoped=scoped)
+            matched_company = matched_company or found
+        return matched_company
+
     def _latest_point(self, payload):
         """The newest (money, year) in a yearly series. Tracxn gives raw values, no growth."""
         points = []
@@ -556,18 +584,14 @@ class TracxnClient:
             company=selected_name
             or unquote(match.group('slug') or match['id']).replace('-', ' ').title(),
         )
-        returned_id = None
+        entity_id = match['id'].removeprefix('__')
+        matched_company = False
+        rounds: list[FundingRound] = []
         for payload in payloads:
-            record = self._record(payload, None)
-            if record:
-                returned_id = record.get('id')
-                self._read_company(record, financials)
-                break
-        if self.capture is not None and not returned_id:
+            matched = self._profile_data(payload, entity_id, financials, rounds)
+            matched_company = matched_company or matched
+        if self.capture is not None and not matched_company:
             raise Unparseable('captured Tracxn page has no structured company ID')
-        rounds = []
-        for payload in payloads:
-            rounds.extend(self._rounds(payload))
         found = _dedupe(rounds)
         financials.rounds = found[: max(0, max_rounds)]
         financials.rounds_cut(len(found) > len(financials.rounds))
@@ -578,6 +602,7 @@ class TracxnClient:
             and not financials.rounds
             and financials.valuation is None
             and financials.revenue is None
+            and financials.revenue_range is None
         ):
             raise Unparseable(
                 'no funding data found on {} - the page layout may have changed, '
@@ -605,11 +630,11 @@ class TracxnClient:
 
     # -- parsing ----------------------------------------------------------
 
-    def _read_company(self, record, financials):
+    def _read_company(self, record, financials, *, set_id=True):
         name = text_of(first(record, *NAME_KEYS))
         if name:
             financials.company = name
-        if isinstance(record.get('id'), str) and ENTITY_ID.match(record['id']):
+        if set_id and isinstance(record.get('id'), str) and ENTITY_ID.match(record['id']):
             financials.company_id = record['id']
 
         simple = (

@@ -460,3 +460,43 @@ class TracxnLookupTest(unittest.TestCase):
                 self.assertEqual(history.read_bytes(), original)
                 self.assertEqual(main([*args, '--refresh']), 130)
                 self.assertEqual(worker.call_count, 2)
+
+    def test_rejected_refresh_keeps_the_current_export_and_timestamp(self):
+        from applicant.errors import Unparseable
+        from applicant.financials import FinancialsTracker
+        from applicant.infra.store.sqlite import Store
+        from applicant.services.financials import track_financials
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'financials.json'
+            FinancialsTracker(path, backend='sqlite').record(
+                CompanyFinancials(
+                    source='tracxn',
+                    company=COMPANY,
+                    company_id='__profile-1',
+                    url=PROFILE,
+                    revenue=Money(amount=2_000_000, currency='USD'),
+                )
+            )
+            with Store.beside(path) as store:
+                before = list(store.db.iterdump())
+            saved = path.read_bytes()
+            self.page.inner_text = lambda _: ''
+            resolver, _ = self.resolver('yes', self.visit(), 'yes')
+            wrong = {
+                'id': 'other',
+                'name': COMPANY,
+                'totalFunding': {'amount': 77, 'currency': 'USD'},
+            }
+            with (
+                patch('applicant.financials.tracxn.embedded_json', return_value=[wrong]),
+                patch.object(FinancialsTracker, 'record', autospec=True) as record,
+                self.assertRaises(Unparseable),
+            ):
+                track_financials(
+                    [COMPANY], {'tracxn': resolver}, str(path), backend='sqlite', refresh=True
+                )
+            record.assert_not_called()
+            self.assertEqual(path.read_bytes(), saved)
+            with Store.beside(path) as store:
+                self.assertEqual(list(store.db.iterdump()), before)

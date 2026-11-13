@@ -206,13 +206,14 @@ class TracxnWebTest(unittest.TestCase):
         return FakeResponse(
             url='https://tracxn.com/api/funding',
             payload={
+                'companyId': TX_ID,
                 'rounds': [
                     {
                         'fundingRoundCategory': f'Series {chr(65 + n)}',
                         'fundingDate': f'01/0{n + 1}/2020',
                     }
                     for n in range(count)
-                ]
+                ],
             },
         )
 
@@ -240,6 +241,24 @@ class TracxnWebTest(unittest.TestCase):
         result, *_ = self.fetch(site, max_rounds=2)
         self.assertEqual(len(result.rounds), 2)
         self.assertIsNone(result.funding_rounds_count)
+
+    def test_structured_data_and_rounds_belong_to_the_selected_entity(self):
+        right = self.record()['props']['company']
+        right['rounds'] = [
+            {'roundName': 'Seed', 'date': '2020-01-01'},
+            {'companyId': 'other', 'roundName': 'Series A', 'date': '2021-01-01'},
+        ]
+        wrong = {
+            **right,
+            'id': 'other',
+            'totalMoneyRaised': {'amount': 77, 'currency': 'USD'},
+        }
+        result, *_ = self.fetch([(r'__\w+$', Visit(html=next_data({'items': [wrong, right]})))])
+        self.assertEqual(result.company_id, f'__{TX_ID}')
+        self.assertEqual(result.total_funding.amount, 2.1e9)
+        self.assertEqual([item.round for item in result.rounds], ['Seed'])
+        with self.assertRaises(Unparseable):
+            self.fetch([(r'__\w+$', Visit(html=next_data(wrong)))])
 
     def test_other_responses_are_not_read(self):
         heard = [
