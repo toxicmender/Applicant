@@ -566,7 +566,7 @@ class FinancialsCommandTest(unittest.TestCase):
         err = io.StringIO()
         with (
             mock.patch(
-                'applicant.financials.tracker.FinancialsTracker.save',
+                'applicant.financials.tracker.FinancialsTracker._save',
                 side_effect=StoreError('could not write company_financials.json'),
             ),
             redirect_stderr(err),

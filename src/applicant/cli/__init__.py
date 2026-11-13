@@ -27,8 +27,10 @@ from ..errors import (
     Blocked,
     ConfigError,
     DatabaseBusy,
+    ExportConflict,
     NotFound,
     SourceError,
+    StorageFull,
     Unparseable,
     Unreachable,
     sqlite_busy,
@@ -240,15 +242,19 @@ def main(argv: list[str] | None = None) -> int:
     # a store that cannot be written, a setting that does not hold: expected
     # failures with a message that says what to fix, not bugs to trace
     except ApplicantError as error:
-        if isinstance(error, DatabaseBusy):
+        if isinstance(error, (DatabaseBusy, ExportConflict, StorageFull)):
             from ..domain.canonical import canonical_json
 
             print(
                 canonical_json(
-                    {'status': 'database_busy', 'retryable': True, 'message': str(error)}
+                    {
+                        'status': getattr(error, 'status', 'database_busy'),
+                        'retryable': isinstance(error, DatabaseBusy),
+                        'message': str(error),
+                    }
                 )
             )
-            return 8
+            return 8 if isinstance(error, DatabaseBusy) else 1
         logger.error(f'{args.command}: {error}')
         return 1
     except sqlite3.OperationalError as error:

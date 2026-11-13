@@ -82,6 +82,14 @@ def combine(root, expected, *, output='.coverage'):
         combined.save()
 
 
+def worker_receive_line():
+    lines, start = inspect.getsourcelines(_child)
+    for number, line in enumerate(lines, start):
+        if line.strip() == 'arguments = connection.recv()':
+            return number
+    raise ValueError('owned worker coverage marker missing: arguments = connection.recv()')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('record', 'combine'))
@@ -93,10 +101,7 @@ def main():
             data = CoverageData()
             data.read()
             measured = arcs(data, expected['source_sha256'])
-            lines, start = inspect.getsourcelines(_child)
-            sentinel = start + next(
-                i for i, line in enumerate(lines) if 'arguments = connection.recv()' in line
-            )
+            sentinel = worker_receive_line()
             if not any(
                 sentinel in edge for edge in measured.get('src/applicant/infra/owned_worker.py', ())
             ):

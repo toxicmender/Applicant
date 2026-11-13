@@ -7,15 +7,17 @@ those files from before the database existed is picked up on first use.
 
 from __future__ import annotations
 
+import errno
 import io
 import json
+import multiprocessing
 import os
 import sqlite3
 import stat
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -32,6 +34,27 @@ from applicant.storage import ApplicationLog, load_jobs, save_jobs
 from tests.permissions import assert_private
 
 FIXED = datetime(2026, 9, 27, 8, 0, 0, tzinfo=timezone.utc)
+
+
+def try_export_lock(path, pipe):
+    from applicant.errors import FinancialsBusy
+    from applicant.infra.store.financials_lock import financials_lock
+
+    while pipe.recv():
+        try:
+            with financials_lock(path):
+                pass
+        except FinancialsBusy:
+            pipe.send('busy')
+        else:
+            pipe.send('acquired')
+    pipe.close()
+
+
+class WindowsFileError(PermissionError):
+    def __init__(self, winerror: int, posix_errno: int):
+        super().__init__(posix_errno, 'synthetic Windows file error')
+        self.winerror: int = winerror
 
 
 class TempDir(unittest.TestCase):
@@ -351,6 +374,98 @@ class RatingHistoryTest(TempDir):
 
 
 class FinancialsHistoryTest(TempDir):
+    @unittest.skipUnless(os.name == 'nt', 'Windows path aliases')
+    def test_first_pending_export_recovers_from_a_case_alias(self):
+        from applicant.financials import FinancialsTracker
+
+        original = self.root / 'Finance.json'
+        tracker = FinancialsTracker(original, backend='sqlite')
+        with (
+            mock.patch('applicant.infra.store.sqlite.write_document_bytes', side_effect=OSError),
+            self.assertRaises(StoreError),
+        ):
+            tracker.record(self.financials(1))
+        alias = self.root / 'finance.json'
+        found = FinancialsTracker(alias, backend='sqlite')
+        self.assertIn('crunchbase:zomato', found.data['companies'])
+        found.record(self.financials(2))
+        with Store.beside(alias) as store:
+            self.assertEqual(
+                store.db.execute('SELECT document FROM financial_documents').fetchall(),
+                [('Finance.json',)],
+            )
+            self.assertFalse(store.db.execute('SELECT * FROM financial_pending_exports').fetchall())
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows path aliases')
+    def test_alias_conflict_stops_before_migration_and_releases_lock(self):
+        path = self.root / 'Finance.json'
+        path.write_text('{}', encoding='utf-8')
+        database = self.root / DB_NAME
+        with sqlite3.connect(database) as db:
+            for migrations in MIGRATIONS[:2]:
+                for statement in migrations:
+                    db.execute(statement)
+            db.execute('PRAGMA user_version = 2')
+            db.executemany(
+                "INSERT INTO financial_documents VALUES (?, '{}')",
+                [('Finance.json',), ('finance.json',)],
+            )
+            before = list(db.iterdump())
+        db.close()
+        context = multiprocessing.get_context('spawn')
+        parent, pipe = context.Pipe()
+        worker = context.Process(target=try_export_lock, args=(path, pipe))
+        worker.start()
+        pipe.close()
+        preflight = Store.preflight_financials
+
+        def observe(target):
+            parent.send(True)
+            self.assertTrue(parent.poll(60))
+            self.assertEqual(parent.recv(), 'busy')
+            preflight(target)
+
+        try:
+            with (
+                mock.patch.object(Store, 'preflight_financials', side_effect=observe),
+                mock.patch.object(Store, 'beside', side_effect=AssertionError('writable open')),
+                redirect_stdout(io.StringIO()) as output,
+            ):
+                code = main(
+                    [
+                        '--no-log-file',
+                        '--store',
+                        'sqlite',
+                        'financials',
+                        'Acme',
+                        '-s',
+                        'tracxn',
+                        '-o',
+                        str(path),
+                    ]
+                )
+            self.assertEqual(code, 1)
+            result = json.loads(output.getvalue())
+            self.assertEqual(result['status'], 'export_conflict')
+            self.assertIn('finance.json', result['message'])
+            parent.send(True)
+            self.assertTrue(parent.poll(60))
+            self.assertEqual(parent.recv(), 'acquired')
+        finally:
+            if worker.is_alive():
+                parent.send(False)
+                worker.join(5)
+            if worker.is_alive():
+                worker.terminate()
+                worker.join(5)
+            parent.close()
+            worker.close()
+        with sqlite3.connect(database) as db:
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone(), (2,))
+            self.assertEqual(list(db.iterdump()), before)
+        db.close()
+        self.assertEqual(path.read_bytes(), b'{}')
+
     """0.2.0: the financials change log lives in applicant.db too, exported as before."""
 
     def financials(self, total: float, stage: str = 'Series J'):
@@ -384,6 +499,323 @@ class FinancialsHistoryTest(TempDir):
         stored = self.track(self.root / 'stored', 'sqlite')
         self.assertEqual(plain.read_bytes(), stored.read_bytes())
         self.assertTrue((self.root / 'stored' / DB_NAME).exists())
+
+    def test_stale_trackers_keep_independent_company_updates(self):
+        from applicant.financials import FinancialsTracker
+
+        for backend in ('files', 'sqlite'):
+            with self.subTest(backend=backend):
+                path = self.root / backend / 'history.json'
+                first = FinancialsTracker(path, backend=backend)
+                second = FinancialsTracker(path, backend=backend)
+                first.record(self.financials(1))
+                second.record(
+                    self.financials(2).model_copy(
+                        update={'company_id': 'other', 'company': 'Other'}
+                    )
+                )
+                self.assertEqual(
+                    set(second.data['companies']), {'crunchbase:zomato', 'crunchbase:other'}
+                )
+
+    def test_buffered_save_replays_over_an_intervening_company_write(self):
+        from applicant.financials import FinancialsTracker
+
+        for backend in ('files', 'sqlite'):
+            for explicit in (True, False):
+                with self.subTest(backend=backend, explicit=explicit):
+                    path = self.root / f'{backend}-{explicit}.json'
+                    a, b = (FinancialsTracker(path, backend=backend) for _ in range(2))
+                    other = self.financials(3).model_copy(update={'company_id': 'other'})
+                    a.record(self.financials(1), save=False)
+                    a.record(self.financials(2), save=False)
+                    b.record(other)
+                    if explicit:
+                        a.save()
+                    else:
+                        a.record(other)
+                    saved = FinancialsTracker(path, backend=backend)
+                    self.assertEqual(
+                        set(saved.data['companies']), {'crunchbase:zomato', 'crunchbase:other'}
+                    )
+                    self.assertEqual(len(saved.history('crunchbase:zomato')), 2)
+                    self.assertEqual(len(saved.history('crunchbase:other')), 1)
+
+    def test_buffered_utc_tie_and_rollback_do_not_overwrite(self):
+        from applicant.financials import FinancialsTracker
+
+        path = self.root / 'history.json'
+        a, b = (FinancialsTracker(path) for _ in range(2))
+        earlier = FIXED - timedelta(seconds=1)
+        with mock.patch('applicant.financials.tracker.datetime', wraps=datetime) as clock:
+            clock.now.return_value = FIXED
+            a.record(self.financials(1), save=False)
+            b.record(self.financials(5))
+            entry = b.data['companies']['crunchbase:zomato']
+            entry['last_checked'] = FIXED.astimezone(timezone(timedelta(hours=5))).isoformat()
+            b.save()
+            clock.now.return_value = FIXED + timedelta(seconds=2)
+            a.record(self.financials(6), save=False)
+            clock.now.return_value = earlier
+            a.record(self.financials(7), save=False)
+            with self.assertLogs('applicant.financials.tracker', 'DEBUG') as logs:
+                a.save()
+        text = '\n'.join(logs.output)
+        self.assertIn('persisted timestamp tie', text)
+        self.assertIn(earlier.isoformat(), text)
+        self.assertIn('older timestamp', text)
+        self.assertEqual(len(a.history('crunchbase:zomato')), 2)
+        latest = a.latest('crunchbase:zomato')
+        assert latest is not None and latest.total_funding is not None
+        self.assertEqual(latest.total_funding.amount, 6)
+
+    def test_buffered_replay_accepts_legacy_records_without_comparable_times(self):
+        from applicant.financials import FinancialsTracker
+
+        for legacy in ('2026-09-27T08:00:00', 'invalid', None):
+            with self.subTest(legacy=legacy):
+                path = self.root / f'legacy-{legacy is None}-{legacy == "invalid"}.json'
+                tracker = FinancialsTracker(path)
+                tracker.record(self.financials(1))
+                entry = tracker.data['companies']['crunchbase:zomato']
+                del entry['last_checked']
+                if legacy is None:
+                    del entry['latest']['fetched_at']
+                else:
+                    entry['latest']['fetched_at'] = legacy
+                tracker.save()
+                tracker.record(self.financials(2), save=False)
+                tracker.save()
+                self.assertEqual(len(tracker.history('crunchbase:zomato')), 2)
+
+    def test_buffer_retry_after_failed_staging_or_publication(self):
+        from applicant.financials import FinancialsTracker
+
+        for backend, failure in (
+            ('files', 'applicant.financials.tracker.write_document'),
+            ('sqlite', 'applicant.infra.store.sqlite.Store._stage_financials'),
+            ('sqlite', 'applicant.infra.store.sqlite.write_document_bytes'),
+        ):
+            with self.subTest(backend=backend, boundary=failure):
+                path = self.root / f'{failure.rsplit(".", 1)[-1]}.json'
+                tracker = FinancialsTracker(path, backend=backend)
+                tracker.record(self.financials(1), save=False)
+                tracker.record(self.financials(2), save=False)
+                with mock.patch(failure, side_effect=OSError), self.assertRaises(StoreError):
+                    tracker.save()
+                tracker.save()
+                self.assertEqual(len(tracker.history('crunchbase:zomato')), 2)
+                original = path.read_bytes()
+                tracker.save()
+                self.assertEqual(path.read_bytes(), original)
+
+    def test_financials_contention_at_load_and_save(self):
+        from applicant.errors import FinancialsBusy
+        from applicant.financials import FinancialsTracker
+        from applicant.infra.store.financials_lock import financials_lock
+
+        path = self.root / 'history.json'
+        tracker = FinancialsTracker(path, backend='sqlite')
+        with financials_lock(path):
+            with self.assertRaises(FinancialsBusy):
+                FinancialsTracker(path, backend='sqlite')
+            with self.assertRaises(FinancialsBusy):
+                tracker.record(self.financials(1))
+        tracker.record(self.financials(1))
+        self.assertEqual(len(tracker.history('crunchbase:zomato')), 1)
+
+    def test_disk_full_keeps_pending_financials_for_next_run(self):
+        from applicant.errors import StorageFull
+        from applicant.financials import FinancialsTracker
+
+        path = self.root / 'history.json'
+        tracker = FinancialsTracker(path, backend='sqlite')
+        tracker.record(self.financials(1))
+        original = path.read_bytes()
+        error = OSError(errno.ENOSPC, 'no space', str(path))
+        with (
+            mock.patch('applicant.infra.store.sqlite.os.replace', side_effect=error) as replace,
+            mock.patch('applicant.infra.store.sqlite.time.sleep') as sleep,
+            self.assertRaises(StorageFull),
+        ):
+            tracker.record(self.financials(2))
+        replace.assert_called_once()
+        sleep.assert_not_called()
+        self.assertEqual(path.read_bytes(), original)
+        restored = FinancialsTracker(path, backend='sqlite')
+        self.assertEqual(len(restored.history('crunchbase:zomato')), 2)
+
+    def test_windows_sharing_retry_preserves_pending_record(self):
+        from applicant.errors import ExportPending
+        from applicant.financials import FinancialsTracker
+
+        for code in (32, 33):
+            with self.subTest(code=code):
+                path = self.root / f'history-{code}.json'
+                tracker = FinancialsTracker(path, backend='sqlite')
+                error = WindowsFileError(code, errno.EACCES)
+                with (
+                    mock.patch(
+                        'applicant.infra.store.sqlite.os.replace', side_effect=error
+                    ) as replace,
+                    mock.patch('applicant.infra.store.sqlite.time.sleep') as sleep,
+                    self.assertRaises(ExportPending),
+                ):
+                    tracker.record(self.financials(2))
+                self.assertEqual(replace.call_count, 5)
+                self.assertEqual(
+                    sleep.call_args_list, [mock.call(n) for n in (0.05, 0.1, 0.2, 0.4)]
+                )
+                self.assertFalse(path.exists())
+                self.assertEqual(
+                    len(FinancialsTracker(path, backend='sqlite').history('crunchbase:zomato')), 1
+                )
+
+    def test_windows_disk_full_code_takes_precedence_over_permission_error(self):
+        from applicant.errors import StorageFull
+        from applicant.financials import FinancialsTracker
+
+        for posix_errno in (errno.ENOSPC, errno.EACCES):
+            with self.subTest(posix_errno=posix_errno):
+                path = self.root / f'history-{posix_errno}.json'
+                tracker = FinancialsTracker(path, backend='sqlite')
+                error = WindowsFileError(112, posix_errno)
+                with (
+                    mock.patch('applicant.infra.store.sqlite.os.replace', side_effect=error),
+                    mock.patch('applicant.infra.store.sqlite.time.sleep') as sleep,
+                    self.assertRaisesRegex(StorageFull, 'free disk space'),
+                ):
+                    tracker.record(self.financials(1))
+                sleep.assert_not_called()
+                self.assertEqual(
+                    len(FinancialsTracker(path, backend='sqlite').history('crunchbase:zomato')), 1
+                )
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows sharing rules')
+    def test_native_windows_handle_blocks_atomic_export_until_closed(self):
+        from applicant.errors import ExportPending, StoreError
+        from applicant.financials import FinancialsTracker
+
+        path = self.root / 'history.json'
+        tracker = FinancialsTracker(path, backend='sqlite')
+        tracker.record(self.financials(1))
+        original = path.read_bytes()
+        with (
+            path.open('rb'),
+            mock.patch('applicant.infra.store.sqlite.time.sleep') as sleep,
+            self.assertRaises(StoreError) as failure,
+        ):
+            tracker.record(self.financials(2))
+        if isinstance(failure.exception, ExportPending):
+            self.assertEqual(sleep.call_count, 4)
+        else:
+            self.assertEqual(getattr(failure.exception.__cause__, 'winerror', None), 5)
+            self.assertIn('pending export', str(failure.exception))
+            sleep.assert_not_called()
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(
+            len(FinancialsTracker(path, backend='sqlite').history('crunchbase:zomato')), 2
+        )
+
+    def test_disk_full_during_export_acknowledgement_needs_no_republish(self):
+        import sqlite3
+
+        from applicant.errors import StorageFull
+        from applicant.financials import FinancialsTracker
+
+        path = self.root / 'history.json'
+        tracker = FinancialsTracker(path, backend='sqlite')
+        tracker.record(self.financials(1))
+
+        class FullDisk(sqlite3.OperationalError):
+            sqlite_errorcode = 13
+
+        error = FullDisk('database or disk is full')
+        with (
+            mock.patch.object(Store, '_remember_financials', side_effect=error),
+            self.assertRaises(StorageFull),
+        ):
+            tracker.record(self.financials(2))
+        with mock.patch('applicant.infra.store.sqlite.write_document_bytes') as publish:
+            recovered = FinancialsTracker(path, backend='sqlite')
+        publish.assert_not_called()
+        self.assertEqual(len(recovered.history('crunchbase:zomato')), 2)
+
+    def test_pending_recovery_merges_disjoint_edits_and_preserves_conflicts(self):
+        from applicant.errors import ExportConflict, StoreError
+        from applicant.financials import FinancialsTracker
+
+        path = self.root / 'history.json'
+        tracker = FinancialsTracker(path, backend='sqlite')
+        tracker.record(self.financials(1))
+        with (
+            mock.patch('applicant.infra.store.sqlite.write_document_bytes', side_effect=OSError),
+            self.assertRaises(StoreError),
+        ):
+            tracker.record(self.financials(2))
+
+        document = json.loads(path.read_bytes())
+        document['schema_version'] = 2
+        path.write_text(json.dumps(document), encoding='utf-8')
+        conflict = path.read_bytes()
+        with self.assertRaisesRegex(ExportConflict, r'metadata\.schema_version'):
+            FinancialsTracker(path, backend='sqlite')
+        self.assertEqual(path.read_bytes(), conflict)
+
+        del document['schema_version']
+        document['companies']['tracxn:another'] = {'company': 'Another', 'snapshots': []}
+        document['notes'] = None
+        path.write_text(json.dumps(document), encoding='utf-8')
+        restored = FinancialsTracker(path, backend='sqlite')
+        self.assertIn('tracxn:another', restored.data['companies'])
+        self.assertIsNone(restored.data['notes'])
+        self.assertEqual(len(restored.history('crunchbase:zomato')), 2)
+
+    def test_tracxn_legacy_timestamp_becomes_reusable_only_after_refresh(self):
+        from datetime import timedelta, timezone
+
+        from applicant.errors import Unparseable
+        from applicant.financials import CompanyFinancials, FinancialsTracker
+
+        path = self.root / 'history.json'
+        tracker = FinancialsTracker(path)
+        result = self.financials(0).model_copy(
+            update={'source': 'tracxn', 'company': 'Acme', 'company_id': 'acme'}
+        )
+        tracker.record(result)
+        entry = tracker.data['companies']['tracxn:acme']
+        del entry['last_checked']
+        entry['latest']['fetched_at'] = '2026-11-01T12:00:00'
+        tracker.save()
+        original = path.read_bytes()
+        with self.assertLogs('applicant.financials.tracker', 'WARNING') as warning:
+            self.assertIsNone(tracker.cached_tracxn('Acme Corp Ltd.', now=FIXED))
+        self.assertIn('timezone-naive', warning.output[0])
+        with self.assertRaises(Unparseable):
+            tracker.record(
+                CompanyFinancials(source='tracxn', company='Acme', company_id='acme'),
+                require_complete=True,
+            )
+        self.assertEqual(path.read_bytes(), original)
+        with mock.patch('applicant.financials.tracker.datetime') as clock:
+            clock.now.return_value = FIXED
+            tracker.record(result, require_complete=True)
+        saved = path.read_bytes()
+        self.assertIsNotNone(
+            tracker.cached_tracxn('Acme Corp Ltd.', now=FIXED + timedelta(days=29))
+        )
+        self.assertIsNone(tracker.cached_tracxn('Acme', now=FIXED + timedelta(days=30)))
+        with self.assertLogs('applicant.financials.tracker', 'WARNING') as warning:
+            self.assertIsNone(tracker.cached_tracxn('Acme', now=FIXED - timedelta(seconds=1)))
+        self.assertIn('system clock', warning.output[0])
+        entry = tracker.data['companies']['tracxn:acme']
+        entry['last_checked'] = FIXED.astimezone(
+            timezone(timedelta(hours=5, minutes=30))
+        ).isoformat()
+        self.assertIsNotNone(tracker.cached_tracxn('Acme', now=FIXED))
+        entry['last_checked'] = FIXED.isoformat().replace('+00:00', 'Z')
+        self.assertIsNotNone(tracker.cached_tracxn('Acme', now=FIXED))
+        self.assertEqual(path.read_bytes(), saved)
 
     def test_the_database_holds_the_change_log(self):
         path = self.track(self.root / 'stored', 'sqlite')

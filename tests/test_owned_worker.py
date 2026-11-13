@@ -8,9 +8,13 @@ import subprocess
 import sys
 import unittest
 from contextlib import suppress
+from threading import Event
 from unittest.mock import Mock, patch
 
-from applicant.infra.owned_worker import WorkerFailure, run_worker
+from playwright.sync_api import Error
+
+from applicant.infra.browser_diagnostics import QUEUE_SIZE, event, stage
+from applicant.infra.owned_worker import WorkerFailure, _ControlPipe, run_worker
 
 
 def echo(connection, arguments):
@@ -25,6 +29,52 @@ def hanging(connection, arguments):
 
 def failing(connection, arguments):
     raise ValueError('private data must not leave the worker')
+
+
+def overflowing(connection, address):
+    connection.send(('pause', 'fill diagnostic queue'))
+    with socket.create_connection(address, timeout=10) as signal_socket:
+        try:
+            with stage('verification_navigation'):
+                for _ in range(QUEUE_SIZE + 12):
+                    event('request', 'failed')
+                raise Error('navigation net::ERR_CONNECTION_RESET at ?token=private-value')
+        finally:
+            signal_socket.sendall(b'1')
+            connection.recv()
+
+
+def exit_abruptly(connection, arguments):
+    os._exit(5)
+
+
+def prompt_then_exit(connection, arguments):
+    if os.name == 'nt':
+        inherited = os.get_handle_inheritable(connection.fileno())
+    else:
+        import fcntl
+
+        inherited = not bool(fcntl.fcntl(connection.fileno(), fcntl.F_GETFD) & fcntl.FD_CLOEXEC)
+    connection.send(('progress', inherited))
+    connection.send(('prompt', 'choose'))
+    # Wait for a test handshake outside the control pipe so the prompt is pending.
+    with socket.create_connection(arguments, timeout=10) as channel:
+        channel.recv(1)
+    os._exit(5)
+
+
+def prompt_then_stall(connection, arguments):
+    connection.send(('prompt', 'choose'))
+    connection.recv()
+
+
+def failing_during_cleanup(connection, arguments):
+    try:
+        with stage('login_navigation'):
+            raise Error('net::ERR_NAME_NOT_RESOLVED')
+    finally:
+        with suppress(RuntimeError), stage('browser_teardown'):
+            raise RuntimeError('private cleanup details')
 
 
 def held_child(connection):
@@ -125,14 +175,97 @@ class OwnedWorkerTest(unittest.TestCase):
 
     def test_hung_close_is_bounded(self):
         # The injected clock advances only after the closing message has arrived.
-        clock = Mock(side_effect=[0, 0, 0, 6])
         with self.assertRaisesRegex(WorkerFailure, 'deadline'):
-            run_worker(hanging, None, timeout=None, grace=5, monotonic=clock)
+            run_worker(hanging, None, timeout=None, grace=0)
+
+    def test_worker_exit_cancels_pending_prompt(self):
+        flags = []
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1', 0))
+            listener.listen()
+            listener.settimeout(15)
+
+            def prompt(question, poll):
+                self.assertEqual(question, 'choose')
+                with listener.accept()[0] as channel:
+                    channel.sendall(b'1')
+                while True:
+                    poll()
+
+            with self.assertRaisesRegex(WorkerFailure, 'exited without a result'):
+                run_worker(
+                    prompt_then_exit,
+                    listener.getsockname(),
+                    interactive=True,
+                    prompt=prompt,
+                    progress=flags.append,
+                )
+        self.assertEqual(flags, [False])
+
+    def test_prompt_heartbeat_deadline_uses_injected_clock(self):
+        clock = Mock(return_value=0)
+
+        def prompt(question, poll):
+            self.assertEqual(question, 'choose')
+            clock.return_value = 5
+            poll()
+
+        with self.assertRaisesRegex(WorkerFailure, 'stopped responding'):
+            run_worker(prompt_then_stall, None, interactive=True, prompt=prompt, monotonic=clock)
 
     def test_failure_does_not_disclose_payload(self):
         with self.assertRaisesRegex(WorkerFailure, 'ValueError') as raised:
             run_worker(failing, None)
         self.assertNotIn('private data', str(raised.exception))
+
+    def test_saturated_queue_preserves_failure_and_drop_summary(self):
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1', 0))
+            listener.listen()
+            listener.settimeout(15)
+
+            def pause(message):
+                self.assertEqual(message, 'fill diagnostic queue')
+                with listener.accept()[0] as channel:
+                    channel.settimeout(15)
+                    self.assertEqual(channel.recv(1), b'1')
+
+            with (
+                self.assertLogs('applicant.browser.worker', level='DEBUG') as logs,
+                self.assertRaisesRegex(
+                    WorkerFailure, 'verification_navigation.*ERR_CONNECTION_RESET'
+                ),
+            ):
+                run_worker(
+                    overflowing,
+                    listener.getsockname(),
+                    interactive=True,
+                    pause=pause,
+                    provider='tracxn',
+                )
+        text = '\n'.join(logs.output)
+        self.assertIn('Diagnostic queue saturated: 14 events dropped', text)
+        self.assertIn(f'emitted={QUEUE_SIZE} received={QUEUE_SIZE} dropped=14', text)
+        self.assertIn("'provider': 'tracxn'", text)
+        self.assertNotIn('private-value', text)
+
+    def test_abrupt_exit_leaves_final_drop_count_unknown(self):
+        with (
+            self.assertLogs('applicant.browser.worker', level='DEBUG') as logs,
+            self.assertRaisesRegex(WorkerFailure, 'exited without a result'),
+        ):
+            run_worker(exit_abruptly, None, provider='tracxn')
+        self.assertIn('final_drop_count=unknown', '\n'.join(logs.output))
+
+    def test_cleanup_failure_preserves_original_browser_stage(self):
+        with (
+            self.assertLogs('applicant.browser.worker', level='DEBUG') as logs,
+            self.assertRaisesRegex(WorkerFailure, 'login_navigation.*ERR_NAME_NOT_RESOLVED'),
+        ):
+            run_worker(failing_during_cleanup, None, provider='tracxn')
+        text = '\n'.join(logs.output)
+        self.assertIn("'cleanup_failures': [{'operation': 'browser_teardown'", text)
+        self.assertNotIn('private cleanup details', text)
 
     def test_interrupt_terminates_only_owned_tree(self):
         context = multiprocessing.get_context('spawn')
@@ -184,6 +317,24 @@ class OwnedWorkerTest(unittest.TestCase):
 
 
 class OwnedWorkerBoundaryTest(unittest.TestCase):
+    def test_control_pipe_waiting_for_partial_message_keeps_supervisor_responsive(self):
+        entered, release = Event(), Event()
+        connection = Mock()
+
+        def recv():
+            entered.set()
+            release.wait(60)
+            raise EOFError
+
+        connection.recv.side_effect = recv
+        transport = _ControlPipe(connection)
+        try:
+            self.assertTrue(entered.wait(60))
+            self.assertIsNone(transport.receive(timeout=0))
+        finally:
+            release.set()
+            transport.close()
+
     def test_spawn_failure_closes_both_pipe_ends(self):
         context = Mock()
         parent, child = Mock(), Mock()
@@ -191,6 +342,7 @@ class OwnedWorkerBoundaryTest(unittest.TestCase):
         context.Process.return_value.start.side_effect = OSError('spawn failed')
         with (
             patch('applicant.infra.owned_worker.multiprocessing.get_context', return_value=context),
+            patch('applicant.infra.owned_worker._protect_connection'),
             self.assertRaisesRegex(OSError, 'spawn failed'),
         ):
             run_worker(echo, None)
@@ -202,17 +354,20 @@ class OwnedWorkerBoundaryTest(unittest.TestCase):
         context = Mock()
         parent, child = Mock(), Mock()
         context.Pipe.return_value = parent, child
-        parent.poll.return_value = False
         process = context.Process.return_value
         process.pid = 42
         process.is_alive.side_effect = [True, True, False, False]
         with (
             patch('applicant.infra.owned_worker.multiprocessing.get_context', return_value=context),
+            patch('applicant.infra.owned_worker._protect_connection'),
+            patch('applicant.infra.owned_worker._ControlPipe') as transport,
             self.assertRaisesRegex(WorkerFailure, 'startup failed'),
         ):
+            transport.return_value.receive.return_value = ('eof', None)
             run_worker(echo, None)
-        parent.poll.assert_called_once_with(10)
         process.terminate.assert_called_once_with()
-        process.join.assert_called_once_with(5)
-        parent.close.assert_called_once_with()
+        process.join.assert_called_once()
+        self.assertGreaterEqual(process.join.call_args.args[0], 0)
+        self.assertLessEqual(process.join.call_args.args[0], 5)
+        transport.return_value.close.assert_called_once_with()
         child.close.assert_called_once_with()

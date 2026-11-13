@@ -23,27 +23,37 @@ is one file to back up. See docs/architecture-plan.md, decision D8.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import logging
 import os
 import sqlite3
 import tempfile
+import time
 from collections.abc import Iterable, Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from ...domain.dedupe import fingerprint, key
 from ...domain.job import Job
-from ...errors import DatabaseBusy, StoreError, sqlite_busy
-from ...files import read_document, write_document
+from ...errors import DatabaseBusy, ExportConflict, ExportPending, StoreError, sqlite_busy
+from ...files import (
+    decode_document,
+    document_bytes,
+    read_document,
+    write_document,
+    write_document_bytes,
+)
 from ...permissions import make_private
 from ...storage import APPLIED_COLUMNS, PROVISIONAL, ApplicationLog, plan_rows, write_rows
 from .benchmarks import BENCHMARK_MIGRATION
 from .company_evidence import COMPANY_EVIDENCE_MIGRATION
 from .feedback import FEEDBACK_MIGRATION
+from .financials_lock import financials_lock
+from .financials_merge import merge_financial_exports
 from .maintenance import configure_connection
 from .personalization import PERSONALIZATION_MIGRATION
 from .ranking_schema import RANKING_MIGRATION
@@ -128,6 +138,15 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
     BENCHMARK_MIGRATION,
     COMPANY_EVIDENCE_MIGRATION,
     RESEARCH_MIGRATION,
+    (
+        """CREATE TABLE financial_pending_exports (
+            document TEXT PRIMARY KEY,
+            baseline BLOB,
+            baseline_digest TEXT,
+            intended BLOB NOT NULL,
+            intended_digest TEXT NOT NULL
+        )""",
+    ),
 )
 
 
@@ -136,6 +155,34 @@ def _digest(path: Path) -> str | None:
         return hashlib.sha256(path.read_bytes()).hexdigest()
     except FileNotFoundError:
         return None
+
+
+def _financials_bytes(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def _bytes_digest(content: bytes | None) -> str | None:
+    return hashlib.sha256(content).hexdigest() if content is not None else None
+
+
+def _replace_financial_export(temporary: str, target: Path) -> None:
+    try:
+        os.replace(temporary, target)
+    except OSError as error:
+        winerror = getattr(error, 'winerror', None)
+        if error.errno == errno.ENOSPC or winerror == 112:
+            raise
+        if winerror in (32, 33):
+            raise ExportPending(f'{target}: close applications using it and rerun') from error
+        if winerror == 5:
+            raise StoreError(
+                f'{target}: access denied while publishing the pending export. '
+                'Close applications using it or check file permissions, then rerun.'
+            ) from error
+        raise
 
 
 def _now() -> str:
@@ -533,33 +580,128 @@ class Store:
 
     # -- company financials -----------------------------------------------
 
-    def _sync_financials(self, file: Path) -> str:
-        """Import the history file if it moved on. The tracker only ever opens
-        it to write, so an unreadable one is moved aside, as the file backend does."""
-        name = self.name(file)
-        if not self._stale(name, file, 'financials', 'document'):
+    @classmethod
+    def preflight_financials(cls, file: Path) -> None:
+        """Check a legacy or current database before writable initialization."""
+        database = file.parent / DB_NAME
+        if os.name == 'nt' and database.exists():
+            with closing(sqlite3.connect(database.as_uri() + '?mode=ro', uri=True)) as db, db:
+                db.execute('BEGIN')
+                cls._financials_alias(db, file.name, file)
+
+    @staticmethod
+    def _financials_alias(db: sqlite3.Connection, name: str, file: Path) -> str:
+        if os.name != 'nt':
             return name
-        existed = file.exists()
-        document = read_document(file, quarantine=True)
-        if existed and not file.exists() and self._holds(name, 'financial_documents', 'document'):
-            # unreadable and moved aside, while the database has the history:
-            # the only good copy is not replaced by nothing - it writes the file
-            with self._transaction() as db:
-                write_document(file, self._financials_from_db(name))
-                self._remember(db, name, file)
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        keys = {
+            key
+            for table in (
+                'financial_pending_exports',
+                'financial_documents',
+                'financials',
+                'financial_snapshots',
+            )
+            if table in tables
+            for (key,) in db.execute(f'SELECT DISTINCT document FROM {table}')
+            if os.path.normcase(key) == os.path.normcase(name)
+        }
+        if len(keys) > 1:
+            raise ExportConflict(
+                f'{file}: conflicting financials collection keys {sorted(keys)!r}. '
+                'Back up the database and review both histories before retrying.'
+            )
+        return next(iter(keys), name)
+
+    def _financials_name(self, file: Path) -> str:
+        return self._financials_alias(self.db, self.name(file), file)
+
+    def _sync_financials(self, file: Path) -> tuple[str, bytes | None]:
+        """Recover staged writes before considering the file as an input."""
+        name = self._financials_name(file)
+        self._reconcile_financials(name, file)
+        baseline = _financials_bytes(file)
+        digest = _bytes_digest(baseline)
+        if digest == self._known_digest(name):
+            return name, baseline
+        document = decode_document(file, baseline, quarantine=True) if baseline is not None else {}
+        if (
+            baseline is not None
+            and not file.exists()
+            and self._holds(name, 'financial_documents', 'document')
+        ):
+            self._save_financials(self._financials_from_db(name), file, None)
             logger.warning(f'{file}: rewritten from the history in {self.path}')
-            return name
+            return name, _financials_bytes(file)
+        if not file.exists():
+            baseline = digest = None
         with self._transaction() as db:
             self._replace_financials(db, name, document)
-            self._remember(db, name, file)
+            self._remember_financials(db, name, digest)
         companies = document.get('companies')
         if isinstance(companies, dict) and companies:
             logger.info(f'{file}: imported {len(companies)} company record(s) into {self.path}')
-        return name
+        return name, baseline
+
+    @staticmethod
+    def _remember_financials(db: sqlite3.Connection, name: str, digest: str | None) -> None:
+        db.execute(
+            'INSERT INTO documents (name, digest) VALUES (?, ?) '
+            'ON CONFLICT (name) DO UPDATE SET digest = excluded.digest',
+            (name, digest),
+        )
+
+    def _stage_financials(
+        self, name: str, document: dict, baseline: bytes | None
+    ) -> tuple[bytes, str]:
+        intended = document_bytes(document)
+        intended_digest = hashlib.sha256(intended).hexdigest()
+        with self._transaction() as db:
+            self._replace_financials(db, name, document)
+            db.execute(
+                'INSERT OR REPLACE INTO financial_pending_exports VALUES (?, ?, ?, ?, ?)',
+                (name, baseline, _bytes_digest(baseline), intended, intended_digest),
+            )
+        return intended, intended_digest
+
+    def _reconcile_financials(self, name: str, file: Path) -> None:
+        pending = self.db.execute(
+            'SELECT baseline, baseline_digest, intended, intended_digest '
+            'FROM financial_pending_exports WHERE document = ?',
+            (name,),
+        ).fetchone()
+        if pending is None:
+            return
+        baseline, baseline_digest, intended, intended_digest = pending
+        for delay in (0.05, 0.1, 0.2, 0.4, None):
+            current = _financials_bytes(file)
+            current_digest = _bytes_digest(current)
+            if current_digest != intended_digest:
+                if current is not None and current_digest != baseline_digest:
+                    merged = merge_financial_exports(file, baseline, current, intended)
+                    intended, intended_digest = self._stage_financials(name, merged, current)
+                    baseline, baseline_digest = current, current_digest
+                try:
+                    write_document_bytes(file, intended, replace=_replace_financial_export)
+                except ExportPending:
+                    if delay is None:
+                        raise
+                    time.sleep(delay)
+                    continue
+            with self._transaction() as db:
+                self._remember_financials(db, name, intended_digest)
+                db.execute('DELETE FROM financial_pending_exports WHERE document = ?', (name,))
+            return
 
     def financials_document(self, file: str | os.PathLike[str]) -> dict:
         """The history document, rebuilt exactly as the file holds it."""
-        return self._financials_from_db(self._sync_financials(Path(file)))
+        target = Path(file).resolve()
+        with financials_lock(target):
+            return self._load_financials(target)[0]
+
+    def _load_financials(self, target: Path) -> tuple[dict, bytes | None]:
+        name, baseline = self._sync_financials(target)
+        return self._financials_from_db(name), baseline
 
     def _financials_from_db(self, name: str) -> dict:
         extra = self.db.execute(
@@ -590,24 +732,29 @@ class Store:
         The export is `document` itself, written the way the file backend
         writes it, so the two backends' files are the same bytes.
         """
-        target = Path(file)
-        name = self._sync_financials(target)
-        with self._transaction() as db:
-            self._replace_financials(db, name, document)
-            write_document(target, document)
-            self._remember(db, name, target)
+        target = Path(file).resolve()
+        with financials_lock(target):
+            _, baseline = self._sync_financials(target)
+            self._save_financials(document, target, baseline)
+
+    def _save_financials(self, document: dict, target: Path, baseline: bytes | None) -> None:
+        name = self._financials_name(target)
+        self._stage_financials(name, document, baseline)
+        self._reconcile_financials(name, target)
 
     def financial_history(self, file: str | os.PathLike[str], company: str) -> list[dict]:
         """Every snapshot of one company (`<source>:<id>`), oldest first."""
-        name = self._sync_financials(Path(file))
-        return [
-            json.loads(snapshot)
-            for (snapshot,) in self.db.execute(
-                'SELECT snapshot FROM financial_snapshots WHERE document = ? AND key = ? '
-                'ORDER BY seq',
-                (name, company),
-            )
-        ]
+        target = Path(file).resolve()
+        with financials_lock(target):
+            name, _ = self._sync_financials(target)
+            return [
+                json.loads(snapshot)
+                for (snapshot,) in self.db.execute(
+                    'SELECT snapshot FROM financial_snapshots WHERE document = ? AND key = ? '
+                    'ORDER BY seq',
+                    (name, company),
+                )
+            ]
 
     def _replace_financials(self, db: sqlite3.Connection, name: str, document: dict) -> None:
         db.execute('DELETE FROM financial_documents WHERE document = ?', (name,))

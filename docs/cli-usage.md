@@ -169,6 +169,30 @@ uv run applicant financials "https://tracxn.com/d/companies/COMPANY/__ENTITY_ID"
 uv run applicant financials zomato --source crunchbase --login
 ```
 
+For Tracxn company names without an API key, Applicant reuses a uniquely matched
+saved result checked less than 30 days ago. Pass `--refresh` to bypass it.
+Legacy records with no timezone offset stay stale until a successful refresh.
+In a terminal, Applicant offers to open your saved session when it first needs a profile URL.
+Set up that session with `uv run applicant setup provider tracxn` if needed.
+
+```console
+uv run applicant financials --from-jobs job_listing.json -s tracxn
+```
+
+Search in the browser and open the company profile. Press Enter in the terminal
+to inspect it. Review the company heading, tab title, and URL, then type `yes`
+to read the available financials. Use `back` to choose another result, `skip`
+to move past a company, or `stop` to end interactive lookup. Applicant closes the
+browser after each company and opens a fresh one for the next lookup that needs
+it. Use the profile reader only where your account permits browser extraction.
+
+If financials reports `financials_busy`, rerun after the other Applicant command
+finishes. For `export_pending`, close applications using the JSON file and rerun
+to publish the committed SQLite data. For `export_conflict`, review the reported
+keys in your edited JSON before retrying. Keep the sibling lock file while any
+process is using the export or profile. You can remove it after all users of
+that path have stopped.
+
 #### Verified company evidence for ranking (`company-evidence`)
 
 Associate a provider company ID with an exact job version, capture or import

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import os
+import shlex
 from contextlib import ExitStack
-from typing import TYPE_CHECKING, Literal
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic import Field
 
@@ -12,10 +15,11 @@ from ..services.financials import FINANCIAL_SOURCES
 from ..settings import Settings
 from .common import configured_path
 from .dispatch import AddParser, Request
-from .render import Renderer, terminal
+from .render import Renderer, shown, terminal
 
 if TYPE_CHECKING:
     from ..financials import CrunchbaseClient, TracxnClient
+    from ..services.financials import FinancialsSource
 
 
 class FinancialsRequest(Request):
@@ -25,6 +29,7 @@ class FinancialsRequest(Request):
     max_rounds: int = 20
     output: str | None = None
     rounds: bool = False
+    refresh: bool = False
     login: bool = False
     show: bool = False
     cb_profile: str | None = None
@@ -64,12 +69,15 @@ def add_parser(add: AddParser) -> argparse.ArgumentParser:
     )
     financials.add_argument('--rounds', action='store_true', help='print each funding round too')
     financials.add_argument(
+        '--refresh', action='store_true', help='bypass saved Tracxn financials for company names'
+    )
+    financials.add_argument(
         '--crunchbase-key',
         help='Crunchbase API key (default: $CRUNCHBASE_API_KEY); without one the website is read',
     )
     financials.add_argument(
         '--tracxn-key',
-        help='Tracxn API token (default: $TRACXN_API_KEY); without one a profile url is needed',
+        help='Tracxn API token (default: $TRACXN_API_KEY); otherwise use a profile URL or interactive lookup',
     )
     financials.add_argument(
         '--login',
@@ -145,9 +153,26 @@ def run(args: FinancialsRequest, settings: Settings) -> int:
 
     # the clients are made here, so they are closed here - whatever happens
     with ExitStack() as opened:
-        made = {
+        opened_clients = {
             name: opened.enter_context(client) for name, client in clients(args, settings).items()
         }
+        made: dict[str, FinancialsSource] = dict(opened_clients)
+        if (tracxn := opened_clients.get('tracxn')) is not None:
+            from .tracxn_lookup import InteractiveTracxn
+
+            profile = configured_path(settings, args.tx_profile, settings.files.tracxn_profile)
+            reauth = 'uv run applicant setup provider tracxn --reauth'
+            if Path(profile) != Path('.tx_profile'):
+                absolute = shown(Path(profile).resolve())
+                quoted = (
+                    "'" + absolute.replace("'", "''") + "'"
+                    if os.name == 'nt'
+                    else shlex.quote(absolute)
+                )
+                reauth = f'uv run applicant financials -s tracxn --login --tx-profile {quoted}'
+            resolver = InteractiveTracxn(cast('TracxnClient', tracxn), terminal(), reauth)
+            opened.callback(resolver.close)
+            made['tracxn'] = resolver
         tracked = track_financials(
             companies,
             made,
@@ -155,6 +180,7 @@ def run(args: FinancialsRequest, settings: Settings) -> int:
             max_rounds=args.max_rounds,
             emit=Renderer(rounds=args.rounds, failures=True),
             backend=settings.store,
+            refresh=args.refresh,
         )
     if not tracked.found:
         return 1

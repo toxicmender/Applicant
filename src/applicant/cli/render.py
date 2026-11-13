@@ -77,6 +77,8 @@ class Renderer:
                 event.source, shown(financials.company), shown(financials.summary())
             )
         )
+        if event.cached_at is not None:
+            print('  cached financials retrieved at {}'.format(shown(event.cached_at)))
         for change in event.changes:
             print('  changed: {}'.format(shown(change)))
         for note in financials.notes:

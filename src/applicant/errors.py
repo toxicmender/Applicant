@@ -84,6 +84,30 @@ class DatabaseBusy(StoreError):
     retryable = True
 
 
+class FinancialsBusy(DatabaseBusy):
+    """Another process owns the financials export."""
+
+    status = 'financials_busy'
+
+
+class ExportPending(DatabaseBusy):
+    """SQLite committed financials that are still waiting to be exported."""
+
+    status = 'export_pending'
+
+
+class ExportConflict(StoreError):
+    """A manual edit conflicts with a staged financials export."""
+
+    status = 'export_conflict'
+
+
+class StorageFull(StoreError):
+    """The filesystem or SQLite cannot allocate space for a write."""
+
+    status = 'storage_full'
+
+
 def sqlite_busy(error):
     import sqlite3
 

@@ -35,6 +35,18 @@ operation. Consult the provider's access requirements before using live capture.
 
 ## Authentication
 
+To troubleshoot provider setup, send browser diagnostics to a dedicated run log.
+
+```powershell
+uv run applicant -v --log-file logs/tracxn-setup.log setup provider tracxn
+```
+
+The log shows browser channel attempts, login and verification stages, recognized
+network errors, main-document HTTP failures, and cleanup. The standard run log
+captures these details too. Use `-v` to also display them in the terminal.
+Diagnostics include URL origins and exclude credentials and session contents.
+If the worker exits abruptly, the log marks its diagnostics as incomplete.
+
 ```powershell
 uv run applicant setup provider glassdoor
 uv run applicant setup provider linkedin --reauth

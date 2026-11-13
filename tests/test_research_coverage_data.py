@@ -2,12 +2,21 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from coverage import CoverageData
-from tools.research_coverage_data import arcs, combine
+from tools.research_coverage_data import arcs, combine, worker_receive_line
 
 
 class CoverageDataTest(unittest.TestCase):
+    def test_worker_receive_marker_is_required(self):
+        self.assertGreater(worker_receive_line(), 0)
+        with (
+            patch('tools.research_coverage_data.inspect.getsourcelines', return_value=([], 1)),
+            self.assertRaisesRegex(ValueError, 'owned worker coverage marker missing'),
+        ):
+            worker_receive_line()
+
     def test_cross_platform_union_and_incompatible_metadata(self):
         module = 'src/applicant/infra/owned_worker.py'
         expected = {'source_sha256': {module: 'fixture'}, 'commit': 'head'}

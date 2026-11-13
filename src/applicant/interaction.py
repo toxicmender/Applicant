@@ -14,7 +14,9 @@ carries only the command's answer, and the reply comes from stdin.
 from __future__ import annotations
 
 import getpass
+import os
 import sys
+from collections.abc import Callable
 from typing import Protocol
 
 
@@ -43,6 +45,75 @@ class Terminal:
         sys.stderr.flush()
         return input()
 
+    def ask_interruptibly(self, question: str, poll: Callable[[], None]) -> str:
+        """Read a terminal command while allowing the browser owner to check liveness."""
+        sys.stderr.write(f'{question}\n')
+        sys.stderr.flush()
+        if os.name == 'nt':
+            from msvcrt import getwch, kbhit
+
+            def read():
+                if not kbhit():
+                    return None
+                key = getwch()
+                if key in ('\x00', '\xe0'):
+                    getwch()  # Extended console key, such as an arrow.
+                    return None
+                return key
+
+            completed = False
+            try:
+                answer = self._read_command(read, poll)
+                completed = True
+                return answer
+            finally:
+                if not completed and sys.stdin.isatty():
+                    _discard_windows_input()
+
+        import termios
+        import tty
+        from select import select
+
+        descriptor = sys.stdin.fileno()
+        modes = termios.tcgetattr(descriptor)
+
+        def read():
+            if not select([descriptor], [], [], 0)[0]:
+                return None
+            return os.read(descriptor, 1).decode('ascii', errors='replace')
+
+        try:
+            tty.setcbreak(descriptor)
+            return self._read_command(read, poll)
+        finally:
+            termios.tcsetattr(descriptor, termios.TCSAFLUSH, modes)
+
+    @staticmethod
+    def _read_command(read: Callable[[], str | None], poll: Callable[[], None]) -> str:
+        letters: list[str] = []
+        try:
+            while True:
+                poll()
+                key = read()
+                if key is None:
+                    continue
+                if key == '\x03':
+                    raise KeyboardInterrupt
+                if key in ('', '\x04', '\x1a'):
+                    raise EOFError
+                if key in ('\r', '\n'):
+                    return ''.join(letters)
+                if key in ('\b', '\x7f') and letters:
+                    letters.pop()
+                    sys.stderr.write('\b \b')
+                elif key.isascii() and key.isprintable() and len(letters) < 32:
+                    letters.append(key)
+                    sys.stderr.write(key)
+                sys.stderr.flush()
+        finally:
+            sys.stderr.write('\n')
+            sys.stderr.flush()
+
 
 class Scripted:
     """Answers given in advance, for tests and unattended runs.
@@ -65,3 +136,16 @@ class Scripted:
         if not self.answers:
             raise RuntimeError(f'no scripted answer left for {question!r}')
         return self.answers.pop(0)
+
+
+def _discard_windows_input() -> None:
+    if os.name != 'nt':
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL('kernel32')
+    kernel.GetStdHandle.argtypes = [wintypes.DWORD]
+    kernel.GetStdHandle.restype = wintypes.HANDLE
+    kernel.FlushConsoleInputBuffer.argtypes = [wintypes.HANDLE]
+    kernel.FlushConsoleInputBuffer(kernel.GetStdHandle(wintypes.DWORD(-10)))  # STD_INPUT_HANDLE

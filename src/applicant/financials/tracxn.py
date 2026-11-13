@@ -3,8 +3,9 @@ from __future__ import annotations
 import logging
 import os
 import re
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from datetime import datetime, timezone
+from urllib.parse import unquote, urlsplit
 
 import httpx
 
@@ -32,13 +33,62 @@ API = 'https://platform.tracxn.com/api/3.0'
 API_LEGACY = 'https://platform.tracxn.com/api/2.2'
 WEB = 'https://tracxn.com'
 PAGE_SIZE = 20  # Tracxn's hard maximum per request
+PROFILE_HOSTS = frozenset({'tracxn.com', 'www.tracxn.com', 'platform.tracxn.com'})
 
 # https://tracxn.com/d/companies/zomato/__DV-ekVOT4DO1dVZeaG1vMa1V9Rpnz0bXTg6gdjgxYVk
 PROFILE_URL = re.compile(
-    r'^(?P<base>https?://(?:www\.)?tracxn\.com/d/companies/(?P<slug>[^/]+)/'
+    r'^(?P<base>https?://(?:(?:www|platform)\.)?tracxn\.com/d/companies/(?P<slug>[^/]+)/'
     r'(?P<id>__[^/?#]+))',
     re.IGNORECASE,
 )
+PLATFORM_PROFILE_URL = re.compile(
+    r'(?P<base>https://platform\.tracxn\.com/a/d/company/(?P<id>[a-zA-Z0-9_-]+)'
+    r'(?:/(?P<slug>(?:[a-zA-Z0-9._~-]|%[0-9a-fA-F]{2})+))?)'
+)
+
+
+class FinancialsInterrupted(KeyboardInterrupt):
+    """An interrupted browser already sent a completed financials capture."""
+
+    def __init__(self, financials):
+        super().__init__()
+        self.financials = financials
+
+
+class TracxnLookupRequired(SourceError):
+    """A name needs a Tracxn profile URL when no API key is configured."""
+
+
+def confirmed_profile_url(url: str) -> str | None:
+    try:
+        parsed = urlsplit(url)
+        if (
+            parsed.scheme != 'https'
+            or parsed.hostname not in PROFILE_HOSTS
+            or parsed.port not in (None, 443)
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            return None
+    except ValueError:
+        return None
+    candidate = f'https://{parsed.hostname}{parsed.path.removesuffix("/")}'
+    if match := PLATFORM_PROFILE_URL.fullmatch(candidate):
+        slug = unquote(match.group('slug') or '')
+        if slug in ('.', '..') or any(char in '/\\' or ord(char) < 32 for char in slug):
+            return None
+        return candidate
+    if not re.fullmatch(r'/d/companies/[\w.-]+/__[a-zA-Z0-9_-]+/?', parsed.path, re.ASCII):
+        return None
+    return None if parsed.path.split('/')[3] in ('.', '..') else candidate
+
+
+def profile_match(url: str) -> re.Match[str] | None:
+    return PROFILE_URL.match(url) or PLATFORM_PROFILE_URL.fullmatch(
+        confirmed_profile_url(url) or ''
+    )
+
+
 ENTITY_ID = re.compile(r'^[0-9a-f]{24}$')
 DOMAIN = re.compile(
     r'^(?:https?://)?(?:www\.)?(?P<domain>[a-z0-9-]+(?:\.[a-z0-9-]+)+)/?$', re.IGNORECASE
@@ -133,7 +183,7 @@ class TracxnClient:
     def __init__(
         self,
         api_key=None,
-        profile_dir='.tx_profile',
+        profile_dir: str | None = '.tx_profile',
         login=False,
         headless=True,
         timeout=30.0,
@@ -162,6 +212,16 @@ class TracxnClient:
         """Whether Tracxn can look this up: anything but a profile url on crunchbase.com."""
         return 'crunchbase.com' not in company.lower()
 
+    def requires_lookup(self, company: str) -> bool:
+        value = company.strip()
+        return (
+            not self.api_key
+            and '://' not in value
+            and not value.startswith('/')
+            and not DOMAIN.fullmatch(value)
+            and not ENTITY_ID.fullmatch(value)
+        )
+
     def fetch(self, company, max_rounds=20):
         """Every failure leaves as a SourceError, so a caller trying several
         sources can report this one and carry on with the rest."""
@@ -181,14 +241,13 @@ class TracxnClient:
         logger.debug(f'tracxn: {company!r} via the {"api" if self.api_key else "web"}')
         if self.api_key:
             financials = self._fetch_api(company, max_rounds)
-        elif PROFILE_URL.match(company.strip()):
+        elif profile_match(company.strip()):
             financials = self._fetch_web(company.strip(), max_rounds)
         else:
-            raise SourceError(
-                'Tracxn needs either an API token (TRACXN_API_KEY / --tracxn-key) or a '
-                'profile url like https://tracxn.com/d/companies/<name>/__<id>, got {!r}. '
-                'Its company search is behind a login, so names cannot be resolved '
-                'without the API.'.format(company)
+            error = TracxnLookupRequired if self.requires_lookup(company) else SourceError
+            raise error(
+                'Tracxn needs a company profile URL or an API token (TRACXN_API_KEY / --tracxn-key). '
+                'Pass the profile URL or run financials in a terminal to look up a company name.'
             )
         financials.fill_from_rounds()
         return financials
@@ -364,6 +423,34 @@ class TracxnClient:
     def _rounds(self, payload):
         return [item for item in (self._read_round(node) for node in walk(payload)) if item]
 
+    def _profile_data(self, node, entity_id, financials, rounds, *, scoped=False):
+        """Collect fields only within a subtree attributed to the selected company."""
+        if isinstance(node, list):
+            matched_company = False
+            for child in node:
+                found = self._profile_data(child, entity_id, financials, rounds, scoped=scoped)
+                matched_company = matched_company or found
+            return matched_company
+        if not isinstance(node, dict):
+            return False
+        company = isinstance(node.get('id'), str) and bool(first(node, *NAME_KEYS))
+        identifiers = [
+            value.removeprefix('__')
+            for key in ('companyId', 'entityId', *(('id',) if company else ()))
+            if isinstance(value := node.get(key), str)
+        ]
+        if identifiers:
+            scoped = all(value == entity_id for value in identifiers)
+        matched_company = bool(company and scoped)
+        if matched_company:
+            self._read_company(node, financials, set_id=False)
+        if scoped and (round_ := self._read_round(node)) is not None:
+            rounds.append(round_)
+        for child in node.values():
+            found = self._profile_data(child, entity_id, financials, rounds, scoped=scoped)
+            matched_company = matched_company or found
+        return matched_company
+
     def _latest_point(self, payload):
         """The newest (money, year) in a yearly series. Tracxn gives raw values, no growth."""
         points = []
@@ -388,17 +475,28 @@ class TracxnClient:
 
     # -- web --------------------------------------------------------------
 
-    def _fetch_web(self, url, max_rounds):
+    def fetch_open_profile(self, url, page, max_rounds, *, check, selected_name=None):
+        """Read an already-open browser without reopening or locking its profile."""
+        financials = self._fetch_web(
+            url, max_rounds, page=page, check=check, selected_name=selected_name
+        )
+        financials.fill_from_rounds()
+        return financials
+
+    def _fetch_web(self, url, max_rounds, *, page=None, check=None, selected_name=None):
         from ..infra.browser import browser, looks_blocked
 
-        match = PROFILE_URL.match(url)
+        match = profile_match(url)
         if match is None:
             raise SourceError('not a Tracxn profile url: {!r}'.format(url))
         base = match.group('base')
+        platform = PLATFORM_PROFILE_URL.fullmatch(base) is not None
+        funding = base + ('#a:funding-and-investors' if platform else '/funding-and-investors')
         payloads, texts = [], []
 
         def capture(response):
-            if 'tracxn.com' not in response.url or '/api/' not in response.url:
+            parsed = urlsplit(response.url)
+            if parsed.hostname not in PROFILE_HOSTS or '/api/' not in parsed.path:
                 return
             with suppress(Exception):
                 payload = response.json()
@@ -407,27 +505,74 @@ class TracxnClient:
                 payloads.append(payload)
 
         try:
-            with browser(
-                self.profile_dir, headless=self.headless, timeout=int(self.timeout * 1000)
-            ) as page:
-                page.on('response', capture)
-                for target in (base, base + '/funding-and-investors'):
-                    response = page.goto(target, wait_until='domcontentloaded')
-                    if response is not None and response.status == 404:
-                        if target == base:
-                            raise NotFound('no Tracxn profile at {}'.format(base))
-                        continue
-                    self._settle(page, looks_blocked)
-                    payloads.extend(embedded_json(page.content()))
-                    if self.capture is not None:
-                        self.capture(target, page.content().encode('utf-8'), 'browser_dom')
-                    with suppress(Exception):
-                        texts.append(page.inner_text('body'))
+            opened = (
+                nullcontext(page)
+                if page is not None
+                else browser(
+                    self.profile_dir, headless=self.headless, timeout=int(self.timeout * 1000)
+                )
+            )
+            with opened as tab:
+                tab.on('response', capture)
+                try:
+                    for target in (base, funding):
+                        if check:
+                            check()
+                        already_open = (
+                            selected_name is not None
+                            and target == base
+                            and confirmed_profile_url(tab.url) == base
+                        )
+                        response = (
+                            None
+                            if already_open
+                            else tab.goto(target, wait_until='domcontentloaded')
+                        )
+                        if check:
+                            check()
+                        if response is not None and response.status >= 400:
+                            if response.status == 404:
+                                if target == base:
+                                    raise NotFound('no Tracxn profile at {}'.format(base))
+                                continue
+                            if check:
+                                raise SourceError(f'Tracxn profile returned HTTP {response.status}')
+                        self._settle(tab, looks_blocked)
+                        if check:
+                            check()
+                            actual = urlsplit(tab.url)
+                            expected = urlsplit(target)
+                            platform_match = (
+                                PLATFORM_PROFILE_URL.fullmatch(confirmed_profile_url(tab.url) or '')
+                                if platform
+                                else None
+                            )
+                            if (
+                                actual.scheme != 'https'
+                                or actual.hostname not in PROFILE_HOSTS
+                                or (
+                                    (platform_match is None or platform_match['id'] != match['id'])
+                                    if platform
+                                    else actual.path.rstrip('/') != expected.path
+                                )
+                            ):
+                                raise Unparseable('Tracxn navigated away from the selected company')
+                        html = tab.content()
+                        payloads.extend(embedded_json(html))
+                        if self.capture is not None:
+                            self.capture(target, html.encode('utf-8'), 'browser_dom')
+                        with suppress(Exception):
+                            texts.append(tab.inner_text('body'))
+                finally:
+                    if page is not None:
+                        tab.remove_listener('response', capture)
         except SourceError:
             raise
         # navigation failures, timeouts and a closed browser all surface as plain
         # playwright errors, and each should read as this source failing
         except Exception as error:
+            if page is not None:
+                raise  # The interactive owner handles browser closure and sanitizes errors.
             raise SourceError(
                 'could not load {}: {}'.format(base, str(error).split('\n')[0][:160])
             ) from error
@@ -436,20 +581,17 @@ class TracxnClient:
             source='tracxn',
             url=base,
             company_id=match.group('id'),
-            company=match.group('slug').replace('-', ' ').title(),
+            company=selected_name
+            or unquote(match.group('slug') or match['id']).replace('-', ' ').title(),
         )
-        returned_id = None
+        entity_id = match['id'].removeprefix('__')
+        matched_company = False
+        rounds: list[FundingRound] = []
         for payload in payloads:
-            record = self._record(payload, None)
-            if record:
-                returned_id = record.get('id')
-                self._read_company(record, financials)
-                break
-        if self.capture is not None and not returned_id:
+            matched = self._profile_data(payload, entity_id, financials, rounds)
+            matched_company = matched_company or matched
+        if self.capture is not None and not matched_company:
             raise Unparseable('captured Tracxn page has no structured company ID')
-        rounds = []
-        for payload in payloads:
-            rounds.extend(self._rounds(payload))
         found = _dedupe(rounds)
         financials.rounds = found[: max(0, max_rounds)]
         financials.rounds_cut(len(found) > len(financials.rounds))
@@ -460,6 +602,7 @@ class TracxnClient:
             and not financials.rounds
             and financials.valuation is None
             and financials.revenue is None
+            and financials.revenue_range is None
         ):
             raise Unparseable(
                 'no funding data found on {} - the page layout may have changed, '
@@ -487,11 +630,11 @@ class TracxnClient:
 
     # -- parsing ----------------------------------------------------------
 
-    def _read_company(self, record, financials):
+    def _read_company(self, record, financials, *, set_id=True):
         name = text_of(first(record, *NAME_KEYS))
         if name:
             financials.company = name
-        if isinstance(record.get('id'), str) and ENTITY_ID.match(record['id']):
+        if set_id and isinstance(record.get('id'), str) and ENTITY_ID.match(record['id']):
             financials.company_id = record['id']
 
         simple = (
