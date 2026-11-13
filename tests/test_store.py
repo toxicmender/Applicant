@@ -17,7 +17,7 @@ import stat
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -517,6 +517,97 @@ class FinancialsHistoryTest(TempDir):
                 self.assertEqual(
                     set(second.data['companies']), {'crunchbase:zomato', 'crunchbase:other'}
                 )
+
+    def test_buffered_save_replays_over_an_intervening_company_write(self):
+        from applicant.financials import FinancialsTracker
+
+        for backend in ('files', 'sqlite'):
+            for explicit in (True, False):
+                with self.subTest(backend=backend, explicit=explicit):
+                    path = self.root / f'{backend}-{explicit}.json'
+                    a, b = (FinancialsTracker(path, backend=backend) for _ in range(2))
+                    other = self.financials(3).model_copy(update={'company_id': 'other'})
+                    a.record(self.financials(1), save=False)
+                    a.record(self.financials(2), save=False)
+                    b.record(other)
+                    if explicit:
+                        a.save()
+                    else:
+                        a.record(other)
+                    saved = FinancialsTracker(path, backend=backend)
+                    self.assertEqual(
+                        set(saved.data['companies']), {'crunchbase:zomato', 'crunchbase:other'}
+                    )
+                    self.assertEqual(len(saved.history('crunchbase:zomato')), 2)
+                    self.assertEqual(len(saved.history('crunchbase:other')), 1)
+
+    def test_buffered_utc_tie_and_rollback_do_not_overwrite(self):
+        from applicant.financials import FinancialsTracker
+
+        path = self.root / 'history.json'
+        a, b = (FinancialsTracker(path) for _ in range(2))
+        earlier = FIXED - timedelta(seconds=1)
+        with mock.patch('applicant.financials.tracker.datetime', wraps=datetime) as clock:
+            clock.now.return_value = FIXED
+            a.record(self.financials(1), save=False)
+            b.record(self.financials(5))
+            entry = b.data['companies']['crunchbase:zomato']
+            entry['last_checked'] = FIXED.astimezone(timezone(timedelta(hours=5))).isoformat()
+            b.save()
+            clock.now.return_value = FIXED + timedelta(seconds=2)
+            a.record(self.financials(6), save=False)
+            clock.now.return_value = earlier
+            a.record(self.financials(7), save=False)
+            with self.assertLogs('applicant.financials.tracker', 'DEBUG') as logs:
+                a.save()
+        text = '\n'.join(logs.output)
+        self.assertIn('persisted timestamp tie', text)
+        self.assertIn(earlier.isoformat(), text)
+        self.assertIn('older timestamp', text)
+        self.assertEqual(len(a.history('crunchbase:zomato')), 2)
+        latest = a.latest('crunchbase:zomato')
+        assert latest is not None and latest.total_funding is not None
+        self.assertEqual(latest.total_funding.amount, 6)
+
+    def test_buffered_replay_accepts_legacy_records_without_comparable_times(self):
+        from applicant.financials import FinancialsTracker
+
+        for legacy in ('2026-09-27T08:00:00', 'invalid', None):
+            with self.subTest(legacy=legacy):
+                path = self.root / f'legacy-{legacy is None}-{legacy == "invalid"}.json'
+                tracker = FinancialsTracker(path)
+                tracker.record(self.financials(1))
+                entry = tracker.data['companies']['crunchbase:zomato']
+                del entry['last_checked']
+                if legacy is None:
+                    del entry['latest']['fetched_at']
+                else:
+                    entry['latest']['fetched_at'] = legacy
+                tracker.save()
+                tracker.record(self.financials(2), save=False)
+                tracker.save()
+                self.assertEqual(len(tracker.history('crunchbase:zomato')), 2)
+
+    def test_buffer_retry_after_failed_staging_or_publication(self):
+        from applicant.financials import FinancialsTracker
+
+        for backend, failure in (
+            ('files', 'applicant.financials.tracker.write_document'),
+            ('sqlite', 'applicant.infra.store.sqlite.Store._stage_financials'),
+            ('sqlite', 'applicant.infra.store.sqlite.write_document_bytes'),
+        ):
+            with self.subTest(backend=backend, boundary=failure):
+                path = self.root / f'{failure.rsplit(".", 1)[-1]}.json'
+                tracker = FinancialsTracker(path, backend=backend)
+                tracker.record(self.financials(1), save=False)
+                tracker.record(self.financials(2), save=False)
+                with mock.patch(failure, side_effect=OSError), self.assertRaises(StoreError):
+                    tracker.save()
+                tracker.save()
+                self.assertEqual(len(tracker.history('crunchbase:zomato')), 2)
+                original = path.read_bytes()
+                tracker.save()
+                self.assertEqual(path.read_bytes(), original)
 
     def test_financials_contention_at_load_and_save(self):
         from applicant.errors import FinancialsBusy

@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import re
 from contextlib import contextmanager
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -45,6 +46,23 @@ TRACKED = [
 HEADLINES = ('total_funding', 'valuation', 'revenue', 'revenue_range')
 
 
+def _checked_at(entry: dict):
+    latest = entry.get('latest')
+    return entry.get('last_checked', latest.get('fetched_at') if isinstance(latest, dict) else None)
+
+
+def _utc_timestamp(raw) -> datetime | None:
+    if not isinstance(raw, str):
+        return None
+    try:
+        value = datetime.fromisoformat(
+            raw.removesuffix('Z') + '+00:00' if raw.endswith('Z') else raw
+        )
+        return value.astimezone(timezone.utc) if value.utcoffset() is not None else None
+    except (ValueError, OverflowError):
+        return None
+
+
 def has_financial_data(financials: CompanyFinancials) -> bool:
     return any(getattr(financials, field) is not None for field in HEADLINES) or any(
         round_.date for round_ in financials.rounds
@@ -71,8 +89,10 @@ class FinancialsTracker:
         self.path = path
         self.backend = backend
         self.target = Path(path).resolve()
+        self._buffer: list[tuple[CompanyFinancials, datetime, bool]] = []
         with self._storage() as store:
             self.data, _ = self._load(store)
+        self._saved_data = deepcopy(self.data)
 
     @contextmanager
     def _storage(self):
@@ -100,14 +120,26 @@ class FinancialsTracker:
 
     def save(self):
         with self._storage() as store:
+            if self._buffer:
+                self._flush(store)
+                return
+            if self.data == self._saved_data:
+                self.data, _ = self._load(store)
+                self._saved_data = deepcopy(self.data)
+                return
             _, baseline = store._sync_financials(self.target) if store is not None else (None, None)
             self._save(store, baseline)
 
     def _save(self, store, baseline):
         if store is not None:
-            store._save_financials(self.data, self.target, baseline)
+            name = store._financials_name(self.target)
+            store._stage_financials(name, self.data, baseline)
         else:
             write_document(self.target, self.data)
+        self._buffer.clear()
+        self._saved_data = deepcopy(self.data)
+        if store is not None:
+            store._reconcile_financials(name, self.target)
 
     def latest(self, key):
         entry = self.data['companies'].get(key)
@@ -128,20 +160,11 @@ class FinancialsTracker:
         if len(matches) != 1:
             return None
         key, entry = matches[0]
-        latest = entry.get('latest')
-        raw = entry.get(
-            'last_checked', latest.get('fetched_at') if isinstance(latest, dict) else None
-        )
+        raw = _checked_at(entry)
         if raw is None:
             return None
-        try:
-            if isinstance(raw, str) and raw.endswith('Z'):
-                raw = raw[:-1] + '+00:00'  # Python 3.10 requires the numeric offset.
-            checked = datetime.fromisoformat(raw)
-            if checked.utcoffset() is None:
-                raise ValueError('missing UTC offset')
-            checked = checked.astimezone(timezone.utc)
-        except (TypeError, ValueError, OverflowError):
+        checked = _utc_timestamp(raw)
+        if checked is None:
             logger.warning('%s: invalid or timezone-naive Tracxn timestamp; refreshing', key)
             return None
         age = (now or datetime.now(timezone.utc)) - checked
@@ -182,18 +205,68 @@ class FinancialsTracker:
         could not read keeps its previous value instead of being reported as a
         change - a logged out page hiding a figure is not the figure disappearing.
         """
+        checked = datetime.now(timezone.utc).replace(microsecond=0)
         if not save:
-            return self._record(financials, require_complete=require_complete)
+            result = self._record(financials, checked, require_complete=require_complete)
+            self._buffer.append((financials.model_copy(deep=True), checked, require_complete))
+            return result
         with self._storage() as store:
-            self.data, baseline = self._load(store)
-            changes = self._record(financials, require_complete=require_complete)
-            self._save(store, baseline)
-            return changes
+            return self._flush(store, (financials, checked, require_complete))
 
-    def _record(self, financials, *, require_complete):
+    def _flush(self, store, current=None):
+        previous_data = self.data
+        previous_saved = self._saved_data
+        self.data, baseline = self._load(store)
+        try:
+            replayed = set()
+            for financials, checked, require_complete in self._buffer:
+                key = company_key(financials)
+                entry = self.data['companies'].get(key)
+                prior = _utc_timestamp(_checked_at(entry)) if isinstance(entry, dict) else None
+                if prior is not None:
+                    prior = prior.replace(microsecond=0)
+                    if checked < prior or (checked == prior and key not in replayed):
+                        logger.debug(
+                            '%s: skipped buffered observation at %s against %s (%s)',
+                            key,
+                            checked.isoformat(),
+                            prior.isoformat(),
+                            'older timestamp' if checked < prior else 'persisted timestamp tie',
+                        )
+                        continue
+                self._record(financials, checked, require_complete=require_complete)
+                replayed.add(key)
+            changes = []
+            if current is not None:
+                financials, checked, require_complete = current
+                key = company_key(financials)
+                if key in replayed:
+                    prior = _utc_timestamp(_checked_at(self.data['companies'][key]))
+                    if prior is not None and checked < prior:
+                        logger.debug(
+                            '%s: skipped observation at %s against %s (older timestamp)',
+                            key,
+                            checked.isoformat(),
+                            prior.isoformat(),
+                        )
+                        current = None
+                if current is not None:
+                    changes = self._record(financials, checked, require_complete=require_complete)
+            if replayed or current is not None:
+                self._save(store, baseline)
+            else:
+                self._buffer.clear()
+                self._saved_data = deepcopy(self.data)
+            return changes
+        except BaseException:
+            if self._saved_data is previous_saved:
+                self.data = previous_data
+            raise
+
+    def _record(self, financials, checked, *, require_complete):
         key = company_key(financials)
         entry = self.data['companies'].get(key)
-        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        now = checked.isoformat()
 
         previous = self._previous(key, entry) if entry else None
         if require_complete and (
