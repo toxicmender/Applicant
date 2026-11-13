@@ -183,7 +183,8 @@ def _child(connection, function, diagnostics_queue, provider):
     diagnostics = WorkerDiagnostics(diagnostics_queue, provider)
     token = active_diagnostics.set(diagnostics)
     try:
-        kind, value = 'result', function(connection, connection.recv())
+        arguments = connection.recv()
+        kind, value = 'result', function(connection, arguments)
     except BaseException as error:  # noqa: BLE001 - relay worker termination without secrets
         kind = 'error'
         captured = diagnostics.failures.get(id(error))
