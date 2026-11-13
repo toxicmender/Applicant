@@ -255,6 +255,7 @@ class TracxnWebTest(unittest.TestCase):
         }
         result, *_ = self.fetch([(r'__\w+$', Visit(html=next_data({'items': [wrong, right]})))])
         self.assertEqual(result.company_id, f'__{TX_ID}')
+        assert result.total_funding is not None
         self.assertEqual(result.total_funding.amount, 2.1e9)
         self.assertEqual([item.round for item in result.rounds], ['Seed'])
         with self.assertRaises(Unparseable):

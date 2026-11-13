@@ -481,7 +481,6 @@ class TracxnLookupTest(unittest.TestCase):
             with Store.beside(path) as store:
                 before = list(store.db.iterdump())
             saved = path.read_bytes()
-            self.page.inner_text = lambda _: ''
             resolver, _ = self.resolver('yes', self.visit(), 'yes')
             wrong = {
                 'id': 'other',
@@ -489,6 +488,7 @@ class TracxnLookupTest(unittest.TestCase):
                 'totalFunding': {'amount': 77, 'currency': 'USD'},
             }
             with (
+                patch.object(self.page, 'inner_text', return_value=''),
                 patch('applicant.financials.tracxn.embedded_json', return_value=[wrong]),
                 patch.object(FinancialsTracker, 'record', autospec=True) as record,
                 self.assertRaises(Unparseable),
