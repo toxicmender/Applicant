@@ -32,14 +32,14 @@ import sqlite3
 import tempfile
 import time
 from collections.abc import Iterable, Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from ...domain.dedupe import fingerprint, key
 from ...domain.job import Job
-from ...errors import DatabaseBusy, ExportPending, StoreError, sqlite_busy
+from ...errors import DatabaseBusy, ExportConflict, ExportPending, StoreError, sqlite_busy
 from ...files import (
     decode_document,
     document_bytes,
@@ -580,9 +580,45 @@ class Store:
 
     # -- company financials -----------------------------------------------
 
+    @classmethod
+    def preflight_financials(cls, file: Path) -> None:
+        """Check a legacy or current database before writable initialization."""
+        database = file.parent / DB_NAME
+        if os.name == 'nt' and database.exists():
+            with closing(sqlite3.connect(database.as_uri() + '?mode=ro', uri=True)) as db, db:
+                db.execute('BEGIN')
+                cls._financials_alias(db, file.name, file)
+
+    @staticmethod
+    def _financials_alias(db: sqlite3.Connection, name: str, file: Path) -> str:
+        if os.name != 'nt':
+            return name
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        keys = {
+            key
+            for table in (
+                'financial_pending_exports',
+                'financial_documents',
+                'financials',
+                'financial_snapshots',
+            )
+            if table in tables
+            for (key,) in db.execute(f'SELECT DISTINCT document FROM {table}')
+            if os.path.normcase(key) == os.path.normcase(name)
+        }
+        if len(keys) > 1:
+            raise ExportConflict(
+                f'{file}: conflicting financials collection keys {sorted(keys)!r}. '
+                'Back up the database and review both histories before retrying.'
+            )
+        return next(iter(keys), name)
+
+    def _financials_name(self, file: Path) -> str:
+        return self._financials_alias(self.db, self.name(file), file)
+
     def _sync_financials(self, file: Path) -> tuple[str, bytes | None]:
         """Recover staged writes before considering the file as an input."""
-        name = self.name(file)
+        name = self._financials_name(file)
         self._reconcile_financials(name, file)
         baseline = _financials_bytes(file)
         digest = _bytes_digest(baseline)
@@ -702,7 +738,7 @@ class Store:
             self._save_financials(document, target, baseline)
 
     def _save_financials(self, document: dict, target: Path, baseline: bytes | None) -> None:
-        name = self.name(target)
+        name = self._financials_name(target)
         self._stage_financials(name, document, baseline)
         self._reconcile_financials(name, target)
 

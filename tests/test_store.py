@@ -10,6 +10,7 @@ from __future__ import annotations
 import errno
 import io
 import json
+import multiprocessing
 import os
 import sqlite3
 import stat
@@ -33,6 +34,21 @@ from applicant.storage import ApplicationLog, load_jobs, save_jobs
 from tests.permissions import assert_private
 
 FIXED = datetime(2026, 9, 27, 8, 0, 0, tzinfo=timezone.utc)
+
+
+def try_export_lock(path, pipe):
+    from applicant.errors import FinancialsBusy
+    from applicant.infra.store.financials_lock import financials_lock
+
+    while pipe.recv():
+        try:
+            with financials_lock(path):
+                pass
+        except FinancialsBusy:
+            pipe.send('busy')
+        else:
+            pipe.send('acquired')
+    pipe.close()
 
 
 class WindowsFileError(PermissionError):
@@ -358,6 +374,98 @@ class RatingHistoryTest(TempDir):
 
 
 class FinancialsHistoryTest(TempDir):
+    @unittest.skipUnless(os.name == 'nt', 'Windows path aliases')
+    def test_first_pending_export_recovers_from_a_case_alias(self):
+        from applicant.financials import FinancialsTracker
+
+        original = self.root / 'Finance.json'
+        tracker = FinancialsTracker(original, backend='sqlite')
+        with (
+            mock.patch('applicant.infra.store.sqlite.write_document_bytes', side_effect=OSError),
+            self.assertRaises(StoreError),
+        ):
+            tracker.record(self.financials(1))
+        alias = self.root / 'finance.json'
+        found = FinancialsTracker(alias, backend='sqlite')
+        self.assertIn('crunchbase:zomato', found.data['companies'])
+        found.record(self.financials(2))
+        with Store.beside(alias) as store:
+            self.assertEqual(
+                store.db.execute('SELECT document FROM financial_documents').fetchall(),
+                [('Finance.json',)],
+            )
+            self.assertFalse(store.db.execute('SELECT * FROM financial_pending_exports').fetchall())
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows path aliases')
+    def test_alias_conflict_stops_before_migration_and_releases_lock(self):
+        path = self.root / 'Finance.json'
+        path.write_text('{}', encoding='utf-8')
+        database = self.root / DB_NAME
+        with sqlite3.connect(database) as db:
+            for migrations in MIGRATIONS[:2]:
+                for statement in migrations:
+                    db.execute(statement)
+            db.execute('PRAGMA user_version = 2')
+            db.executemany(
+                "INSERT INTO financial_documents VALUES (?, '{}')",
+                [('Finance.json',), ('finance.json',)],
+            )
+            before = list(db.iterdump())
+        db.close()
+        context = multiprocessing.get_context('spawn')
+        parent, pipe = context.Pipe()
+        worker = context.Process(target=try_export_lock, args=(path, pipe))
+        worker.start()
+        pipe.close()
+        preflight = Store.preflight_financials
+
+        def observe(target):
+            parent.send(True)
+            self.assertTrue(parent.poll(60))
+            self.assertEqual(parent.recv(), 'busy')
+            preflight(target)
+
+        try:
+            with (
+                mock.patch.object(Store, 'preflight_financials', side_effect=observe),
+                mock.patch.object(Store, 'beside', side_effect=AssertionError('writable open')),
+                redirect_stdout(io.StringIO()) as output,
+            ):
+                code = main(
+                    [
+                        '--no-log-file',
+                        '--store',
+                        'sqlite',
+                        'financials',
+                        'Acme',
+                        '-s',
+                        'tracxn',
+                        '-o',
+                        str(path),
+                    ]
+                )
+            self.assertEqual(code, 1)
+            result = json.loads(output.getvalue())
+            self.assertEqual(result['status'], 'export_conflict')
+            self.assertIn('finance.json', result['message'])
+            parent.send(True)
+            self.assertTrue(parent.poll(60))
+            self.assertEqual(parent.recv(), 'acquired')
+        finally:
+            if worker.is_alive():
+                parent.send(False)
+                worker.join(5)
+            if worker.is_alive():
+                worker.terminate()
+                worker.join(5)
+            parent.close()
+            worker.close()
+        with sqlite3.connect(database) as db:
+            self.assertEqual(db.execute('PRAGMA user_version').fetchone(), (2,))
+            self.assertEqual(list(db.iterdump()), before)
+        db.close()
+        self.assertEqual(path.read_bytes(), b'{}')
+
     """0.2.0: the financials change log lives in applicant.db too, exported as before."""
 
     def financials(self, total: float, stage: str = 'Series J'):

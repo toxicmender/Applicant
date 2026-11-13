@@ -80,6 +80,7 @@ class FinancialsTracker:
             if self.backend == 'sqlite':
                 from ..infra.store.sqlite import Store
 
+                Store.preflight_financials(self.target)
                 with Store.beside(self.target) as store:
                     yield store
             else:
