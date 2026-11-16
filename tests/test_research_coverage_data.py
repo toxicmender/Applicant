@@ -23,8 +23,8 @@ class CoverageDataTest(unittest.TestCase):
         with TemporaryDirectory() as folder:
             root = Path(folder)
             for os_name, source, edge in (
-                ('Linux', '/home/runner/work/Applicant/Applicant/' + module, (1, 2)),
-                ('Windows', 'D:\\a\\Applicant\\Applicant\\' + module.replace('/', '\\'), (2, 3)),
+                ('Linux', module, (1, 2)),
+                ('Windows', module, (2, 3)),
             ):
                 artifact = root / os_name
                 artifact.mkdir()
@@ -45,9 +45,19 @@ class CoverageDataTest(unittest.TestCase):
 
     def test_reject_unmapped_and_duplicate_paths(self):
         module = 'src/applicant/infra/owned_worker.py'
-        data = CoverageData(no_disk=True)
-        data.add_arcs({module: [(1, 2)], 'D:/a/Applicant/Applicant/' + module: [(2, 3)]})
-        with self.assertRaisesRegex(ValueError, 'collision'):
-            arcs(data, {module: 'fixture'})
-        with self.assertRaisesRegex(ValueError, 'unmapped'):
-            arcs(data, {})
+        with TemporaryDirectory() as folder:
+            checkout = Path(folder) / 'repo'
+            source = checkout / module
+            source.parent.mkdir(parents=True)
+            source.touch()
+            outside = Path(folder) / 'outside' / module
+            outside.parent.mkdir(parents=True)
+            outside.touch()
+            data = CoverageData(no_disk=True)
+            data.add_arcs({module: [(1, 2)], str(source): [(2, 3)]})
+            with self.assertRaisesRegex(ValueError, 'collision'):
+                arcs(data, {module: 'fixture'}, checkout=checkout)
+            foreign = CoverageData(no_disk=True)
+            foreign.add_arcs({str(outside): [(1, 2)]})
+            with self.assertRaisesRegex(ValueError, 'unmapped'):
+                arcs(foreign, {module: 'fixture'}, checkout=checkout)

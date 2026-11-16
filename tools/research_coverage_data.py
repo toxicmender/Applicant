@@ -5,14 +5,15 @@ import hashlib
 import inspect
 import json
 import platform
-import shutil
+import sqlite3
 import subprocess
+from contextlib import closing
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
-from coverage import Coverage, CoverageData, __version__
+from coverage import CoverageData, __version__
 
 from applicant.infra.owned_worker import _child
+from applicant.infra.path_identity import physical_path
 
 
 def digest(path):
@@ -29,30 +30,58 @@ def provenance():
             p.as_posix(): digest(p) for p in sorted(Path('src/applicant').rglob('*.py'))
         },
         'branch_coverage': True,
+        'origin': 'checkout',
     }
 
 
-def canonical_path(filename, sources):
-    name = filename.replace('\\', '/')
-    for marker in ('/work/Applicant/Applicant/', '/a/Applicant/Applicant/'):
-        if marker in name:
-            name = name.split(marker, 1)[1]
-            break
+def canonical_path(filename, sources, *, checkout=None):
+    if checkout is None:
+        name = filename
+    else:
+        repo = physical_path(checkout)
+        recorded = physical_path(repo / filename)
+        if not recorded.is_relative_to(repo) or not any(
+            parent.samefile(repo) for parent in recorded.parents if parent.exists()
+        ):
+            raise ValueError(f'unmapped coverage path: {filename}')
+        name = recorded.relative_to(repo).as_posix()
     if name not in sources:
         raise ValueError(f'unmapped coverage path: {filename}')
     return name
 
 
-def arcs(data, sources):
+def arcs(data, sources, *, checkout=None):
     if not data.has_arcs():
         raise ValueError('branch coverage is required')
     result = {}
     for filename in data.measured_files():
-        name = canonical_path(filename, sources)
+        name = canonical_path(filename, sources, checkout=checkout)
         if name in result:
             raise ValueError(f'canonical coverage path collision: {name}')
         result[name] = set(data.arcs(filename) or ())
     return result
+
+
+def read_branch_data(path):
+    try:
+        with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)) as db:
+            value = db.execute("SELECT value FROM meta WHERE key='has_arcs'").fetchone()
+    except sqlite3.Error as error:
+        raise ValueError(f'could not read coverage mode from {path}') from error
+    if value != ('1',):
+        raise ValueError(f'branch coverage is required in {path}')
+    data = CoverageData(basename=str(path))
+    data.read()
+    if not data.has_arcs():
+        raise ValueError(f'coverage mode mismatch in {path}')
+    return data
+
+
+def write_arcs(output, measurements):
+    data = CoverageData(basename=str(output))
+    data.erase()
+    data.add_arcs(measurements)
+    data.write()
 
 
 def combine(root, expected, *, output='.coverage'):
@@ -61,25 +90,17 @@ def combine(root, expected, *, output='.coverage'):
         raise ValueError('expected Linux and Windows coverage artifacts')
     union = {}
     platforms = set()
-    with TemporaryDirectory() as temp:
-        for index, metadata in enumerate(inputs):
-            recorded = json.loads(metadata.read_text(encoding='utf-8'))
-            platforms.add(recorded.pop('platform'))
-            if recorded != expected:
-                raise ValueError(f'incompatible coverage provenance: {metadata}')
-            source = metadata.with_name('coverage-data')
-            data = CoverageData(basename=str(source))
-            data.read()
-            for name, edges in arcs(data, expected['source_sha256']).items():
-                union.setdefault(name, set()).update(edges)
-            shutil.copyfile(source, Path(temp) / f'.coverage.{index}')
-        if platforms != {'Linux', 'Windows'}:
-            raise ValueError('expected distinct Linux and Windows reports')
-        combined = Coverage(data_file=output)
-        combined.combine(data_paths=[temp], strict=True)
-        if arcs(combined.get_data(), expected['source_sha256']) != union:
-            raise ValueError('coverage combine dropped or duplicated arcs')
-        combined.save()
+    for metadata in inputs:
+        recorded = json.loads(metadata.read_text(encoding='utf-8'))
+        platforms.add(recorded.pop('platform'))
+        if recorded != expected:
+            raise ValueError(f'incompatible coverage provenance: {metadata}')
+        data = read_branch_data(metadata.with_name('coverage-data'))
+        for name, edges in arcs(data, expected['source_sha256']).items():
+            union.setdefault(name, set()).update(edges)
+    if platforms != {'Linux', 'Windows'}:
+        raise ValueError('expected distinct Linux and Windows reports')
+    write_arcs(output, union)
 
 
 def worker_receive_line():
@@ -94,20 +115,21 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('record', 'combine'))
     parser.add_argument('artifacts', nargs='?', type=Path)
+    parser.add_argument('--coverage-file', type=Path, default=Path('.coverage'))
+    parser.add_argument('--output-directory', type=Path, default=Path('.'))
     args = parser.parse_args()
     try:
         expected = provenance()
         if args.action == 'record':
-            data = CoverageData()
-            data.read()
-            measured = arcs(data, expected['source_sha256'])
+            data = read_branch_data(args.coverage_file)
+            measured = arcs(data, expected['source_sha256'], checkout=Path.cwd())
             sentinel = worker_receive_line()
             if not any(
                 sentinel in edge for edge in measured.get('src/applicant/infra/owned_worker.py', ())
             ):
                 raise ValueError('owned worker subprocess coverage was not recorded')
-            shutil.copyfile('.coverage', 'coverage-data')
-            Path('coverage-provenance.json').write_text(
+            write_arcs(args.output_directory / 'coverage-data', measured)
+            (args.output_directory / 'coverage-provenance.json').write_text(
                 json.dumps({**expected, 'platform': platform.system()}, sort_keys=True),
                 encoding='utf-8',
             )
