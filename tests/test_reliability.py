@@ -323,7 +323,7 @@ class ReliabilityTest(unittest.TestCase):
             self.assertEqual(journal.detail(attempt)['state'], 'retried')
             self.assertEqual(
                 [(r['id'], r['status']) for r in applications(log, 'sqlite').rows()],
-                [('321', 'applied')],
+                [('321', 'not_submitted'), ('321', 'applied')],
             )
 
     def test_timeout_at_click_cannot_create_a_second_submission(self):

@@ -28,6 +28,12 @@ class Apply(FilterOptions, Request):
     retry_attempt: str | None = None
     reopen_attempt: str | None = None
     rotate_attestation_key: bool = False
+    import_attempts_from: list[str] | None = None
+    list_conflicts: bool = False
+    resolve_conflict: str | None = None
+    keep: str | None = None
+    dismiss: bool = False
+    digest: str | None = None
     acknowledge_duplicate_risk: bool = False
 
 
@@ -60,6 +66,13 @@ def add_parser(add: AddParser) -> argparse.ArgumentParser:
     mode.add_argument('--retry-attempt', metavar='ATTEMPT_ID')
     mode.add_argument('--reopen-attempt', metavar='ATTEMPT_ID')
     mode.add_argument('--rotate-attestation-key', action='store_true')
+    mode.add_argument('--import-attempts-from', action='append', metavar='PATH')
+    mode.add_argument('--list-conflicts', action='store_true')
+    mode.add_argument('--resolve-conflict', metavar='ATTEMPT_ID')
+    resolution = apply_.add_mutually_exclusive_group()
+    resolution.add_argument('--keep', choices=('journal', 'incoming', 'both'))
+    resolution.add_argument('--dismiss', action='store_true')
+    apply_.add_argument('--digest', metavar='HASH')
     apply_.add_argument('--outcome', choices=('submitted', 'not-submitted', 'abandoned'))
     apply_.add_argument('--acknowledge-duplicate-risk', action='store_true')
     apply_.add_argument(
@@ -91,12 +104,28 @@ def run(args: Apply, settings: Settings) -> int:
         raise ConfigError('--reconcile cannot be combined with --dry-run or --retry-attempt')
     if args.dry_run and (args.reopen_attempt or args.rotate_attestation_key):
         raise ConfigError('journal maintenance cannot be combined with --dry-run')
+    if bool(args.resolve_conflict) != bool(args.keep or args.dismiss) or (
+        args.digest and not args.resolve_conflict
+    ):
+        raise ConfigError('--resolve-conflict requires --keep or --dismiss')
+    if args.dry_run and (args.import_attempts_from or args.resolve_conflict):
+        raise ConfigError('journal maintenance cannot be combined with --dry-run')
     needs_attestation = args.reopen_attempt or args.outcome in ('not-submitted', 'abandoned')
     if needs_attestation and not sys.stdin.isatty():
         raise AttestationRequired(
             'use a terminal to attest to the original LinkedIn portal history'
         )
     journal = AttemptJournal(log, session, args.retry_attempt, backend=settings.store)
+    if args.import_attempts_from or args.list_conflicts or args.resolve_conflict:
+        from ..domain.canonical import canonical_json
+
+        if args.import_attempts_from:
+            journal.import_legacy([settings.path(path) for path in args.import_attempts_from])
+        if args.resolve_conflict:
+            journal.resolve_conflict(args.resolve_conflict, args.keep or 'dismiss', args.digest)
+            journal.recover_confirmed()
+        print(canonical_json({'conflicts': journal.conflicts()}))
+        return 0
     if args.rotate_attestation_key:
         journal.rotate()
         print('Attestation key rotated. Attest again before retrying an application.')
@@ -120,8 +149,7 @@ def run(args: Apply, settings: Settings) -> int:
             if args.reopen_attempt and journal.detail(identifier)['state'] != 'abandoned':
                 raise ConfigError('only an abandoned attempt can be reopened')
             journal.resolve(identifier, args.outcome or 'not-submitted', attested=attested)
-        if args.outcome == 'submitted':
-            journal.recover_confirmed()
+        journal.recover_confirmed()
         return 0
     if not args.dry_run and journal.exists():
         journal.recover_armed()
@@ -169,6 +197,8 @@ def run(args: Apply, settings: Settings) -> int:
     with Jobs(headless=not args.show, backend=settings.store, session=session) as board:
         board.attempts = journal
         results = board.apply(work.matching, log=log, dry_run=args.dry_run, confirm=confirm)
+    if not args.dry_run and journal.path.is_file():
+        journal.recover_confirmed()
     if declined:
         print('not submitted: {} application(s); nothing was logged for them'.format(len(declined)))
     if isinstance(results, list) and any(

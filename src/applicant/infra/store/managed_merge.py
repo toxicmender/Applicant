@@ -8,7 +8,8 @@ from ...domain.dedupe import key
 from ...domain.job import Job
 from ...errors import ExportConflict
 from ...files import document_bytes
-from ...storage import APPLIED_COLUMNS, is_final, restore, write_rows
+from ...storage import is_final, write_rows
+from .application_csv import ApplicationCSV
 from .financials_merge import _merge
 
 
@@ -28,17 +29,7 @@ def parse_listing(raw):
 
 
 def parse_applications(raw):
-    if raw is None:
-        return []
-    reader = csv.DictReader(io.StringIO(raw.decode('utf-8-sig'), newline=''), strict=True)
-    if reader.fieldnames != APPLIED_COLUMNS:
-        raise ValueError('application CSV columns do not match')
-    rows = []
-    for row in reader:
-        if None in row or any(value is None for value in row.values()):
-            raise ValueError('invalid application CSV row')
-        rows.append({column: restore(value) for column, value in row.items()})
-    return rows
+    return ApplicationCSV(raw).rows()
 
 
 def keep_settled(old, new):

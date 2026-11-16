@@ -173,6 +173,13 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
             payload TEXT NOT NULL
         )""",
     ),
+    (
+        """CREATE TABLE application_projection_receipts (
+            log TEXT NOT NULL,
+            event TEXT NOT NULL,
+            PRIMARY KEY (log, event)
+        )""",
+    ),
 )
 
 
@@ -568,6 +575,36 @@ class Store:
                 'SELECT row FROM applications WHERE log = ? ORDER BY seq', (name,)
             )
         ]
+
+    def project_application(self, target, event_id, prepare):
+        """Commit one projection under the caller's export lock."""
+        name = self._managed_name('applications', target)
+        self._reconcile_export('applications', name, target)
+        if self.db.execute(
+            'SELECT 1 FROM application_projection_receipts WHERE log=? AND event=?',
+            (name, event_id),
+        ).fetchone():
+            return
+        baseline = _financials_bytes(target)
+        original = baseline
+        if original is None:
+            existing = [
+                json.loads(row)
+                for (row,) in self.db.execute(
+                    'SELECT row FROM applications WHERE log=? ORDER BY seq',
+                    (name,),
+                )
+            ]
+            if existing:
+                original = _csv_bytes(existing)
+        intended = prepare(original)
+        with self._transaction() as db:
+            self._replace_managed(db, 'applications', name, intended)
+            self._stage_export(db, 'applications', name, baseline, intended)
+            db.execute(
+                'INSERT INTO application_projection_receipts VALUES (?, ?)', (name, event_id)
+            )
+        self._reconcile_export('applications', name, target)
 
     def application_counts(self, file: str | os.PathLike[str]) -> dict[str, int]:
         """status -> rows holding it; an empty status counts as 'unknown'."""

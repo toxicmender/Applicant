@@ -7,7 +7,6 @@ import logging
 import re
 import secrets
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -22,6 +21,8 @@ from ..infra.ranking_documents import read_ranking_document
 from ..infra.store.financials_lock import export_lock
 from ..infra.store.publication import durable_replace
 from ..infra.store.repositories import Backend
+from .application_projection import STATUSES, projection_bytes, publish_file
+from .attempt_import import merge, snapshots
 
 logger = logging.getLogger(__name__)
 HISTORY = 'https://www.linkedin.com/help/linkedin/answer/a512329/'
@@ -50,6 +51,10 @@ class AttemptJournal:
     @property
     def _legacy_path(self):
         return self.log.with_name(f'.{self.log.name}.attempts.json')
+
+    @staticmethod
+    def index_path(log):
+        return log.with_name(f'.{log.name}.attempt-index.json')
 
     def _legacy(self):
         from ..infra.store.sqlite import Store
@@ -80,7 +85,7 @@ class AttemptJournal:
         }
 
     @contextmanager
-    def _locked(self):
+    def _locked(self, *, full=False):
         with export_lock(self.path):
             document = (
                 read_ranking_document(self.path)
@@ -93,6 +98,7 @@ class AttemptJournal:
             destination = lock_identity(self.log)
             if destination not in document['legacy_destinations']:
                 for identifier, entry in self._legacy().items():
+                    entry.setdefault('backend', self.backend)
                     entries.setdefault(identifier, entry)
                 document['legacy_destinations'].append(destination)
 
@@ -100,7 +106,81 @@ class AttemptJournal:
                 document['entries'] = data
                 write_document_bytes(self.path, document_bytes(document), replace=durable_replace)
 
-            yield entries, save
+            yield (document if full else entries), save
+
+    def import_legacy(self, paths):
+        candidates = [
+            (
+                path,
+                {
+                    identifier: {**entry, 'account': self.account, 'destination': str(self.log)}
+                    for identifier, entry in entries.items()
+                    if lock_identity(physical_path(entry['account'])) == self.account
+                },
+            )
+            for path, entries in snapshots(paths)
+        ]
+        with self.profile_owner(), self._locked(full=True) as (document, save):
+            merge(document, candidates)
+            save(document['entries'])
+
+    def conflicts(self):
+        with self._locked(full=True) as (document, _):
+            return {
+                identifier: {
+                    'journal': _brief(document['entries'].get(identifier)),
+                    'incoming': {
+                        digest: {**_brief(candidate['entry']), 'sources': candidate['sources']}
+                        for digest, candidate in incoming.items()
+                    },
+                }
+                for identifier, incoming in document.get('conflicts', {}).items()
+            }
+
+    def resolve_conflict(self, identifier, choice, digest):
+        with self.profile_owner(), self._locked(full=True) as (document, save):
+            entries = document['entries']
+            conflicts = document.get('conflicts', {})
+            incoming = conflicts.get(identifier)
+            if not incoming:
+                raise ConfigError(f'no quarantined attempt {identifier}')
+            if choice in ('journal', 'both') and identifier not in entries:
+                raise ConfigError('no canonical journal record; select an incoming candidate')
+            if digest is None:
+                if len(incoming) != 1:
+                    raise ConfigError('more than one incoming candidate; supply --digest')
+                digest = next(iter(incoming))
+            if digest not in incoming:
+                raise ConfigError('unknown candidate digest')
+            if choice in ('incoming', 'both'):
+                candidate = dict(incoming[digest]['entry'])
+                if not candidate.get('job_key'):
+                    raise ConfigError(
+                        'cannot activate a candidate with an unknown posting; dismiss it'
+                    )
+                candidate.pop('attestation_tag', None)
+                candidate.pop('attestation_key_id', None)
+                key = identifier if choice == 'incoming' else f'{identifier}:legacy-{digest}'
+                candidate['synthetic'] = choice == 'both'
+                if candidate['state'] in STATUSES:
+                    self._enqueue(document, key, candidate)
+                entries[key] = candidate
+            # Preserve each candidate and its source paths in the private audit.
+            resolved = incoming if choice == 'incoming' else {digest: incoming[digest]}
+            for key, value in resolved.items():
+                document.setdefault('resolved_conflicts', []).append(
+                    {
+                        'attempt': identifier,
+                        'digest': key,
+                        'decision': choice,
+                        **value,
+                    }
+                )
+            for key in list(resolved):
+                incoming.pop(key)
+            if not incoming:
+                conflicts.pop(identifier)
+            save(entries)
 
     def profile_owner(self):
         return profile_lock(self.profile.with_suffix('.lock'))
@@ -168,26 +248,94 @@ class AttemptJournal:
                 raise ConfigError('attempt not found for this application log and account')
             return entry
 
-    def recover_confirmed(self) -> None:
-        from ..domain.job import Job
-        from ..infra.store.repositories import applications
+    def _register(self, document, target, backend):
+        index = self.index_path(target)
+        with export_lock(target):
+            registry = (
+                read_ranking_document(index)
+                if index.is_file()
+                else {'schema_version': 1, 'journals': {}, 'tombstones': {}}
+            )
+            if registry.get('schema_version') != 1:
+                raise ConfigError(f'{index}: unsupported projection index schema')
+            if 'journal_id' not in document:
+                document['journal_id'] = uuid4().hex
+            journal_id = document['journal_id']
+            if registry['journals'].get(journal_id, {}).get('profile') != str(self.profile):
+                registry['journals'][journal_id] = {
+                    'profile': str(self.profile),
+                    'registration_id': uuid4().hex,
+                    'backend': backend,
+                }
+                registry['tombstones'].pop(journal_id, None)
+                write_document_bytes(index, document_bytes(registry), replace=durable_replace)
+            destination = lock_identity(target)
+            registered = document.setdefault('registered_destinations', [])
+            if destination not in registered:
+                registered.append(destination)
 
-        with self._locked() as (entries, _):
-            recovered = [
-                (Job.model_validate(item['job']), 'applied', 'linkedin easy apply')
-                for item in entries.values()
-                if item['state'] == 'submitted'
-                and lock_identity(Path(item['destination'])) == lock_identity(self.log)
-            ]
-        if recovered:
-            applications(self.log, self.backend).record(recovered)
+    def _enqueue(self, document, identifier, entry):
+        target = physical_path(entry['destination'])
+        if lock_identity(target) not in document.get('registered_destinations', []):
+            self._register(document, target, entry.get('backend', self.backend))
+        document.setdefault('projection', []).append(
+            {
+                'event_id': uuid4().hex,
+                'attempt': identifier,
+                'entry': dict(entry),
+            }
+        )
+
+    def recover_confirmed(self) -> None:
+        """Drain the projection events registered for this destination."""
+        with (
+            self.profile_owner(),
+            self._locked(full=True) as (document, save),
+            export_lock(self.log),
+        ):
+            self._drain(document, lambda: save(document['entries']))
+
+    def _drain(self, document, checkpoint):
+        from ..infra.store.sqlite import Store
+
+        queue = document.get('projection', [])
+        for event in list(queue):
+            entry = event['entry']
+            if lock_identity(physical_path(entry['destination'])) != lock_identity(self.log):
+                continue
+            try:
+                if entry.get('backend', self.backend) == 'sqlite':
+                    with Store.beside(self.log) as store:
+                        store.project_application(
+                            self.log,
+                            event['event_id'],
+                            lambda raw, attempt=event['attempt'], row=entry: projection_bytes(
+                                raw, attempt, row
+                            ),
+                        )
+                else:
+                    publish_file(self.log, event, checkpoint)
+            except ValueError as error:
+                raise ExportConflict(f'{self.log}: {error}') from error
+            queue.remove(event)
+            checkpoint()
 
     def begin(self, job, *, armed=False):
         url = urlsplit(job['url'])
         match = re.fullmatch(r'/jobs/view/(?:[^/]+-)?(\d+)/?', url.path)
         target = match[1] if match else job.get('id') or url.path.rstrip('/')
         key = content_hash(['linkedin', str(target)])
-        with self._locked() as (entries, save):
+        with self._locked(full=True) as (document, save):
+            entries = document['entries']
+            for identifier, group in document.get('conflicts', {}).items():
+                affected = {candidate['entry'].get('job_key') for candidate in group.values()}
+                if identifier in entries:
+                    affected.add(entries[identifier].get('job_key'))
+                if key in affected or None in affected:
+                    raise ApplicationBlocked(
+                        f'quarantined legacy attempt {identifier}; run apply --list-conflicts, '
+                        f'then apply --resolve-conflict {identifier} --keep incoming --digest HASH'
+                    )
             relevant = {i: entry for i, entry in entries.items() if entry['job_key'] == key}
             unresolved = next(
                 (
@@ -224,11 +372,13 @@ class AttemptJournal:
                 self._check_attestation(previous)
                 previous['state'] = 'retried'
                 previous['retry_attempt'] = identifier
+            self._register(document, self.log, self.backend)
             entries[identifier] = {
                 'job_key': key,
                 'job': job,
                 'account': self.account,
                 'destination': str(self.log),
+                'backend': self.backend,
                 'state': 'armed' if armed else 'uncertain',
                 'retry_of': self.retry,
                 'recorded_at': now().isoformat(),
@@ -240,7 +390,8 @@ class AttemptJournal:
             return identifier
 
     def resolve(self, identifier: str, state: str, *, attested: bool = False) -> None:
-        with self._locked() as (entries, save):
+        with self._locked(full=True) as (document, save):
+            entries = document['entries']
             entry = entries.get(identifier)
             if entry is None or entry['account'] != self.account:
                 raise ConfigError('attempt not found for this account')
@@ -275,6 +426,8 @@ class AttemptJournal:
                 if previous is not None and previous.get('retry_attempt') == identifier:
                     previous['state'] = 'not-submitted'
                     previous.pop('retry_attempt', None)
+            if state in STATUSES and entry.get('job', {}).get('title'):
+                self._enqueue(document, identifier, entry)
             save(entries)
 
     def recover_armed(self):
@@ -284,3 +437,64 @@ class AttemptJournal:
                 entry['state'] = 'uncertain'
             if armed:
                 save(entries)
+
+    @classmethod
+    def drain_registered(cls, log, backend):
+        """Try the destination index and each owner without waiting on advisory locks."""
+        from ..errors import ApplicantError
+        from ..infra.store.sqlite import DB_NAME
+
+        target = physical_path(log)
+        index = cls.index_path(target)
+        if not (index.exists() or target.exists() or (target.parent / DB_NAME).exists()):
+            return False
+        try:
+            with export_lock(target):
+                if not index.exists():
+                    return False
+                snapshot = read_ranking_document(index)
+                if snapshot.get('schema_version') != 1:
+                    return True
+        except ApplicantError:
+            return True
+        deferred = False
+        for journal_id, registration in snapshot['journals'].items():
+            journal = cls(
+                target, registration['profile'], backend=registration.get('backend', backend)
+            )
+            if not journal.path.parent.is_dir():
+                deferred = True
+                continue
+            try:
+                with (
+                    journal.profile_owner(),
+                    journal._locked(full=True) as (document, save),
+                    export_lock(target),
+                ):
+                    current = read_ranking_document(index)
+                    if current['journals'].get(journal_id) != registration:
+                        deferred = True
+                        continue
+                    if not journal.path.is_file():
+                        current['tombstones'][journal_id] = current['journals'].pop(journal_id)
+                        write_document_bytes(
+                            index, document_bytes(current), replace=durable_replace
+                        )
+                    elif document.get('journal_id') == journal_id:
+                        journal._drain(document, lambda: save(document['entries']))
+                    else:
+                        deferred = True
+            except ApplicantError:
+                deferred = True
+        return deferred
+
+
+def _brief(entry):
+    if entry is None:
+        return {}
+    return {
+        'posting': (entry.get('job') or {}).get('id'),
+        'state': entry.get('state'),
+        'timestamp': entry.get('recorded_at'),
+        'destination': entry.get('destination'),
+    }
