@@ -134,6 +134,55 @@ def _matches(association, snapshot):
         raise ValueError('company snapshot does not match its verified association')
 
 
+def _acquire_evidence(database, association, settings, clock, observed_at, observation_note):
+    from ..errors import AuthFailed, Blocked, Unparseable
+    from .provider_health import Acquisition
+
+    with Acquisition(database, association.provider, clock=clock) as owner:
+        if owner.result['status'] != 'acquired':
+            return {'association_id': association.association_id, **owner.result}
+        try:
+            recorder = CompanyRecorder()
+            with company_client(association, recorder, settings=settings) as client:
+                limit = 0 if association.provider in ('glassdoor', 'ambitionbox') else 20
+                payload = client.fetch(association.locator, limit).to_dict()
+            owner.check()
+            snapshot = CompanyEvidenceSnapshot(
+                snapshot_id=str(uuid4()),
+                association_id=association.association_id,
+                provider=association.provider,
+                provider_company_id=association.provider_company_id,
+                acquired_at=utc(clock()),
+                observed_at=observed_at,
+                observation_note=observation_note,
+                payload=payload,
+                responses=recorder.completed(),
+            )
+            _matches(association, snapshot)
+            validate_payload(snapshot)
+        except SourceError as error:
+            status = (
+                'needs_setup'
+                if isinstance(error, AuthFailed)
+                else 'adapter_degraded'
+                if isinstance(error, Unparseable)
+                else 'throttled'
+                if getattr(error, 'retry_at', None) is not None
+                else 'blocked'
+                if isinstance(error, Blocked)
+                else 'unavailable'
+            )
+            owner.finish(status, retry_at=getattr(error, 'retry_at', None))
+            raise
+        import_company_evidence(database, CompanyEvidenceImport(snapshots=(snapshot,)))
+        owner.finish('success')
+        return {
+            'association_id': association.association_id,
+            'status': 'captured',
+            'snapshot': snapshot.model_dump(),
+        }
+
+
 def capture_company_evidence(
     database: Path,
     association_ids: tuple[str, ...],
@@ -148,35 +197,17 @@ def capture_company_evidence(
     with Store.open_readonly(database) as store, store.read_snapshot():
         repo = CompanyEvidenceRepository(store.db)
         associations = tuple(repo.association(key) for key in association_ids)
+    from .provider_health import LeaseFailure
+
     outcomes = []
     for association in associations:
         try:
-            recorder = CompanyRecorder()
-            with company_client(association, recorder, settings=settings) as client:
-                if association.provider in ('glassdoor', 'ambitionbox'):
-                    payload = client.fetch(association.locator, 0).to_dict()
-                else:
-                    payload = client.fetch(association.locator, 20).to_dict()
-            snapshot = CompanyEvidenceSnapshot(
-                snapshot_id=str(uuid4()),
-                association_id=association.association_id,
-                provider=association.provider,
-                provider_company_id=association.provider_company_id,
-                acquired_at=utc(clock()),
-                observed_at=observed_at,
-                observation_note=observation_note,
-                payload=payload,
-                responses=recorder.completed(),
-            )
-            import_company_evidence(database, CompanyEvidenceImport(snapshots=(snapshot,)))
             outcomes.append(
-                {
-                    'association_id': association.association_id,
-                    'status': 'captured',
-                    'snapshot': snapshot.model_dump(),
-                }
+                _acquire_evidence(
+                    database, association, settings, clock, observed_at, observation_note
+                )
             )
-        except (SourceError, ValueError, StoreError) as error:
+        except (SourceError, ValueError, StoreError, LeaseFailure) as error:
             outcomes.append(
                 {
                     'association_id': association.association_id,

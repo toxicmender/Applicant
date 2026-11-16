@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 from ..boards.public import structured_records
 from ..domain.canonical import canonical_json, content_hash
 from ..domain.company_evidence import CompanyResponse
+from ..domain.company_resolution import resolve_company
 from ..domain.contracts import now
 from ..domain.providers import provider
 from ..domain.research import Company, CompanyIdentifier, Culture, ResearchEvidence, ResearchImport
@@ -13,7 +14,7 @@ from ..errors import AuthFailed, Blocked, SourceError, Unparseable
 from ..infra.http import HttpClient
 from ..infra.store.company_evidence import CompanyEvidenceRepository
 from ..infra.store.sqlite import Store
-from .provider_health import acquire, finish
+from .provider_health import Acquisition
 from .research import import_research, read_research
 
 PROFILE_PROVIDERS = ('flexa', 'wellfound', 'builtin', 'welcometothejungle')
@@ -42,19 +43,28 @@ def capture_profile(database, selection, *, client=None, clock=now):
     ):
         raise ValueError('profile locator must be on the selected provider')
     data = read_research(database)
-    if not any(
-        x.entity_id == selection['entity_id']
-        and x.provider == name
-        and x.provider_company_id == selection['provider_company_id']
-        and x.verification_url == selection['url']
-        for x in data['identifiers']
+    cutoff = clock()
+    if (
+        resolve_company(
+            data['identifiers'],
+            effective_date=cutoff.date(),
+            knowledge_cutoff=cutoff,
+            provider=name,
+            provider_id=selection['provider_company_id'],
+            locator=selection['url'],
+        )
+        != selection['entity_id']
     ):
         raise ValueError(
             'capture requires an explicit verified company identifier and exact profile URL'
         )
-    lease = acquire(database, name, clock=clock)
-    if lease['status'] != 'acquired':
-        return {'provider': name, **lease}
+    with Acquisition(database, name, clock=clock) as owner:
+        if owner.result['status'] != 'acquired':
+            return {'provider': name, **owner.result}
+        return _capture_public(database, selection, name, owner, client, clock)
+
+
+def _capture_public(database, selection, name, owner, client, clock):
     http = HttpClient(name, client=client)
     try:
         response = http.get(selection['url'])
@@ -62,13 +72,21 @@ def capture_profile(database, selection, *, client=None, clock=now):
             raise Blocked('company profile access denied')
         if response.status_code >= 400 or len(response.content) > 8_000_000:
             raise Unparseable('profile unavailable or oversized; import evidence instead')
+        owner.check()
         records, _ = structured_records(response.text, 'Organization')
         matches = [
             x
             for x in records
-            if x.get('url') == selection['url']
-            or x.get('@id') == selection['url']
-            or str(x.get('identifier')) == selection['provider_company_id']
+            if (
+                x.get('identifier') is None
+                or str(x['identifier']) == selection['provider_company_id']
+            )
+            and (x.get('url') is None or x['url'] == selection['url'])
+            and (
+                x.get('url') == selection['url']
+                or x.get('@id') == selection['url']
+                or str(x.get('identifier')) == selection['provider_company_id']
+            )
         ]
         if len(matches) != 1 or not isinstance(matches[0].get('description'), str):
             raise Unparseable(
@@ -100,20 +118,13 @@ def capture_profile(database, selection, *, client=None, clock=now):
             if isinstance(error, Blocked)
             else 'unavailable'
         )
-        finish(
-            database,
-            name,
-            lease['token'],
-            status,
-            retry_at=getattr(error, 'retry_at', None),
-            clock=clock,
-        )
+        owner.finish(status, retry_at=getattr(error, 'retry_at', None))
         raise
     finally:
         http.close()
     # Persistence failures are never provider failures.
     result = import_research(database, ResearchImport(evidence=(item,)))
-    finish(database, name, lease['token'], 'success', clock=clock)
+    owner.finish('success')
     return {
         **result,
         'evidence_id': item.evidence_id,
