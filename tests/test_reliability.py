@@ -252,6 +252,62 @@ class ReliabilityTest(unittest.TestCase):
             self.assertIn(HISTORY, output.getvalue())
             self.assertEqual(journal.detail(identifier)['state'], 'not-submitted')
 
+    def test_cli_retry_requires_acknowledgement_and_dispatches_exact_attempt_once(self):
+        from applicant.boards.linkedin_apply import LinkedIn
+        from applicant.infra.store.repositories import applications
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log, session = root / 'applications.csv', root / 'session.json'
+            job = Job(
+                source='linkedin',
+                id='321',
+                title='Engineer',
+                url='https://www.linkedin.com/jobs/view/321/',
+            )
+            journal = AttemptJournal(log, session, backend='sqlite')
+            attempt = journal.begin(job.to_dict())
+            journal.resolve(attempt, 'not-submitted', attested=True)
+            argv = [
+                '--no-log-file',
+                '--store',
+                'sqlite',
+                'apply',
+                '--log',
+                str(log),
+                '--cookies',
+                str(session),
+                '--retry-attempt',
+                attempt,
+                '--yes',
+            ]
+            adapter = LinkedIn()
+            self.addCleanup(adapter.close)
+            page, submit = Mock(url=job.url), Mock()
+            page.locator.side_effect = lambda selector: (
+                Mock(first=submit) if 'Submit application' in selector else Mock()
+            )
+            with (
+                patch('applicant.search.Jobs.linkedin', return_value=adapter),
+                patch.object(adapter, '_start', return_value=page),
+                patch.object(adapter, '_confirmed', return_value=True),
+                patch('applicant.boards.linkedin_apply.looks_blocked', return_value=False),
+                redirect_stdout(io.StringIO()),
+                redirect_stderr(io.StringIO()) as diagnostics,
+            ):
+                self.assertEqual(main(argv), 1)
+                self.assertIn('requires --acknowledge-duplicate-risk', diagnostics.getvalue())
+                self.assertEqual(journal.detail(attempt)['state'], 'not-submitted')
+                self.assertEqual(main([*argv, '--acknowledge-duplicate-risk']), 0)
+                self.assertEqual(main([*argv, '--acknowledge-duplicate-risk']), 1)
+                self.assertIn('must be reconciled as not-submitted', diagnostics.getvalue())
+                submit.click.assert_called_once()
+            self.assertEqual(journal.detail(attempt)['state'], 'retried')
+            self.assertEqual(
+                [(r['id'], r['status']) for r in applications(log, 'sqlite').rows()],
+                [('321', 'applied')],
+            )
+
     def test_timeout_at_click_cannot_create_a_second_submission(self):
         from applicant.boards.linkedin_apply import UNCONFIRMED_SUBMIT, LinkedIn
 

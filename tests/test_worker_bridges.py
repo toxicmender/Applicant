@@ -4,13 +4,53 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from applicant.errors import AuthFailed, Blocked, RateLimited, SourceError, Unparseable, Unreachable
-from applicant.infra.board_worker import OwnedBoard, _collect
+from applicant.files import write_document
+from applicant.infra.board_worker import OwnedBoard, _collect, recommendations
 from applicant.infra.owned_worker import WorkerFailure
 from applicant.services.research_feed import collect_feed
 from tests.research_fixtures import NOW, bundle
 
 
 class WorkerBridgesTest(unittest.TestCase):
+    def test_owned_recommendations_use_scoped_state_and_keep_results_on_interrupt(self):
+        job = bundle().observations[0].job
+        client = Mock()
+        client.scrape_jobs.return_value = [job]
+        saved = Mock(return_value=1)
+
+        def inline(function, args, *, progress, **kwargs):
+            connection = Mock()
+            connection.send.side_effect = lambda packet: (
+                progress(packet[1]) if packet[0] == 'progress' else None
+            )
+            function(connection, args)
+            connection.send.assert_called_with(('closing', None))
+            self.assertEqual(kwargs['provider'], 'linkedin')
+            raise KeyboardInterrupt
+
+        with tempfile.TemporaryDirectory() as folder:
+            state = Path(folder) / 'cookies.json'
+            write_document(
+                state,
+                {
+                    'cookies': [{'name': 'li_at', 'value': 'local', 'domain': '.linkedin.com'}],
+                    'origins': [{'origin': 'https://example.org', 'localStorage': []}],
+                },
+            )
+            with (
+                patch('applicant.infra.board_worker.run_worker', side_effect=inline),
+                patch('applicant.boards.linkedin_apply.LinkedIn', return_value=client),
+                self.assertRaises(KeyboardInterrupt),
+            ):
+                recommendations(state, headless=True, save=saved)
+        expected = {
+            'cookies': [{'name': 'li_at', 'value': 'local', 'domain': '.linkedin.com'}],
+            'origins': [],
+        }
+        client.scrape_jobs.assert_called_once_with(None, storage_state=expected)
+        client.close.assert_called_once()
+        saved.assert_called_once_with([job])
+
     def test_owned_board_calls_and_translates_failures(self):
         job = bundle().observations[0].job
         board = OwnedBoard('builtin', Mock())
