@@ -51,6 +51,7 @@ uv run applicant search "machine learning engineer" -l India -s linkedin indeed 
 uv run applicant search "software engineer" -l Bengaluru --title backend --title "machine learning" --experience 5 --posted-within 14
 uv run applicant search "python developer" --min-salary 1200000 --currency INR --salary-basis strict
 uv run applicant search "python engineer" -s linkedin --experience 5 --enrich --enrich-limit 10 --want 15
+uv run applicant search --resume-pending -s linkedin --enrich-limit 10
 uv run applicant search --list-saved
 uv run applicant search --saved ai-ml --title "nlp"
 ```
@@ -65,6 +66,17 @@ the requested filters.
 rounds to reach a target after filtering. `--enrich` reads a bounded number of
 supported posting pages for missing experience details. `--show` opens supported
 browser-backed searches visibly.
+
+If enrichment is interrupted, saved candidates that still need a description
+stay out of the application worklist. `--resume-pending` checks saved requests
+across earlier query signatures for the selected providers. It reuses local
+descriptions before spending its live budget. Ordinary searches reserve at most
+half their live enrichment budget for matching saved requests. With a budget of
+one, use `--resume-pending` to spend that request on a saved candidate.
+
+Completed descriptions are reusable for 30 days and completed empty responses
+for seven days. A contradictory job card triggers a fresh lookup. A clock-skew
+diagnostic means Applicant checked timestamps against its saved clock reference.
 
 #### Signed-in LinkedIn recommendations (`jobs`)
 
@@ -89,12 +101,33 @@ has yet to show a conclusive result.
 ```console
 uv run applicant apply --reconcile ATTEMPT_ID --outcome submitted
 uv run applicant apply --reconcile ATTEMPT_ID --outcome not-submitted
+uv run applicant apply --reconcile ATTEMPT_ID --outcome abandoned
+uv run applicant apply --reopen-attempt ATTEMPT_ID
 uv run applicant apply --retry-attempt ATTEMPT_ID --acknowledge-duplicate-risk
 ```
 
-The second command asks for an interactive attestation. The third consumes that
-authorization at dispatch and then follows the regular submission rules. A retry
-can create a duplicate if the original submission was accepted.
+`not-submitted`, `abandoned`, and reopening require a terminal attestation.
+An abandoned attempt continues to block automatic dispatch until reopened.
+An authorized retry consumes its approval once at dispatch and still goes
+through regular confirmation. A retry can create a duplicate if the portal
+accepted the original submission. Session changes or key rotation require fresh
+attestation. `--rotate-attestation-key` leaves unresolved attempts protected.
+
+The attempt journal follows the saved profile across `--log` destinations.
+Import older journals explicitly before dispatching work originally tracked in
+other destinations. For external tools preparing a journal for import, publish
+the completed file by atomic rename.
+
+```console
+uv run applicant apply --import-attempts-from legacy.attempts.json
+uv run applicant apply --list-conflicts
+uv run applicant apply --resolve-conflict ATTEMPT_ID --keep incoming --digest HASH
+```
+
+The import quarantines conflicting candidates and reports their digests.
+`--keep journal` retains the canonical record. `--keep both` preserves an
+additional historical attempt under a distinct ID. `--dismiss` records a
+candidate as invalid so a repeated import does not reopen the conflict.
 
 Filter a stored listing and start with a dry run. Dry runs record `would_apply`
 rows in the selected CSV. A live run previews the batch and asks for confirmation.
@@ -504,6 +537,21 @@ read or write. If the log reports `storage_full`, free space before rerunning.
 If SQLite contains more than one case-equivalent collection name on Windows,
 back up the database and review both histories before resolving the duplicate
 keys. Keep the sibling export lock file while Applicant is using the path.
+
+`status --json PATH` sets `projection_pending` when it can show committed results
+but cannot complete application export recovery. A readable deferred summary
+returns `0` and warns on stderr. Mutating commands return `8` on retryable
+contention or pending publication. Storage failure and `export_conflict` return
+`1` with distinct statuses. CLI usage errors return `2`, blocked application
+dispatch returns `9`, missing terminal attestation returns `10`, and interruption
+returns `130`. Provider-specific exit codes continue to apply.
+
+Before rolling back, stop writers, reconcile attempts, and finish pending
+exports. Move the upgraded database and private v2 journals, keys, and export
+indexes out of their active paths. Restore a compatible database backup or use
+vetted-only exports in a separate data directory. Keep dispatch disabled on the
+older version for profiles with unresolved attempts. Remove unused lock files
+only after every process using their paths has stopped.
 
 #### WAL checkpoints (`store`)
 
