@@ -20,6 +20,8 @@ def standalone_console():
 
 @contextmanager
 def _windows_console_deferral():
+    if sys.platform != 'win32':
+        raise RuntimeError('Windows console handler used outside Windows')
     import ctypes
     from ctypes import wintypes
 
@@ -38,7 +40,7 @@ def _windows_console_deferral():
     install.argtypes = [callback, wintypes.BOOL]
     install.restype = wintypes.BOOL
     if not install(remember, True):
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise ctypes.WinError()
     try:
         yield
     finally:

@@ -45,4 +45,15 @@ def physical_path(path: str | os.PathLike[str]) -> Path:
 
 
 def lock_identity(path: Path) -> str:
-    return os.path.normcase(comparison_path(str(path), windows=os.name == 'nt'))
+    if os.name != 'nt':
+        return str(path)
+    from .windows_paths import directory_handle, insensitive_for
+
+    resolved = physical_path(path)
+    normalized = comparison_path(str(resolved), windows=True)
+    if resolved.parent.is_dir():
+        with directory_handle(resolved.parent, create=False) as parent:
+            if not insensitive_for(parent, resolved.parent, resolved.name):
+                return normalized
+    # Preserve the spelling of the physical parent. Only the uncreated leaf folds.
+    return os.path.join(os.path.dirname(normalized), os.path.normcase(os.path.basename(normalized)))

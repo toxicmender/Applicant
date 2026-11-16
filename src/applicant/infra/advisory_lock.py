@@ -16,42 +16,13 @@ _held: set[str] = set()
 _retained_handles = []
 
 
-def _windows_open(path):
-    import ctypes
-    import msvcrt
-    from ctypes import wintypes
-
-    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
-    create = kernel.CreateFileW
-    create.argtypes = [
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.HANDLE,
-    ]
-    create.restype = wintypes.HANDLE
-    # Open the reparse point itself and omit delete sharing for the lock's lifetime.
-    handle = create(str(path), 0xC0000000, 3, None, 4, 0x00200000, None)
-    if handle == ctypes.c_void_p(-1).value:
-        raise ctypes.WinError(ctypes.get_last_error())
-    try:
-        descriptor = msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_BINARY | os.O_NOINHERIT)
-    except BaseException:
-        close = kernel.CloseHandle
-        close.argtypes = [wintypes.HANDLE]
-        close(handle)
-        raise
-    return descriptor
-
-
 @contextmanager
 def _parent(path):
     if os.name == 'nt':
-        path.mkdir(parents=True, exist_ok=True)
-        yield None
+        from .windows_paths import directory_handle
+
+        with directory_handle(path, create=True) as handle:
+            yield handle
         return
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     current = os.open(path.anchor, flags)
@@ -72,6 +43,8 @@ def _parent(path):
 
 def _verify_leaf(descriptor, path, parent):
     opened = os.fstat(descriptor)
+    if opened.st_nlink == 0:
+        raise FileNotFoundError(errno.ENOENT, 'lock leaf was removed during acquisition', path)
     if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
         raise OSError(errno.EINVAL, 'lock must be a regular file with one link', path)
     current = os.stat(
@@ -109,22 +82,25 @@ def advisory_lock(path, busy, *, retain_on_cleanup_failure=False):
         for attempt in range(2):
             try:
                 with _parent(path.parent) as parent:
-                    if parent is None:
-                        descriptor = _windows_open(path)
+                    if os.name == 'nt':
+                        from .windows_paths import lock_descriptor
+
+                        descriptor = lock_descriptor(parent, path)
                     else:
                         descriptor = os.open(
                             path.name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600, dir_fd=parent
                         )
                     os.set_inheritable(descriptor, False)
-                    _verify_leaf(descriptor, path, parent)
+                    relative = None if os.name == 'nt' else parent
+                    _verify_leaf(descriptor, path, relative)
                     try:
                         _take_lock(descriptor)
                     except OSError as error:
                         if error.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
                             raise busy() from None
                         raise
-                    _verify_leaf(descriptor, path, parent)
-                    if parent is None:
+                    _verify_leaf(descriptor, path, relative)
+                    if os.name == 'nt':
                         make_private(path)
                     else:
                         os.fchmod(descriptor, 0o600)

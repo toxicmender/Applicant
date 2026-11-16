@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from applicant.errors import ProfileBusy
 from applicant.infra.owned_worker import CleanupUnconfirmed
@@ -22,9 +23,7 @@ def retained_lock(path, connection):
 class SessionLockingTest(unittest.TestCase):
     def test_windows_prefixes_and_device_names(self):
         self.assertEqual(comparison_path(r'\\?\C:\folder', windows=True), r'C:\folder')
-        self.assertEqual(
-            comparison_path(r'\\?\UNC\server\share', windows=True), r'\\server\share'
-        )
+        self.assertEqual(comparison_path(r'\\?\UNC\server\share', windows=True), r'\\server\share')
         for path in (r'\\.\pipe\name', r'\\?\GLOBALROOT\name'):
             with self.assertRaises(ValueError):
                 comparison_path(path, windows=True)
@@ -46,6 +45,27 @@ class SessionLockingTest(unittest.TestCase):
             path.symlink_to(path.with_name('missing'), target_is_directory=True)
             with self.assertRaises(FileNotFoundError):
                 physical_path(path / 'future')
+
+    @unittest.skipIf(os.name == 'nt', 'Windows denies unlink while a lock handle is open')
+    def test_posix_retries_a_leaf_removed_during_acquisition(self):
+        from applicant.infra.advisory_lock import _take_lock
+
+        with tempfile.TemporaryDirectory() as folder:
+            leaf = Path(folder) / 'profile.lock'
+            calls = []
+
+            def remove_once(descriptor):
+                _take_lock(descriptor)
+                if not calls:
+                    leaf.unlink()
+                calls.append(descriptor)
+
+            with (
+                patch('applicant.infra.advisory_lock._take_lock', side_effect=remove_once),
+                profile_lock(leaf),
+            ):
+                self.assertTrue(leaf.is_file())
+            self.assertEqual(len(calls), 2)
 
     def test_nested_alias_and_recreated_directory(self):
         with tempfile.TemporaryDirectory() as folder:
