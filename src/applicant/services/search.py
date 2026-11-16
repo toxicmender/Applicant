@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Collection, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Protocol
 
 from ..domain import flags
@@ -22,6 +22,7 @@ from ..filters import JobFilter, prepared
 from ..infra.store.repositories import Backend, listing
 from .events import BoardSearched, Emit, ignore
 from .fanout import failure, fan_out
+from .pending_enrichment import PendingEnrichment, _signature
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,7 @@ class Enrichment:
     budget: int
     described: dict[tuple[str | None, str | None], str | None] = field(default_factory=dict)
     stopped: bool = False
+    pending: PendingEnrichment | None = None
 
 
 def close_quietly(name: str, client: Board) -> None:
@@ -108,6 +110,8 @@ class SearchJobs:
         enrich_limit: int = 25,
         emit: Emit = ignore,
         on_batch: Callable[[list[Job]], None] | None = None,
+        pending: PendingEnrichment | None = None,
+        eligible: Callable[[Job], bool] | None = None,
     ) -> list[Job]:
         """Every configured board's filtered results, merged.
 
@@ -119,14 +123,35 @@ class SearchJobs:
         `enrich` reads the postings themselves for an experience filter the
         search cards could not answer, at most `enrich_limit` of them.
         """
-        plan = Enrichment(budget=enrich_limit) if enrich else None
+        plan = Enrichment(budget=enrich_limit, pending=pending) if enrich else None
+        resume_budget = enrich_limit // 2
 
         def one(name: str) -> list[Job]:
+            nonlocal resume_budget
+            if pending is not None and plan is not None:
+                resumed = pending.resume(
+                    [name],
+                    self.client_for,
+                    resume_budget,
+                    signature=_signature(name, keywords, filters),
+                )
+                used = resumed['live_requests']
+                resume_budget -= used
+                plan.budget -= used
             client = self.client_for(name)
             logger.info(f'{name}: searching {keywords!r} in {filters.location or "anywhere"!r}')
             try:
                 kept, seen = self._from_board(
-                    client, name, keywords, filters, limit, want, max_rounds, plan
+                    client,
+                    name,
+                    keywords,
+                    filters,
+                    limit,
+                    want,
+                    max_rounds,
+                    plan,
+                    on_batch,
+                    eligible,
                 )
             finally:
                 if name not in self.keep_open:
@@ -157,6 +182,8 @@ class SearchJobs:
         want: int | None,
         max_rounds: int,
         plan: Enrichment | None = None,
+        on_batch: Callable[[list[Job]], None] | None = None,
+        eligible: Callable[[Job], bool] | None = None,
     ) -> tuple[list[Job], int]:
         """One board's surviving jobs, and how many were read to get them.
 
@@ -188,15 +215,25 @@ class SearchJobs:
         seen = 0
 
         for round_number in range(max(1, max_rounds) if want else 1):
-            jobs = client.search(
-                keywords, filters.location or '', limit=pull, posted_within_days=posted
-            )
+            try:
+                jobs = client.search(
+                    keywords, filters.location or '', limit=pull, posted_within_days=posted
+                )
+            except (SourceError, KeyboardInterrupt):
+                partial = getattr(client, 'partial_jobs', ())
+                if partial:
+                    if eligible is not None:
+                        partial = [job for job in partial if eligible(job)]
+                    self._recover_partial(partial, keywords, filters, skip, plan, on_batch)
+                raise
             seen = len(jobs)
 
             # every rate this batch needs, fetched once - then filtering is pure
             ready = prepared(filters, jobs)
             kept = []
             for job in jobs:
+                if eligible is not None and not eligible(job):
+                    continue
                 keep, found = ready.matches(job, skip=skip)
                 if not keep:
                     continue
@@ -204,7 +241,21 @@ class SearchJobs:
                 kept.append(job)
 
             if deferred and plan is not None:
-                self._enrich(client, kept, plan)
+                if plan.pending is not None:
+                    unresolved = [job for job in kept if self._unanswered(job)]
+                    plan.pending.queue(unresolved, keywords, filters)
+                    known = self._recheck_experience(
+                        [job for job in kept if not self._unanswered(job)], filters
+                    )
+                    if known and on_batch is not None:
+                        on_batch(known)
+                self._enrich(client, kept, plan, keywords, filters)
+                if plan.pending is not None:
+                    kept = [
+                        job
+                        for job in kept
+                        if not self._unanswered(job) or (job.source, job.id) in plan.described
+                    ]
                 kept = self._recheck_experience(kept, filters)
 
             if want is None or len(kept) >= want:
@@ -218,7 +269,33 @@ class SearchJobs:
 
         return (kept[:want] if want else kept), seen
 
-    def _enrich(self, client: Board, jobs: list[Job], plan: Enrichment) -> None:
+    def _recover_partial(self, partial, keywords, filters, skip, plan, on_batch):
+        from ..domain.rates import RateSnapshot
+        from ..money import Rates
+
+        rates = filters.rates if isinstance(filters.rates, RateSnapshot) else Rates(offline=True)
+        ready = prepared(replace(filters, rates=rates), partial)
+        kept = [job for job in partial if ready.matches(job, skip=skip)[0]]
+        if plan is not None and plan.pending is not None and Field.EXPERIENCE in skip:
+            plan.pending.queue([job for job in kept if self._unanswered(job)], keywords, filters)
+            kept = self._recheck_experience(
+                [job for job in kept if not self._unanswered(job)], filters
+            )
+        if kept and on_batch is not None:
+            on_batch(kept)
+
+    @staticmethod
+    def _unanswered(job):
+        return job.experience_min is None and job.experience_max is None
+
+    def _enrich(
+        self,
+        client: Board,
+        jobs: list[Job],
+        plan: Enrichment,
+        keywords: str = '',
+        filters: JobFilter | None = None,
+    ) -> None:
         """Read the posting itself where its card never stated the experience.
 
         Only what a filter actually needs, only for jobs that survived every
@@ -236,16 +313,24 @@ class SearchJobs:
 
             key = (job.source, job.id)
             if key not in plan.described:
-                if plan.stopped or plan.budget <= 0:
-                    continue
-                try:
-                    plan.described[key] = describe(job)
-                except SourceError as error:
-                    # one refusal means the next request is worse than useless
-                    logger.warning('{}: {} (enrichment stopped)'.format(job.source, error))
-                    plan.stopped = True
-                    continue
-                plan.budget -= 1
+                cached, description = (
+                    plan.pending.cache.read(job) if plan.pending else (False, None)
+                )
+                if not cached:
+                    if plan.stopped or plan.budget <= 0:
+                        continue
+                    plan.budget -= 1
+                    try:
+                        description = describe(job)
+                    except SourceError as error:
+                        logger.warning('{}: {} (enrichment stopped)'.format(job.source, error))
+                        plan.stopped = True
+                        continue
+                    if plan.pending is not None:
+                        plan.pending.cache.write(job, description)
+                plan.described[key] = description
+            if plan.pending is not None and filters is not None:
+                plan.pending.resolve_current(job, keywords, filters, plan.described[key])
 
             found = experience_from(plan.described.get(key))
             if found is None:

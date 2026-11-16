@@ -153,6 +153,9 @@ def _save_jobs(jobs, filepath):
     before = len(merged)
     for job in jobs:
         item = job.to_dict()
+        previous = merged.get(key(item), {})
+        if 'enrichment_v1' in previous:
+            item['enrichment_v1'] = previous['enrichment_v1']
         merged[key(item)] = item
 
     write_document(filepath, {'list': list(merged.values())})
@@ -234,6 +237,8 @@ def jobs_from(items: Iterable[dict], origin: str) -> list[Job]:
     jobs = []
     skipped = 0
     for item in items:
+        if 'pending_job_v1' in item:
+            continue
         try:
             jobs.append(Job.from_dict(item))
         except ValidationError as error:

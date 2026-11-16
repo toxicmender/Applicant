@@ -404,6 +404,13 @@ class Store:
     def _managed_alias(db, kind, name, file):
         if os.name != 'nt':
             return name
+        from ..windows_paths import directory_handle, insensitive_for
+
+        target = Path(file).resolve()
+        if target.parent.is_dir():
+            with directory_handle(target.parent, create=False) as parent:
+                if not insensitive_for(parent, target.parent, target.name):
+                    return name
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         sources = {'jobs': ('jobs', 'listing'), 'applications': ('applications', 'log')}
         keys = []
@@ -514,6 +521,13 @@ class Store:
             ).fetchone()
             for job in jobs:
                 item = job.to_dict()
+                prior = db.execute(
+                    'SELECT payload FROM jobs WHERE listing=? AND key=?', (name, _key(item))
+                ).fetchone()
+                if prior is not None:
+                    metadata = json.loads(prior[0]).get('enrichment_v1')
+                    if metadata is not None:
+                        item['enrichment_v1'] = metadata
                 last += 1
                 db.execute(
                     'INSERT INTO jobs (listing, key, seq, fingerprint, payload) '
@@ -538,6 +552,27 @@ class Store:
         self._reconcile_export('jobs', name, target)
         logger.info(f'{target}: {total - before} new job(s), {total} stored')
         return total
+
+    def update_listing_payloads(self, target, update):
+        """Resolve pending posting revisions and stage the resulting listing."""
+        from ...domain.dedupe import key
+
+        name = self._sync_listing(target, quarantine=True)
+        assert name is not None
+        baseline = _financials_bytes(target)
+        with self._transaction() as db:
+            db.execute('BEGIN IMMEDIATE')
+            payloads = db.execute('SELECT payload FROM jobs WHERE listing=? ORDER BY seq', (name,))
+            records = (json.loads(payload) for (payload,) in payloads)
+            items = {key(item): item for item in records}
+            changed = update(items)
+            if changed:
+                intended = document_bytes({'list': list(items.values())})
+                self._replace_managed(db, 'jobs', name, intended)
+                self._stage_export(db, 'jobs', name, baseline, intended)
+        if changed:
+            self._reconcile_export('jobs', name, target)
+        return changed
 
     def _count(self, db: sqlite3.Connection, name: str) -> int:
         return db.execute('SELECT COUNT(*) FROM jobs WHERE listing = ?', (name,)).fetchone()[0]

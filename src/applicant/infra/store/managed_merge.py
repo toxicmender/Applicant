@@ -24,7 +24,7 @@ def parse_listing(raw):
     if len({key(item) for item in data.get('list', [])}) != len(data.get('list', [])):
         raise ValueError('duplicate job keys')
     for item in data.get('list', []):
-        Job.model_validate(item)
+        Job.model_validate(item.get('pending_job_v1', item))
     return {**data, 'list': data.get('list', [])}
 
 

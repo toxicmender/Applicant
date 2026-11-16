@@ -31,6 +31,7 @@ from .services.search import SOURCES, Board, SearchJobs, close_quietly
 if TYPE_CHECKING:
     from .boards.linkedin_apply import LinkedIn
     from .services.application_attempts import AttemptJournal
+    from .services.pending_enrichment import PendingEnrichment
 
 __all__ = ['SOURCES', 'Board', 'Jobs']
 
@@ -133,6 +134,7 @@ class Jobs:
         on_error: Callable[[str, Exception], None] | None = None,
         emit: Emit = ignore,
         on_batch: Callable[[list[Job]], None] | None = None,
+        pending: PendingEnrichment | None = None,
     ) -> list[Job]:
         """Search every configured board and return the filtered, merged results.
 
@@ -145,6 +147,17 @@ class Jobs:
         # a LinkedIn client handed in belongs to the caller, so it stays open;
         # the guest client made for the search is closed with the rest
         keep_open = {'linkedin'} if self._linkedin is not None else set()
+        from .services.application_attempts import AttemptJournal, linkedin_posting_key
+
+        protected = (
+            AttemptJournal('applied_jobs.csv', self.session).protected_postings()
+            if 'linkedin' in self.sources
+            else set()
+        )
+
+        def eligible(job: Job) -> bool:
+            return job.source != 'linkedin' or linkedin_posting_key(job.to_dict()) not in protected
+
         return SearchJobs(self._client, keep_open=keep_open).run(
             self.sources,
             keywords,
@@ -156,7 +169,14 @@ class Jobs:
             enrich_limit=enrich_limit,
             emit=emit,
             on_batch=on_batch,
+            pending=pending,
+            eligible=eligible if protected else None,
         )
+
+    def resume_pending(self, path: str, budget: int) -> dict[str, int]:
+        from .services.pending_enrichment import PendingEnrichment
+
+        return PendingEnrichment(path, self.backend).resume(self.sources, self._client, budget)
 
     def apply(
         self,

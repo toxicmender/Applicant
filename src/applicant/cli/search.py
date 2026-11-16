@@ -83,6 +83,9 @@ def add_parser(add: AddParser) -> argparse.ArgumentParser:
         metavar='N',
         help='how many postings --enrich may read in one run (default 25)',
     )
+    search.add_argument(
+        '--resume-pending', action='store_true', help='resume saved enrichment requests'
+    )
     add_filters(search)
     return search
 
@@ -91,6 +94,7 @@ class Overrides(SavedSearch, Request):
     saved: str | None = None
     list_saved: bool = False
     show: bool = False
+    resume_pending: bool = False
 
 
 class Search(FilterOptions, Request):
@@ -106,11 +110,27 @@ class Search(FilterOptions, Request):
     enrich: bool = False
     enrich_limit: PositiveInt = 25
     output: str | None = None
+    resume_pending: bool = False
 
     @model_validator(mode='before')
     @classmethod
     def resolve(cls, raw: dict[str, Any], info: ValidationInfo) -> dict[str, Any]:
         overrides = Overrides.model_validate(raw)
+        if overrides.resume_pending:
+            inputs = overrides.model_dump(exclude_none=True)
+            unexpected = set(inputs) - {
+                'source',
+                'output',
+                'enrich_limit',
+                'resume_pending',
+                'show',
+                'list_saved',
+            }
+            if unexpected or overrides.show or overrides.list_saved:
+                raise ConfigError(
+                    '--resume-pending accepts source, output, and enrichment budget only'
+                )
+            return inputs
         values: dict[str, Any] = {}
         if overrides.saved is not None and not overrides.list_saved:
             settings = info.context
@@ -144,6 +164,7 @@ def list_saved(saved: dict[str, SavedSearch]) -> int:
 
 def run(args: Search, settings: Settings) -> int:
     from ..search import Jobs
+    from ..services.pending_enrichment import PendingEnrichment
     from ..services.search import Stored, store
 
     if args.list_saved:
@@ -155,8 +176,19 @@ def run(args: Search, settings: Settings) -> int:
         f'search: {args.keywords!r} on {", ".join(wanted)}, up to {args.limit} per board'
         + (f' (saved search {args.saved!r})' if args.saved else '')
     )
-    with Jobs(sources=wanted, headless=not args.show, backend=settings.store) as board:
+    with Jobs(
+        sources=wanted,
+        headless=not args.show,
+        backend=settings.store,
+        session=settings.path(settings.files.cookies),
+    ) as board:
         board.owned_search = True
+        if args.resume_pending:
+            result = board.resume_pending(output, args.enrich_limit)
+            print(
+                f'{result["promoted"]} promoted, {result["pruned"]} pruned, {result["remaining"]} remaining'
+            )
+            return 0
         found = board.search(
             args.keywords,
             filters_from(args),
@@ -166,6 +198,7 @@ def run(args: Search, settings: Settings) -> int:
             enrich=args.enrich,
             enrich_limit=args.enrich_limit,
             on_batch=lambda jobs: batches.append(store(jobs, output, settings.store)),
+            pending=PendingEnrichment(output, settings.store) if args.enrich else None,
         )
 
     if not found:

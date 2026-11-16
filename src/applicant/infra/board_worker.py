@@ -4,7 +4,15 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ..domain.job import Job
-from ..errors import AuthFailed, Blocked, RateLimited, SourceError, Unparseable, Unreachable
+from ..errors import (
+    AuthFailed,
+    Blocked,
+    NotFound,
+    RateLimited,
+    SourceError,
+    Unparseable,
+    Unreachable,
+)
 from .owned_worker import run_worker
 from .provider_registry import board_class, board_client
 
@@ -66,7 +74,8 @@ class OwnedBoard:
         if result['error']:
             error = result['error']
             classes = {
-                c.__name__: c for c in (AuthFailed, Blocked, RateLimited, Unparseable, Unreachable)
+                c.__name__: c
+                for c in (AuthFailed, Blocked, NotFound, RateLimited, Unparseable, Unreachable)
             }
             cls = classes.get(error['type'], SourceError)
             if cls is RateLimited:
