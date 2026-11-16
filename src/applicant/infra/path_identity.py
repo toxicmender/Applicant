@@ -1,6 +1,8 @@
 """Physical names for coordination files and checkout paths."""
 
+import errno
 import os
+import stat
 from pathlib import Path
 
 
@@ -30,7 +32,7 @@ def physical_path(path: str | os.PathLike[str]) -> Path:
     windows = os.name == 'nt'
     raw = os.path.expanduser(os.fspath(path))
     comparison_path(raw.replace('/', '\\') if windows else raw, windows=windows)
-    current = Path(os.path.abspath(raw))
+    current = _follow_links(Path(os.path.abspath(raw)), windows=windows)
     suffix: list[str] = []
     while True:
         try:
@@ -42,6 +44,37 @@ def physical_path(path: str | os.PathLike[str]) -> Path:
             current = current.parent
         else:
             return resolved.joinpath(*reversed(suffix))
+
+
+def _follow_links(path: Path, *, windows: bool) -> Path:
+    """Reject repeated link identities and bound the number followed."""
+    seen = set()
+    for _ in range(33):
+        parent = Path(path.anchor)
+        for index, name in enumerate(path.parts[1:], start=1):
+            parent /= name
+            try:
+                info = parent.lstat()
+            except FileNotFoundError:
+                return path
+            if (
+                not stat.S_ISLNK(info.st_mode)
+                and getattr(info, 'st_reparse_tag', None) != 0xA0000003
+            ):
+                continue
+            identity = (info.st_dev, info.st_ino)
+            if identity in seen or len(seen) == 32:
+                raise OSError(errno.ELOOP, 'too many filesystem links', parent)
+            seen.add(identity)
+            target = parent.parent / os.readlink(parent)
+            comparison_path(str(target), windows=windows)
+            if not os.path.lexists(target):
+                raise FileNotFoundError(errno.ENOENT, 'dangling filesystem link', parent)
+            path = Path(os.path.abspath(target)).joinpath(*path.parts[index + 1 :])
+            break
+        else:
+            return path
+    raise OSError(errno.ELOOP, 'too many filesystem links', path)
 
 
 def lock_identity(path: Path) -> str:

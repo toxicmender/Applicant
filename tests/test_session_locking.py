@@ -46,6 +46,23 @@ class SessionLockingTest(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 physical_path(path / 'future')
 
+    @unittest.skipIf(os.name == 'nt', 'symlink creation may require Windows privileges')
+    def test_resolver_enforces_a_32_link_limit(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            ordinary = root / 'target'
+            ordinary.touch()
+            leaf = ordinary
+            for index in range(32):
+                alias = root / str(index)
+                alias.symlink_to(leaf.name)
+                leaf = alias
+            self.assertEqual(physical_path(leaf), ordinary.resolve())
+            extra = root / 'extra'
+            extra.symlink_to(leaf.name)
+            with self.assertRaisesRegex(OSError, 'too many filesystem links'):
+                physical_path(extra)
+
     @unittest.skipIf(os.name == 'nt', 'Windows denies unlink while a lock handle is open')
     def test_posix_retries_a_leaf_removed_during_acquisition(self):
         from applicant.infra.advisory_lock import _take_lock
