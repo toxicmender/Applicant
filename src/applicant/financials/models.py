@@ -106,6 +106,7 @@ class CompanyFinancials(BaseModel):
     # only a whole list may stand in for a round count the source did not state.
     # Private: not part of the stored record.
     _rounds_complete: bool = PrivateAttr(default=True)
+    _identity_verified: bool = PrivateAttr(default=False)
 
     def rounds_cut(self, cut: bool = True) -> None:
         """Say the round list stops at the number asked for, not at the last round."""

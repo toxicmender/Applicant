@@ -8,11 +8,15 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from ..errors import ApplicantError
+from ..errors import ApplicantError, Unparseable
 from ..financials import FinancialsTracker
+from ..financials.crunchbase import CrunchbaseClient, permalink
+from ..financials.models import CompanyFinancials
 from ..financials.tracxn import FinancialsInterrupted
+from ..infra.company_worker import CompanyFetchInterrupted
 from ..infra.interrupts import defer_interrupt
 from ..infra.store.repositories import Backend, listing
+from .company_cache import CompanyCache, browser_scope
 from .events import Emit, FinancialsTracked, ignore
 from .fanout import failure, fan_out
 
@@ -82,6 +86,7 @@ def track_financials(
     """
     logger.info(f'financials: tracking {len(companies)} company(ies) in {output}')
     tracker = FinancialsTracker(output, backend=backend)
+    cache = CompanyCache(output)
     found = 0
     outcomes = []
 
@@ -97,23 +102,85 @@ def track_financials(
                 and callable(requires_lookup)
                 and requires_lookup(company) is True
             )
-            if use_history and not refresh and (cached := tracker.cached_tracxn(company)):
+            if (
+                use_history
+                and not refresh
+                and (cached := tracker.cached_tracxn(company, fresh=cache.clock.fresh))
+            ):
                 financials, checked = cached
                 financials.rounds = financials.rounds[: max(0, max_rounds)]
                 emit(FinancialsTracked(source, financials, cached_at=checked))
                 return financials
+            scope = None
+            previous = None
+            if isinstance(client, CrunchbaseClient) and not client.api_key and '://' not in company:
+                scope = browser_scope(client.profile_dir)
+            locator = permalink(company)
+            if scope is not None:
+                previous = cache.entry(source, locator, scope)
+                if (
+                    previous
+                    and not refresh
+                    and previous['coverage'] >= max_rounds
+                    and cache.clock.fresh(previous['retrieved_at'], 30)
+                ):
+                    saved = CompanyFinancials.model_validate(previous['payload'])
+                    saved.rounds = saved.rounds[: max(0, max_rounds)]
+                    emit(FinancialsTracked(source, saved, cached_at=previous['retrieved_at']))
+                    return saved
             logger.info(f'financials: fetching {company!r} from {source}')
             try:
                 financials = client.fetch(company, max_rounds=max_rounds)
-            except FinancialsInterrupted as interrupt:
+            except (FinancialsInterrupted, CompanyFetchInterrupted) as interrupt:
+                captured = (
+                    interrupt.financials
+                    if isinstance(interrupt, FinancialsInterrupted)
+                    else interrupt.result
+                )
                 try:
                     with defer_interrupt():
-                        tracker.record(interrupt.financials, require_complete=use_history)
+                        tracker.record(captured, require_complete=use_history)
                 except ApplicantError as error:
-                    logger.error('could not save the interrupted Tracxn capture: %s', error)
+                    logger.error('could not save the interrupted company capture: %s', error)
                 raise
             with defer_interrupt():
-                changes = tracker.record(financials, require_complete=use_history)
+                verified = (
+                    isinstance(financials, CompanyFinancials) and financials._identity_verified
+                )
+                if previous and not verified:
+                    raise Unparseable('Crunchbase refresh did not verify the cached company')
+                changes: list[str] = []
+
+                def save():
+                    changes.extend(
+                        tracker.record(financials, require_complete=use_history or verified)
+                    )
+
+                if (
+                    verified
+                    and scope is not None
+                    and isinstance(client, CrunchbaseClient)
+                    and (browser_scope(client.profile_dir) == scope)
+                ):
+                    coverage = len(financials.rounds)
+                    if (
+                        financials.funding_rounds_count is not None
+                        and coverage >= financials.funding_rounds_count
+                    ):
+                        coverage = max(coverage, max_rounds)
+                    cache.keep(
+                        source,
+                        locator,
+                        scope,
+                        financials.company_id,
+                        previous,
+                        coverage,
+                        financials.to_dict(),
+                        cache.clock.current().isoformat(),
+                        commit=save,
+                    )
+                else:
+                    save()
             logger.info(f'financials: {source} {company!r}: {len(changes)} change(s) recorded')
             emit(FinancialsTracked(source, financials, changes))
             return financials

@@ -93,7 +93,7 @@ class CrunchbaseClient:
     def __init__(
         self,
         api_key=None,
-        profile_dir='.cb_profile',
+        profile_dir: str | None = '.cb_profile',
         login=False,
         headless=True,
         timeout=30.0,
@@ -117,6 +117,7 @@ class CrunchbaseClient:
         self._client = client
         self._http: HttpClient | None = None
         self.capture = capture
+        self.owned = False
 
     def accepts(self, company: str) -> bool:
         """Whether Crunchbase can look this up: anything but a profile url on tracxn.com."""
@@ -130,6 +131,10 @@ class CrunchbaseClient:
         try:
             if self.api_key:
                 financials = self._fetch_api(company, max_rounds)
+            elif self.owned:
+                from ..infra.company_worker import fetch_company
+
+                financials = fetch_company('crunchbase', self, company, max_rounds)
             else:
                 financials = self._fetch_web(company, max_rounds)
         except httpx.HTTPStatusError as error:
@@ -276,7 +281,7 @@ class CrunchbaseClient:
                 'could not load {}: {}'.format(url, str(error).split('\n')[0][:160])
             ) from error
 
-        financials = self._build(payloads, slug, company, max_rounds, url=url)
+        financials = self._build(payloads, slug, company, max_rounds, url=url, browser=True)
         self._from_text('\n'.join(texts), financials)
         if (
             financials.total_funding is None
@@ -309,7 +314,7 @@ class CrunchbaseClient:
 
     # -- parsing ----------------------------------------------------------
 
-    def _build(self, payloads, slug, company, max_rounds, url=None):
+    def _build(self, payloads, slug, company, max_rounds, url=None, *, browser=False):
         if self.capture is not None:
             identifiers = {
                 identity['permalink']
@@ -331,6 +336,9 @@ class CrunchbaseClient:
         )
         rounds = {}
 
+        if browser:
+            payloads = list(self._verified_organizations(payloads, slug))
+            financials._identity_verified = bool(payloads)
         for payload in payloads:
             for node in walk(payload):
                 self._read_org(node, slug, financials)
@@ -345,6 +353,32 @@ class CrunchbaseClient:
         ]
         financials.rounds_cut(len(rounds) > len(financials.rounds))
         return financials
+
+    @staticmethod
+    def _verified_organizations(payloads, slug):
+        def scoped(value):
+            if isinstance(value, list):
+                return [scoped(child) for child in value]
+            if not isinstance(value, dict):
+                return value
+            identity = value.get('identifier')
+            if (
+                isinstance(identity, dict)
+                and identity.get('entity_def_id', 'organization') == 'organization'
+                and identity.get('permalink') not in (None, slug)
+            ):
+                return {}
+            return {key: scoped(child) for key, child in value.items()}
+
+        for payload in payloads:
+            for node in walk(payload):
+                identity = node.get('identifier')
+                if (
+                    isinstance(identity, dict)
+                    and identity.get('permalink') == slug
+                    and (identity.get('entity_def_id', 'organization') == 'organization')
+                ):
+                    yield scoped(node)
 
     def _read_org(self, node, slug, financials):
         identifier = node.get('identifier')

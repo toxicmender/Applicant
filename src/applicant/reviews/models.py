@@ -39,6 +39,7 @@ class CompanyRating:
     # star -> number of reviews with that star, e.g. {5: 37666}
     rating_distribution: dict = field(default_factory=dict)
     reviews: list = field(default_factory=list)
+    identity_verified = False
 
     def to_dict(self):
         return {

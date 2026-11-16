@@ -145,7 +145,7 @@ class FinancialsTracker:
         entry = self.data['companies'].get(key)
         return self._previous(key, entry) if entry else None
 
-    def cached_tracxn(self, company: str, *, now: datetime | None = None):
+    def cached_tracxn(self, company: str, *, now: datetime | None = None, fresh=None):
         requested = company_name(company)
         if not requested:
             return None
@@ -167,12 +167,16 @@ class FinancialsTracker:
         if checked is None:
             logger.warning('%s: invalid or timezone-naive Tracxn timestamp; refreshing', key)
             return None
-        age = (now or datetime.now(timezone.utc)) - checked
-        if age < timedelta():
-            logger.warning('%s: future Tracxn timestamp; check the system clock', key)
-            return None
-        if age >= timedelta(days=30):
-            return None
+        if fresh is not None:
+            if not fresh(raw, 30):
+                return None
+        else:
+            age = (now or datetime.now(timezone.utc)) - checked
+            if age < timedelta():
+                logger.warning('%s: future Tracxn timestamp; check the system clock', key)
+                return None
+            if age >= timedelta(days=30):
+                return None
         result = self._previous(key, entry)
         if (
             result is None

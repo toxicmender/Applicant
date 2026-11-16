@@ -167,6 +167,12 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
             recorded_at TEXT NOT NULL
         )""",
     ),
+    (
+        """CREATE TABLE application_attempt_journals (
+            log TEXT PRIMARY KEY,
+            payload TEXT NOT NULL
+        )""",
+    ),
 )
 
 
@@ -945,28 +951,26 @@ class Store:
             )
         ]
 
-    def publish_ratings(self, file, company, ratings, observations):
-        target = Path(file).resolve()
-        with financials_lock(target):
-            name = self._managed_name('ratings', target)
-            self._reconcile_export('ratings', name, target)
-            baseline = _financials_bytes(target)
-            intended = document_bytes(ratings if len(ratings) > 1 else ratings[0])
-            with self._transaction() as db:
-                db.executemany(
-                    'INSERT INTO ratings (company,source,fetched_at,payload) VALUES (?,?,?,?)',
-                    [
-                        (
-                            company.lower(),
-                            rating['source'],
-                            stamp,
-                            json.dumps(rating, ensure_ascii=False),
-                        )
-                        for stamp, rating in observations
-                    ],
-                )
-                self._stage_export(db, 'ratings', name, baseline, intended)
-            self._reconcile_export('ratings', name, target)
+    def _publish_ratings(self, target, company, ratings, observations):
+        name = self._managed_name('ratings', target)
+        self._reconcile_export('ratings', name, target)
+        baseline = _financials_bytes(target)
+        intended = document_bytes(ratings if len(ratings) > 1 else ratings[0])
+        with self._transaction() as db:
+            db.executemany(
+                'INSERT INTO ratings (company,source,fetched_at,payload) VALUES (?,?,?,?)',
+                [
+                    (
+                        company.lower(),
+                        rating['source'],
+                        stamp,
+                        json.dumps(rating, ensure_ascii=False),
+                    )
+                    for stamp, rating in observations
+                ],
+            )
+            self._stage_export(db, 'ratings', name, baseline, intended)
+        self._reconcile_export('ratings', name, target)
 
 
 def _is_empty_object(file: Path) -> bool:

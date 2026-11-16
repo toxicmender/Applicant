@@ -125,6 +125,10 @@ def clients(
             headless=not args.show,
             interaction=terminal(),
         )
+    if (crunchbase := made.get('crunchbase')) is not None and isinstance(
+        crunchbase, CrunchbaseClient
+    ):
+        crunchbase.owned = True
     return made
 
 

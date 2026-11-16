@@ -30,13 +30,15 @@ def _fetch(connection, arguments):
     try:
         with adapter as client:
             try:
-                result = client.fetch(company, limit)
-            except SourceError as error:
-                return {'error': type(error).__name__}
-            connection.send(('progress', result))
-            return {'error': None}
+                try:
+                    result = client.fetch(company, limit)
+                except SourceError as error:
+                    return {'error': type(error).__name__}
+                connection.send(('progress', result))
+                return {'error': None}
+            finally:
+                connection.send(('closing', None))
     finally:
-        connection.send(('closing', None))
         browser_state.reset(token)
 
 
@@ -66,9 +68,7 @@ def fetch_company(provider, client, company, limit):
             raise
         return completed[-1]
     if outcome['error']:
-        by_name = {
-            error.__name__: error for error in (AuthFailed, Blocked, NotFound, Unparseable)
-        }
+        by_name = {error.__name__: error for error in (AuthFailed, Blocked, NotFound, Unparseable)}
         raise by_name.get(outcome['error'], SourceError)(f'{provider}: acquisition failed')
     if not completed:
         raise Unparseable(f'{provider}: browser returned no completed observation')
