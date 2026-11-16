@@ -6,6 +6,7 @@ import argparse
 import sys
 
 from ..domain.job import Job
+from ..errors import ConfigError
 from ..log import get
 from ..settings import FilterOptions, Settings
 from .common import add_filters, configured_path, filters_from
@@ -22,6 +23,10 @@ class Apply(FilterOptions, Request):
     dry_run: bool = False
     show: bool = False
     yes: bool = False
+    reconcile: str | None = None
+    outcome: str | None = None
+    retry_attempt: str | None = None
+    acknowledge_duplicate_risk: bool = False
 
 
 def add_parser(add: AddParser) -> argparse.ArgumentParser:
@@ -48,6 +53,11 @@ def add_parser(add: AddParser) -> argparse.ArgumentParser:
         'cookies.json)',
     )
     add_filters(apply_)
+    mode = apply_.add_mutually_exclusive_group()
+    mode.add_argument('--reconcile', metavar='ATTEMPT_ID')
+    mode.add_argument('--retry-attempt', metavar='ATTEMPT_ID')
+    apply_.add_argument('--outcome', choices=('submitted', 'not-submitted'))
+    apply_.add_argument('--acknowledge-duplicate-risk', action='store_true')
     apply_.add_argument(
         '-y',
         '--yes',
@@ -61,13 +71,51 @@ def add_parser(add: AddParser) -> argparse.ArgumentParser:
 
 def run(args: Apply, settings: Settings) -> int:
     from ..search import Jobs
+    from ..services.application_attempts import HISTORY, AttemptJournal
     from ..services.apply import worklist
 
     source, log = (
         configured_path(settings, args.input, settings.files.listing),
         configured_path(settings, args.log, settings.files.applications),
     )
-    work = worklist(source, filters_from(args), settings.store)
+    session = configured_path(settings, args.cookies, settings.files.cookies)
+    if bool(args.reconcile) != bool(args.outcome):
+        raise ConfigError('--reconcile and --outcome must be used together')
+    if bool(args.retry_attempt) != args.acknowledge_duplicate_risk:
+        raise ConfigError('--retry-attempt requires --acknowledge-duplicate-risk')
+    if args.reconcile and (args.dry_run or args.retry_attempt):
+        raise ConfigError('--reconcile cannot be combined with --dry-run or --retry-attempt')
+    journal = AttemptJournal(log, session, args.retry_attempt, backend=settings.store)
+    if args.reconcile:
+        entry = journal.detail(args.reconcile)
+        print(f'{shown(entry["job"]["url"])} · account {shown(entry["account"])}')
+        print(f'Check Jobs → Job tracker → Applied using the original account: {HISTORY}')
+        attested = args.outcome != 'not-submitted' or (
+            sys.stdin.isatty()
+            and terminal()
+            .ask(
+                'If the history is conclusive, type verified not submitted. '
+                'Retrying may create a duplicate: '
+            )
+            .strip()
+            == 'verified not submitted'
+        )
+        assert args.outcome is not None
+        journal.resolve(args.reconcile, args.outcome, attested=attested)
+        if args.outcome == 'submitted':
+            journal.recover_confirmed()
+        return 0
+    if not args.dry_run and journal.exists():
+        journal.recover_confirmed()
+    if args.retry_attempt:
+        from ..services.apply import Worklist, select
+
+        entry = journal.detail(args.retry_attempt)
+        if entry['state'] != 'not-submitted':
+            raise ConfigError('attempt must be reconciled as not-submitted before retrying')
+        work = Worklist(1, select([Job.model_validate(entry['job'])], filters_from(args)))
+    else:
+        work = worklist(source, filters_from(args), settings.store)
     if not work.read:
         print('no jobs to apply to in {}'.format(source))
         return 1
@@ -99,8 +147,8 @@ def run(args: Apply, settings: Settings) -> int:
             declined.extend(targets)
         return answered
 
-    session = configured_path(settings, args.cookies, settings.files.cookies)
     with Jobs(headless=not args.show, backend=settings.store, session=session) as board:
+        board.attempts = journal
         board.apply(work.matching, log=log, dry_run=args.dry_run, confirm=confirm)
     if declined:
         print('not submitted: {} application(s); nothing was logged for them'.format(len(declined)))

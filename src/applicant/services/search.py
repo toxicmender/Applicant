@@ -31,7 +31,8 @@ SOURCES = DEFAULT_BOARDS
 class Board(Protocol):
     """What every board module offers, and all a search needs of one."""
 
-    capability: Capability
+    @property
+    def capability(self) -> Capability: ...
 
     def search(
         self,
@@ -106,6 +107,7 @@ class SearchJobs:
         enrich: bool = False,
         enrich_limit: int = 25,
         emit: Emit = ignore,
+        on_batch: Callable[[list[Job]], None] | None = None,
     ) -> list[Job]:
         """Every configured board's filtered results, merged.
 
@@ -130,6 +132,8 @@ class SearchJobs:
                 if name not in self.keep_open:
                     close_quietly(name, client)
             logger.info('{}: {} of {} jobs match'.format(name, len(kept), seen))
+            if kept and on_batch is not None:
+                on_batch(kept)
             emit(BoardSearched(name, len(kept), seen))
             return kept
 

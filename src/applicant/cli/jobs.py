@@ -58,8 +58,18 @@ def add_parser(add: AddParser) -> argparse.ArgumentParser:
 
 def run(args: JobsRequest, settings: Settings) -> int:
     from ..boards.linkedin_apply import LinkedIn
+    from ..errors import AuthFailed
+    from ..infra.board_worker import recommendations
+    from ..infra.store.repositories import listing as listing_repo
 
-    fp = Path(configured_path(settings, args.cookies, settings.files.cookies))
+    fp = Path(configured_path(settings, args.cookies, settings.files.cookies)).resolve()
+    listing = configured_path(settings, args.jobs, settings.files.listing)
+    if (
+        not sys.stdin.isatty()
+        and (not fp.is_file() or args.overwrite)
+        and isinstance(terminal(), Terminal)
+    ):
+        return _needs_setup(fp)
     if (not fp.exists() or args.overwrite) and isinstance(terminal(), Terminal):
         from .setup import legacy_login
 
@@ -67,6 +77,15 @@ def run(args: JobsRequest, settings: Settings) -> int:
         if code:
             return code
         args = args.model_copy(update={'overwrite': False})
+    if isinstance(terminal(), Terminal) and not args.overwrite:
+        try:
+            jobs = recommendations(
+                fp, headless=not args.show, save=listing_repo(listing, settings.store).save
+            )
+        except AuthFailed:
+            return _needs_setup(fp)
+        print('scraped {} recommended jobs into {}'.format(len(jobs), listing))
+        return 0
     with LinkedIn(headless=not args.show, interaction=terminal()) as operator:
         if fp.exists() and not fp.is_dir() and not args.overwrite:
             logger.info(f'jobs: restoring the LinkedIn session from {fp}')
@@ -102,7 +121,23 @@ def run(args: JobsRequest, settings: Settings) -> int:
             if saved is not None:
                 print('session saved to {}'.format(saved))
 
-        listing = configured_path(settings, args.jobs, settings.files.listing)
         jobs = operator.scrape_jobs(listing, backend=settings.store)
     print('scraped {} recommended jobs into {}'.format(len(jobs), listing))
     return 0
+
+
+def _needs_setup(session: Path) -> int:
+    print(
+        f'LinkedIn session unavailable: {session}; rerun with --overwrite to sign in',
+        file=sys.stderr,
+    )
+    print(
+        canonical_json(
+            {
+                'provider': 'linkedin',
+                'status': 'needs_setup',
+                'command': 'applicant setup provider linkedin --reauth',
+            }
+        )
+    )
+    return 3

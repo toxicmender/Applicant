@@ -19,7 +19,7 @@ import logging
 from collections.abc import Iterable
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..domain.job import Job
 from ..domain.ports import ApplicationResult, Interrupted, easy_apply_results
@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from playwright.sync_api import Page
 
     from ..infra.store.repositories import Backend
+    from ..services.application_attempts import AttemptJournal
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,7 @@ class LinkedIn(LinkedInGuest):
         self.applied: list[str] = []
         self.unconfirmed: list[str] = []
         self.failed: dict[str, str] = {}
+        self.attempt_journal: AttemptJournal | None = None
 
     # -- the Applier port -------------------------------------------------
 
@@ -232,17 +234,23 @@ class LinkedIn(LinkedInGuest):
     # -- logged in flows --------------------------------------------------
 
     def scrape_jobs(
-        self, filepath: str = 'job_listing.json', backend: Backend = 'files'
+        self,
+        filepath: str | None = 'job_listing.json',
+        backend: Backend = 'files',
+        *,
+        storage_state: dict[str, Any] | None = None,
     ) -> list[Job]:
         """Recommended jobs from the signed in Jobs page, merged into `filepath`
         through the store `backend` names."""
         from ..infra.store.repositories import listing
 
-        page = self._start()
+        page = (
+            self._start(storage_state=storage_state) if storage_state is not None else self._start()
+        )
         page.goto(
             'https://www.linkedin.com/jobs/collections/recommended/', wait_until='domcontentloaded'
         )
-        if '/authwall' in page.url or '/login' in page.url:
+        if any(wall in page.url for wall in SIGNED_OUT):
             raise Blocked('not signed in - call login() or restore_session() first')
 
         cards = page.locator('[data-job-id], .job-card-container')
@@ -285,8 +293,9 @@ class LinkedIn(LinkedInGuest):
                 )
             )
 
-        total = listing(filepath, backend).save(jobs)
-        logger.info(f'linkedin: {len(jobs)} recommended job(s) scraped, {total} in {filepath}')
+        if filepath is not None and jobs:
+            total = listing(filepath, backend).save(jobs)
+            logger.info(f'linkedin: {len(jobs)} recommended job(s) scraped, {total} in {filepath}')
         return jobs
 
     def easy_apply(self, source: str | Path | Iterable[Job | dict] = 'job_listing.json'):
@@ -373,9 +382,11 @@ class LinkedIn(LinkedInGuest):
 
         submit = page.locator('button[aria-label*="Submit application"]').first
         if submit.count():
-            submit.click()
+            journal = self.attempt_journal
+            attempt = journal.begin(item) if journal is not None else None
             # from here on the application may have been sent, whatever happens
             try:
+                submit.click()
                 confirmed = self._confirmed(page)
             except KeyboardInterrupt:
                 # stopped while waiting for LinkedIn's answer
@@ -387,6 +398,8 @@ class LinkedIn(LinkedInGuest):
                 )
                 confirmed = False
             if confirmed:
+                if journal is not None and attempt is not None:
+                    journal.resolve(attempt, 'submitted')
                 logger.info(
                     f'linkedin: applied to {item.get("title") or item["url"]} ({item["url"]})'
                 )

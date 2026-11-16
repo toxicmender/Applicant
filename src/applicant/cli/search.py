@@ -144,16 +144,19 @@ def list_saved(saved: dict[str, SavedSearch]) -> int:
 
 def run(args: Search, settings: Settings) -> int:
     from ..search import Jobs
-    from ..services.search import store
+    from ..services.search import Stored, store
 
     if args.list_saved:
         return list_saved(settings.searches)
     wanted = SOURCES if 'all' in args.source else args.source
+    output = configured_path(settings, args.output, settings.files.listing)
+    batches: list[Stored] = []
     logger.info(
         f'search: {args.keywords!r} on {", ".join(wanted)}, up to {args.limit} per board'
         + (f' (saved search {args.saved!r})' if args.saved else '')
     )
     with Jobs(sources=wanted, headless=not args.show, backend=settings.store) as board:
+        board.owned_search = True
         found = board.search(
             args.keywords,
             filters_from(args),
@@ -162,6 +165,7 @@ def run(args: Search, settings: Settings) -> int:
             max_rounds=args.max_rounds,
             enrich=args.enrich,
             enrich_limit=args.enrich_limit,
+            on_batch=lambda jobs: batches.append(store(jobs, output, settings.store)),
         )
 
     if not found:
@@ -169,10 +173,8 @@ def run(args: Search, settings: Settings) -> int:
         print('nothing matched')
         return 1
 
-    stored = store(
-        found, configured_path(settings, args.output, settings.files.listing), settings.store
-    )
+    stored = batches[-1] if batches else store(found, output, settings.store)
     print(
-        '{} jobs written to {} ({} stored in total)'.format(stored.saved, stored.path, stored.total)
+        '{} jobs written to {} ({} stored in total)'.format(len(found), stored.path, stored.total)
     )
     return 0

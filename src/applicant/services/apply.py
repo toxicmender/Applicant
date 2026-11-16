@@ -150,10 +150,12 @@ class ApplyToJobs:
         appliers: Mapping[str, Applier],
         backend: Backend = 'files',
         confirm: Confirm | None = None,
+        retry: str | None = None,
     ):
         self.appliers = appliers
         self.backend: Backend = backend
         self.confirm = confirm
+        self.retry = retry
         self.declined: list[Job] = []
 
     def run(
@@ -181,7 +183,7 @@ class ApplyToJobs:
 
         for job in dedupe.one_per_job(jobs):
             if job.url and job.source in self.appliers:
-                if done.covers(job):
+                if done.covers(job) and self.retry is None:
                     already += 1
                     continue
                 targets.setdefault(job.source, []).append(job)
