@@ -4,7 +4,7 @@ import csv
 from pathlib import Path
 
 from ...domain.canonical import content_hash
-from ...errors import ExportConflict
+from ...errors import ConfigError, ExportConflict
 from ...files import write_document_bytes
 from .financials_lock import export_lock
 from .financials_merge import _document, merge_financial_exports
@@ -16,6 +16,10 @@ from .sqlite import Store, _now
 def resolve_export(database, target, choice, confirmation=None):
     target = Path(target).resolve()
     database = Path(database).resolve()
+    if choice not in ('sqlite', 'file'):
+        raise ConfigError('choose sqlite or file')
+    if target in {database, *(Path(str(database) + suffix) for suffix in ('-wal', '-shm'))}:
+        raise ConfigError('export must not replace the database or its sidecars')
     with export_lock(target):
         with Store.open_readonly(database) as store, store.read_snapshot():
             info = _inspect(store, target, choice)
@@ -33,11 +37,32 @@ def resolve_export(database, target, choice, confirmation=None):
             raise ExportConflict(f'{backup}: existing backup differs')
         if not backup.exists():
             write_document_bytes(backup, discarded, replace=durable_replace)
+        if read_bytes(target) != current:
+            raise ExportConflict(f'{target}: export changed during backup; preview again')
         selected = intended if choice == 'sqlite' else current
         with Store(database) as store, store._transaction() as db:
             if choice == 'file':
                 if kind == 'financials':
                     store._replace_financials(db, name, _document(selected))
+                elif kind == 'ratings':
+                    import json
+
+                    for rating in _ratings(selected):
+                        payload = json.dumps(rating, ensure_ascii=False)
+                        db.execute(
+                            'INSERT INTO ratings (company, source, fetched_at, payload) '
+                            'SELECT ?,?,?,? WHERE NOT EXISTS '
+                            '(SELECT 1 FROM ratings WHERE company=? AND source=? AND payload=?)',
+                            (
+                                rating['company'].lower(),
+                                rating['source'],
+                                _now(),
+                                payload,
+                                rating['company'].lower(),
+                                rating['source'],
+                                payload,
+                            ),
+                        )
                 else:
                     store._replace_managed(db, kind, name, selected)
             if kind == 'financials':
@@ -106,7 +131,7 @@ def _inspect(store, target, choice):
             elif kind == 'financials':
                 _document(current)
             else:
-                raise ValueError('ratings history is append-only; choose sqlite')
+                _ratings(current)
         except (ValueError, csv.Error) as error:
             raise ExportConflict(f'{target}: cannot accept file: {error}') from error
     preview = {
@@ -130,3 +155,18 @@ def _inspect(store, target, choice):
         ),
     }
     return preview, pending[0], current
+
+
+def _ratings(raw):
+    import json
+
+    from ...services.company_evidence import rating_payload
+
+    value = json.loads(raw.decode('utf-8'))
+    if isinstance(value, dict):
+        value = [value]
+    if not isinstance(value, list) or not value:
+        raise ValueError('expected at least one company rating')
+    for item in value:
+        rating_payload(item)
+    return value

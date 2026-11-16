@@ -45,7 +45,7 @@ GROUPS = {
     'report': {'render'},
     'sources': {'list', 'show', 'health', 'probe'},
     'setup': {'provider', 'status', 'import-session'},
-    'store': {'checkpoint'},
+    'store': {'checkpoint', 'resolve-export'},
     'benchmark': {'discover', 'fetch', 'import', 'show', 'compare'},
     'company-evidence': {'associate', 'import', 'capture', 'refresh', 'show', 'enrich'},
     'feedback': {'record', 'import', 'list'},

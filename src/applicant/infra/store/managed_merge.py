@@ -5,6 +5,7 @@ import io
 import json
 
 from ...domain.dedupe import key
+from ...domain.job import Job
 from ...errors import ExportConflict
 from ...files import document_bytes
 from ...storage import APPLIED_COLUMNS, is_final, restore, write_rows
@@ -19,6 +20,10 @@ def parse_listing(raw):
         raise ValueError('expected a job listing')
     if any(not isinstance(item, dict) for item in data.get('list', [])):
         raise ValueError('expected job objects')
+    if len({key(item) for item in data.get('list', [])}) != len(data.get('list', [])):
+        raise ValueError('duplicate job keys')
+    for item in data.get('list', []):
+        Job.model_validate(item)
     return {**data, 'list': data.get('list', [])}
 
 
