@@ -10,6 +10,7 @@ def configure_connection(db, *, writable=True):
     db.execute('PRAGMA busy_timeout = 5000')
     db.execute('PRAGMA foreign_keys = ON')
     if writable:
+        db.execute('PRAGMA synchronous = FULL')
         db.execute('PRAGMA recursive_triggers = ON')
         db.execute('PRAGMA wal_autocheckpoint = 1000')
 

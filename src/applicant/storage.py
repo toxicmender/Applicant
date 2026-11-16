@@ -9,6 +9,7 @@ Two files, both append-oriented:
 from __future__ import annotations
 
 import csv
+import io
 import logging
 import os
 from collections.abc import Callable, Iterable
@@ -138,6 +139,13 @@ def save_jobs(jobs: Iterable[Job], filepath: str) -> int:
     An unreadable listing is moved aside rather than overwritten, and the write
     is atomic, so a crash part way never costs the jobs already stored.
     """
+    from .infra.store.financials_lock import export_lock
+
+    with export_lock(filepath):
+        return _save_jobs(jobs, filepath)
+
+
+def _save_jobs(jobs, filepath):
     merged = {}
     for item in _stored(read_document(filepath, quarantine=True)):
         merged[key(item)] = item
@@ -253,7 +261,14 @@ class ApplicationLog:
 
     def record(self, entries: Iterable[tuple[Job, str, str]]) -> int:
         """entries: iterable of (job, status, note). Returns rows written."""
-        rows = [row for row in self.rows() if is_final(row)]
+        from .infra.store.financials_lock import export_lock
+
+        with export_lock(self.path):
+            return self._record(entries)
+
+    def _record(self, entries):
+        existing = self.rows()
+        rows = [row for row in existing if is_final(row)]
         seen = {(row.get('source'), row.get('id')) for row in rows}
         boards_of: dict[str, set[str | None]] = {}
         for row in rows:
@@ -270,14 +285,14 @@ class ApplicationLog:
             logger.debug(f'{self.path}: nothing new to record')
             return 0
 
-        is_new = not os.path.exists(self.path) or os.path.getsize(self.path) == 0
-        os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
-        # created owner-only, like every file applicant writes; an existing
-        # file keeps the mode it has
-        descriptor = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        # utf-8-sig so Sheets and Excel both read the currency symbols correctly
-        with os.fdopen(descriptor, 'a', encoding='utf-8-sig', newline='') as handle:
-            write_rows(handle, fresh, header=is_new)
+        from .files import write_document_bytes
+        from .infra.store.publication import durable_replace
+
+        output = io.StringIO(newline='')
+        write_rows(output, [*existing, *fresh], header=True)
+        write_document_bytes(
+            self.path, output.getvalue().encode('utf-8-sig'), replace=durable_replace
+        )
         logger.info(f'{self.path}: recorded {len(fresh)} application(s)')
         return len(fresh)
 

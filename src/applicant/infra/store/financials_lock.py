@@ -12,7 +12,7 @@ SQLITE_FULL = getattr(sqlite3, 'SQLITE_FULL', 13)
 
 
 @contextmanager
-def financials_lock(file):
+def export_lock(file):
     target = Path(file).resolve()
     try:
         with advisory_lock(
@@ -37,3 +37,6 @@ def financials_lock(file):
         if isinstance(error, StoreError):
             raise
         raise StoreError(f'{target}: {error}') from error
+
+
+financials_lock = export_lock
