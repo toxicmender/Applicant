@@ -115,6 +115,8 @@ def canonical_entry(entry):
 def _combine(first, second):
     merged = dict(first)
     for field, value in second.items():
+        if value is None:
+            continue
         if field in merged and isinstance(merged[field], dict) and isinstance(value, dict):
             child = _combine(merged[field], value)
             if child is None:

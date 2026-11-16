@@ -6,9 +6,28 @@ from pathlib import Path
 from applicant.domain.canonical import content_hash
 from applicant.errors import ApplicationBlocked, ConfigError
 from applicant.services.application_attempts import AttemptJournal
+from applicant.services.attempt_import import merge
 
 
 class AttemptImportTest(unittest.TestCase):
+    def test_partial_nested_metadata_merges_regardless_of_input_order(self):
+        first = {'state': 'uncertain', 'job': {'id': '21', 'company': 'Acme', 'title': None}}
+        second = {'state': 'uncertain', 'job': {'id': '21', 'company': None, 'title': 'Engineer'}}
+        sources = [('first', {'one': first}), ('second', {'one': second})]
+        for batch in (sources, list(reversed(sources))):
+            with self.subTest(batch=batch):
+                journal = {'entries': {}}
+                merge(journal, batch)
+                self.assertEqual(journal['conflicts'], {})
+                self.assertEqual(
+                    journal['entries']['one']['job'],
+                    {
+                        'id': '21',
+                        'company': 'Acme',
+                        'title': 'Engineer',
+                    },
+                )
+
     def test_disagreeing_sources_quarantine_without_choosing_a_winner(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
