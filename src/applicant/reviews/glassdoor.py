@@ -146,6 +146,9 @@ class GlassdoorClient:
 
     def _settle(self, page):
         """Let XHRs land, and refuse to guess when a bot check is in the way."""
+        from ..infra.browser import check_company_session
+
+        check_company_session(page, 'glassdoor')
         # networkidle never arrives on some pages; the captured payloads still count
         with suppress(Exception):
             page.wait_for_load_state('networkidle', timeout=self.timeout)

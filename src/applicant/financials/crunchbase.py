@@ -242,7 +242,7 @@ class CrunchbaseClient:
     # -- web --------------------------------------------------------------
 
     def _fetch_web(self, company, max_rounds):
-        from ..infra.browser import browser, looks_blocked
+        from ..infra.browser import browser, check_company_session, looks_blocked
 
         slug = permalink(company)
         url = '{}/organization/{}'.format(WEB, slug)
@@ -264,6 +264,7 @@ class CrunchbaseClient:
                 page.on('response', capture)
                 for target in (url, url + '/company_financials'):
                     response = page.goto(target, wait_until='domcontentloaded')
+                    check_company_session(page, 'crunchbase')
                     if response is not None and response.status == 404:
                         raise NotFound('no Crunchbase organization at {}'.format(target))
                     self._settle(page, looks_blocked)
