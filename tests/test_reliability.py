@@ -1,4 +1,5 @@
 import io
+import json
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -19,6 +20,19 @@ from applicant.services.reviews import fetch_reviews
 from tests.fakes import FakeBoard
 
 NOW = datetime(2026, 11, 1, tzinfo=timezone.utc)
+
+
+def saved_session(path, token='first-session'):
+    path.write_text(
+        json.dumps(
+            {
+                'cookies': [
+                    {'name': 'li_at', 'value': token, 'domain': '.linkedin.com'},
+                ]
+            }
+        ),
+        encoding='utf-8',
+    )
 
 
 class ReliabilityTest(unittest.TestCase):
@@ -194,6 +208,7 @@ class ReliabilityTest(unittest.TestCase):
                 root = Path(directory)
                 log = root / 'applications.csv'
                 account = root / 'session.json'
+                saved_session(account)
                 job = {'id': '1', 'url': 'https://www.linkedin.com/jobs/view/1/'}
                 journal = AttemptJournal(log, account, backend=backend)
                 identifier = journal.begin(job)
@@ -217,6 +232,7 @@ class ReliabilityTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             log, session = root / 'applications.csv', root / 'session.json'
+            saved_session(session)
             job = {'id': '1', 'url': 'https://www.linkedin.com/jobs/view/1/'}
             journal = AttemptJournal(log, session)
             identifier = journal.begin(job)
@@ -259,6 +275,7 @@ class ReliabilityTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             log, session = root / 'applications.csv', root / 'session.json'
+            saved_session(session)
             job = Job(
                 source='linkedin',
                 id='321',
@@ -291,6 +308,7 @@ class ReliabilityTest(unittest.TestCase):
                 patch('applicant.search.Jobs.linkedin', return_value=adapter),
                 patch.object(adapter, '_start', return_value=page),
                 patch.object(adapter, '_confirmed', return_value=True),
+                patch('applicant.boards.linkedin_apply._prepare_submit', return_value=submit.click),
                 patch('applicant.boards.linkedin_apply.looks_blocked', return_value=False),
                 redirect_stdout(io.StringIO()),
                 redirect_stderr(io.StringIO()) as diagnostics,
@@ -322,11 +340,46 @@ class ReliabilityTest(unittest.TestCase):
                 Mock(first=submit) if 'Submit application' in selector else Mock()
             )
             job = {'id': '1', 'url': page.url}
-            with patch('applicant.boards.linkedin_apply.looks_blocked', return_value=False):
+            with (
+                patch('applicant.boards.linkedin_apply.looks_blocked', return_value=False),
+                patch('applicant.boards.linkedin_apply._prepare_submit', return_value=submit.click),
+            ):
                 self.assertEqual(adapter._apply_one(page, job), UNCONFIRMED_SUBMIT)
                 with self.assertRaises(SourceError):
                     adapter._apply_one(page, job)
             submit.click.assert_called_once()
+
+    def test_profile_blocks_duplicate_across_destinations_and_backends(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            profile = root / 'session.json'
+            job = {'id': '15', 'url': 'https://www.linkedin.com/jobs/view/15/'}
+            identifier = AttemptJournal(root / 'one.csv', profile).begin(job, armed=True)
+            other = AttemptJournal(root / 'other' / 'two.csv', profile, backend='sqlite')
+            with self.assertRaisesRegex(SourceError, identifier):
+                other.begin(job)
+            other.recover_armed()
+            self.assertEqual(other.detail(identifier)['state'], 'uncertain')
+            self.assertFalse((root / 'other' / 'applicant.db').exists())
+
+    def test_key_rotation_and_session_changes_block_retry_separately(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / 'application.csv'
+            profile = root / 'session.json'
+            saved_session(profile)
+            job = {'id': '15', 'url': 'https://www.linkedin.com/jobs/view/15/'}
+            journal = AttemptJournal(log, profile)
+            identifier = journal.begin(job)
+            journal.resolve(identifier, 'not-submitted', attested=True)
+            retry = AttemptJournal(log, profile, retry=identifier)
+            saved_session(profile, 'second-session')
+            with self.assertRaisesRegex(ConfigError, 'session changed'):
+                retry.begin(job)
+            journal.rotate()
+            with self.assertRaisesRegex(ConfigError, 'key rotated'):
+                retry.begin(job)
+            self.assertEqual(journal.detail(identifier)['state'], 'not-submitted')
 
     def test_dated_provider_aliases_do_not_leak_across_cutoffs(self):
         earlier = NOW - timedelta(days=1)

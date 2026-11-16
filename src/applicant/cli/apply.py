@@ -6,7 +6,7 @@ import argparse
 import sys
 
 from ..domain.job import Job
-from ..errors import ConfigError
+from ..errors import ApplicationBlocked, AttestationRequired, ConfigError
 from ..log import get
 from ..settings import FilterOptions, Settings
 from .common import add_filters, configured_path, filters_from
@@ -26,6 +26,8 @@ class Apply(FilterOptions, Request):
     reconcile: str | None = None
     outcome: str | None = None
     retry_attempt: str | None = None
+    reopen_attempt: str | None = None
+    rotate_attestation_key: bool = False
     acknowledge_duplicate_risk: bool = False
 
 
@@ -56,7 +58,9 @@ def add_parser(add: AddParser) -> argparse.ArgumentParser:
     mode = apply_.add_mutually_exclusive_group()
     mode.add_argument('--reconcile', metavar='ATTEMPT_ID')
     mode.add_argument('--retry-attempt', metavar='ATTEMPT_ID')
-    apply_.add_argument('--outcome', choices=('submitted', 'not-submitted'))
+    mode.add_argument('--reopen-attempt', metavar='ATTEMPT_ID')
+    mode.add_argument('--rotate-attestation-key', action='store_true')
+    apply_.add_argument('--outcome', choices=('submitted', 'not-submitted', 'abandoned'))
     apply_.add_argument('--acknowledge-duplicate-risk', action='store_true')
     apply_.add_argument(
         '-y',
@@ -85,27 +89,42 @@ def run(args: Apply, settings: Settings) -> int:
         raise ConfigError('--retry-attempt requires --acknowledge-duplicate-risk')
     if args.reconcile and (args.dry_run or args.retry_attempt):
         raise ConfigError('--reconcile cannot be combined with --dry-run or --retry-attempt')
+    if args.dry_run and (args.reopen_attempt or args.rotate_attestation_key):
+        raise ConfigError('journal maintenance cannot be combined with --dry-run')
+    needs_attestation = args.reopen_attempt or args.outcome in ('not-submitted', 'abandoned')
+    if needs_attestation and not sys.stdin.isatty():
+        raise AttestationRequired(
+            'use a terminal to attest to the original LinkedIn portal history'
+        )
     journal = AttemptJournal(log, session, args.retry_attempt, backend=settings.store)
-    if args.reconcile:
-        entry = journal.detail(args.reconcile)
+    if args.rotate_attestation_key:
+        journal.rotate()
+        print('Attestation key rotated. Attest again before retrying an application.')
+        return 0
+    if identifier := args.reconcile or args.reopen_attempt:
+        entry = journal.detail(identifier)
         print(f'{shown(entry["job"]["url"])} · account {shown(entry["account"])}')
         print(f'Check Jobs → Job tracker → Applied using the original account: {HISTORY}')
-        attested = args.outcome != 'not-submitted' or (
-            sys.stdin.isatty()
-            and terminal()
-            .ask(
-                'If the history is conclusive, type verified not submitted. '
-                'Retrying may create a duplicate: '
+        attested = False
+        if needs_attestation:
+            attested = (
+                terminal()
+                .ask(
+                    'If the history is conclusive, type verified not submitted. '
+                    'Retrying may create a duplicate: '
+                )
+                .strip()
+                == 'verified not submitted'
             )
-            .strip()
-            == 'verified not submitted'
-        )
-        assert args.outcome is not None
-        journal.resolve(args.reconcile, args.outcome, attested=attested)
+        with journal.profile_owner():
+            if args.reopen_attempt and journal.detail(identifier)['state'] != 'abandoned':
+                raise ConfigError('only an abandoned attempt can be reopened')
+            journal.resolve(identifier, args.outcome or 'not-submitted', attested=attested)
         if args.outcome == 'submitted':
             journal.recover_confirmed()
         return 0
     if not args.dry_run and journal.exists():
+        journal.recover_armed()
         journal.recover_confirmed()
     if args.retry_attempt:
         from ..services.apply import Worklist, select
@@ -149,7 +168,13 @@ def run(args: Apply, settings: Settings) -> int:
 
     with Jobs(headless=not args.show, backend=settings.store, session=session) as board:
         board.attempts = journal
-        board.apply(work.matching, log=log, dry_run=args.dry_run, confirm=confirm)
+        results = board.apply(work.matching, log=log, dry_run=args.dry_run, confirm=confirm)
     if declined:
         print('not submitted: {} application(s); nothing was logged for them'.format(len(declined)))
+    if isinstance(results, list) and any(
+        note.startswith('application_uncertain:')
+        for _, status, note in results
+        if status == 'failed'
+    ):
+        raise ApplicationBlocked('inspect the application log and reconcile the blocked attempt')
     return 0

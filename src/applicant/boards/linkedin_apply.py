@@ -16,14 +16,16 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Iterable
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from ..domain.job import Job
 from ..domain.ports import ApplicationResult, Interrupted, easy_apply_results
-from ..errors import Blocked, SourceError
+from ..errors import ApplicationBlocked, Blocked, SourceError
 from ..infra.browser import BrowserSession, looks_blocked
 from ..infra.profile_lock import profile_lock
 from ..interaction import Interaction, Terminal
@@ -47,6 +49,115 @@ CONFIRM_TIMEOUT_MS = 10_000
 UNCONFIRMED_SUBMIT = 'unconfirmed'
 # where LinkedIn sends a browser that is not signed in, or must pass a check
 SIGNED_OUT = ('/login', '/authwall', '/checkpoint/', '/uas/')
+
+
+_SUBMIT_GUARD = """button => {
+    const document = button.ownerDocument;
+    const view = document.defaultView;
+    const path = node => {
+        const result = [];
+        for (; node; node = node.parentNode || node.host) result.push(node);
+        return result;
+    };
+    const chain = path(button);
+    const modal = chain.find(node => node.matches?.('[role="dialog"][aria-modal="true"]'));
+    const url = view.location.href;
+    const form = button.form;
+    const action = button.getAttribute('formaction') ?? form?.getAttribute('action');
+    const active = () => modal && button.isConnected && view.location.href === url
+        && !button.disabled && button.getAttribute('aria-disabled') !== 'true'
+        && !path(button).some(node => node.matches?.('[inert],[aria-hidden="true"]'))
+        && path(button).length === chain.length && path(button).every((node, i) => node === chain[i])
+        && button.form === form
+        && (button.getAttribute('formaction') ?? form?.getAttribute('action')) === action;
+    let clicked = false;
+    let rejected = false;
+    const events = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+    const check = event => {
+        if (rejected || !active() || !event.composedPath().includes(button) || clicked) {
+            rejected = true;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+        } else if (event.type === 'click') {
+            clicked = true;
+        }
+    };
+    if (!active()) return null;
+    for (const event of events) document.addEventListener(event, check, true);
+    return {
+        active,
+        clicked: () => clicked && !rejected,
+        close: () => {
+            for (const event of events) document.removeEventListener(event, check, true);
+        }
+    };
+}"""
+
+
+def _origin(url):
+    parts = urlsplit(url)
+    return parts.scheme, parts.hostname, parts.port
+
+
+def _prepare_submit(page):
+    """Locate and trial a single final control before arming an attempt."""
+    from playwright.sync_api import Error
+
+    origin = _origin(page.url)
+    candidates = []
+    for frame in page.frames:
+        if frame != page.main_frame and _origin(frame.url) != origin:
+            continue
+        dialogs = frame.locator('[role="dialog"][aria-modal="true"]').filter(visible=True)
+        if not dialogs.count():
+            continue
+        modal = dialogs.last
+        if modal.get_by_text(re.compile(r'\bStep\s+\d+\s+of\s+\d+\b', re.IGNORECASE)).count():
+            return None
+        if any(
+            modal.get_by_role('button', name=label, exact=True).count()
+            for label in ('Next', 'Review')
+        ):
+            return None
+        submit = modal.get_by_role('button', name='Submit application', exact=True)
+        if submit.count() == 1 and submit.is_visible() and submit.is_enabled():
+            candidates.append(submit)
+    if len(candidates) != 1:
+        return None
+    submit = candidates[0]
+    try:
+        button = submit.element_handle(timeout=1500)
+        submit.click(trial=True, timeout=1500)
+    except Error:
+        return None
+    if button is None:
+        return None
+    route = page.url
+
+    def dispatch():
+        guard = None
+        try:
+            if page.url != route or not submit.evaluate(
+                '(element, original) => element === original', button
+            ):
+                return False
+            guard = button.evaluate_handle(_SUBMIT_GUARD)
+            if not guard.evaluate('guard => guard?.active() ?? false'):
+                return False
+            bounds = button.bounding_box()
+            if bounds is None or not guard.evaluate('guard => guard.active()'):
+                return False
+            page.mouse.click(bounds['x'] + bounds['width'] / 2, bounds['y'] + bounds['height'] / 2)
+            if not guard.evaluate('guard => guard.clicked()'):
+                raise SourceError('submit input reached the page without a verified click')
+            return True
+        finally:
+            if guard is not None:
+                with suppress(Error):
+                    guard.evaluate('guard => guard?.close()')
+                    guard.dispose()
+
+    return dispatch
 
 
 class LinkedIn(LinkedInGuest):
@@ -345,6 +456,9 @@ class LinkedIn(LinkedInGuest):
                 for left in eligible[index:]:
                     self.failed[left['url']] = str(error)
                 break
+            except ApplicationBlocked as error:
+                logger.warning('linkedin: %s', error)
+                self.failed[item['url']] = f'{error.status}: {error}'
             except Exception as error:  # one posting, logged in full, never fatal
                 logger.error(
                     f'linkedin: easy apply failed for {item["url"]}: '
@@ -380,13 +494,16 @@ class LinkedIn(LinkedInGuest):
         if follow.count() and follow.is_checked():
             follow.uncheck(force=True)
 
-        submit = page.locator('button[aria-label*="Submit application"]').first
-        if submit.count():
+        submit = _prepare_submit(page)
+        if submit is not None:
             journal = self.attempt_journal
-            attempt = journal.begin(item) if journal is not None else None
+            attempt = journal.begin(item, armed=True) if journal is not None else None
             # from here on the application may have been sent, whatever happens
             try:
-                submit.click()
+                if not submit():
+                    if journal is not None and attempt is not None:
+                        journal.resolve(attempt, 'failed-before-dispatch')
+                    return False
                 confirmed = self._confirmed(page)
             except KeyboardInterrupt:
                 # stopped while waiting for LinkedIn's answer
@@ -404,6 +521,8 @@ class LinkedIn(LinkedInGuest):
                     f'linkedin: applied to {item.get("title") or item["url"]} ({item["url"]})'
                 )
                 return True
+            if journal is not None and attempt is not None:
+                journal.resolve(attempt, 'uncertain')
             # a click is not an application: a required field, a hiccup, and
             # LinkedIn keeps the form open. Logged as applied, it would never
             # be offered again - so it is left for a person to finish

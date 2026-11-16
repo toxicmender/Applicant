@@ -23,12 +23,15 @@ import sys
 from .. import __version__, log, money
 from ..errors import (
     ApplicantError,
+    ApplicationBlocked,
+    AttestationRequired,
     AuthFailed,
     Blocked,
     ConfigError,
     DatabaseBusy,
     ExportConflict,
     NotFound,
+    ProfileBusy,
     SourceError,
     StorageFull,
     Unparseable,
@@ -228,6 +231,16 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         logger.warning(f'{args.command}: interrupted')
         return 130
+    except (ApplicationBlocked, AttestationRequired, ProfileBusy) as error:
+        from ..domain.canonical import canonical_json
+
+        code = 9 if isinstance(error, ApplicationBlocked) else 10
+        if isinstance(error, ProfileBusy):
+            code = 8
+        print(
+            canonical_json({'status': error.status, 'retryable': code == 8, 'message': str(error)})
+        )
+        return code
     # The last resort handler (ASVS 16.5.4, CWE-248). Each source already turns
     # its expected failures into a domain error; anything reaching here is a bug
     # or an environment fault. One line on the console, the traceback in the
