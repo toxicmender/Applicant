@@ -74,8 +74,11 @@ def loaded_after(script: str) -> set[str]:
 # the network, answered with an empty page: a guest search that finds nothing
 NO_NETWORK = """
 import httpx
+from applicant.infra.board_worker import OwnedBoard
 from applicant.infra.http import HttpClient
 HttpClient.request = lambda self, method, url, **kw: httpx.Response(200, text='')
+# The parent monkeypatch does not cross the spawn boundary.
+OwnedBoard._call = lambda self, method, *args, **kwargs: []
 """
 
 
