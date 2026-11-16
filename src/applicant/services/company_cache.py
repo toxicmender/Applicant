@@ -75,34 +75,52 @@ class CompanyCache:
     def entry(self, provider, locator, scope):
         return read_document(self.path).get(content_hash([provider, locator, scope]))
 
+    def locked(self):
+        return export_lock(self.path)
+
     def keep(
         self, provider, locator, scope, identity, previous, coverage, payload, stamp, *, commit=None
     ):
-        with export_lock(self.path):
-            document = read_document(self.path)
-            key = content_hash([provider, locator, scope])
-            current = document.get(key)
-            if current is not None:
-                if current['identity'] != identity:
-                    logger.warning(
-                        '%s: verified cache identity changed; keeping existing entry', provider
-                    )
-                    return False
-                if current != previous or not newer_retrieval(current, stamp):
-                    logger.debug(
-                        '%s: keeping existing cache revision %s', provider, current['revision']
-                    )
-                    return False
-                if current['coverage'] > coverage:
-                    return False
-            if commit is not None:
-                commit()
-            document[key] = {
-                'identity': identity,
-                'revision': 1 if current is None else current['revision'] + 1,
-                'retrieved_at': stamp,
-                'coverage': coverage,
-                'payload': payload,
-            }
-            write_document(self.path, document)
-            return True
+        with self.locked():
+            return self.keep_locked(
+                provider,
+                locator,
+                scope,
+                identity,
+                previous,
+                coverage,
+                payload,
+                stamp,
+                commit=commit,
+            )
+
+    def keep_locked(
+        self, provider, locator, scope, identity, previous, coverage, payload, stamp, *, commit=None
+    ):
+        document = read_document(self.path)
+        key = content_hash([provider, locator, scope])
+        current = document.get(key)
+        if current is not None:
+            if current['identity'] != identity:
+                logger.warning(
+                    '%s: verified cache identity changed; keeping existing entry', provider
+                )
+                return False
+            if current != previous or not newer_retrieval(current, stamp):
+                logger.debug(
+                    '%s: keeping existing cache revision %s', provider, current['revision']
+                )
+                return False
+            if current['coverage'] > coverage:
+                return False
+        if commit is not None:
+            commit()
+        document[key] = {
+            'identity': identity,
+            'revision': 1 if current is None else current['revision'] + 1,
+            'retrieved_at': stamp,
+            'coverage': coverage,
+            'payload': payload,
+        }
+        write_document(self.path, document)
+        return True

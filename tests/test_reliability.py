@@ -362,6 +362,32 @@ class ReliabilityTest(unittest.TestCase):
             self.assertEqual(other.detail(identifier)['state'], 'uncertain')
             self.assertFalse((root / 'other' / 'applicant.db').exists())
 
+    def test_interrupted_unverified_financials_leaves_history_untouched(self):
+        from applicant.financials.crunchbase import CrunchbaseClient
+        from applicant.financials.models import CompanyFinancials, Money
+        from applicant.infra.company_worker import CompanyFetchInterrupted
+        from applicant.services.financials import track_financials
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'finance.json'
+            original = b'{"companies": {}}'
+            path.write_bytes(original)
+            client = CrunchbaseClient()
+            self.addCleanup(client.close)
+            partial = CompanyFinancials(
+                source='crunchbase',
+                company='Acme',
+                company_id='acme',
+                url='https://www.crunchbase.com/organization/acme',
+                total_funding=Money(amount=100, currency='USD'),
+            )
+            with (
+                patch.object(client, 'fetch', side_effect=CompanyFetchInterrupted(partial)),
+                self.assertRaises(KeyboardInterrupt),
+            ):
+                track_financials(['Acme'], {'crunchbase': client}, str(path), pause=0)
+            self.assertEqual(path.read_bytes(), original)
+
     def test_key_rotation_and_session_changes_block_retry_separately(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

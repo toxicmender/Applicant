@@ -129,26 +129,19 @@ def track_financials(
                     emit(FinancialsTracked(source, saved, cached_at=previous['retrieved_at']))
                     return saved
             logger.info(f'financials: fetching {company!r} from {source}')
-            try:
-                financials = client.fetch(company, max_rounds=max_rounds)
-            except (FinancialsInterrupted, CompanyFetchInterrupted) as interrupt:
-                captured = (
-                    interrupt.financials
-                    if isinstance(interrupt, FinancialsInterrupted)
-                    else interrupt.result
-                )
-                try:
-                    with defer_interrupt():
-                        tracker.record(captured, require_complete=use_history)
-                except ApplicantError as error:
-                    logger.error('could not save the interrupted company capture: %s', error)
-                raise
-            with defer_interrupt():
+
+            def commit(financials, *, interrupted=False):
                 verified = (
                     isinstance(financials, CompanyFinancials) and financials._identity_verified
                 )
-                if previous and not verified:
-                    raise Unparseable('Crunchbase refresh did not verify the cached company')
+                if not verified and (previous or (interrupted and not use_history)):
+                    raise Unparseable('refresh did not verify the captured company')
+                if (
+                    scope is not None
+                    and isinstance(client, CrunchbaseClient)
+                    and browser_scope(client.profile_dir) != scope
+                ):
+                    raise Unparseable('company capture access scope changed during the refresh')
                 changes: list[str] = []
 
                 def save():
@@ -156,12 +149,7 @@ def track_financials(
                         tracker.record(financials, require_complete=use_history or verified)
                     )
 
-                if (
-                    verified
-                    and scope is not None
-                    and isinstance(client, CrunchbaseClient)
-                    and (browser_scope(client.profile_dir) == scope)
-                ):
+                if verified and scope is not None and isinstance(client, CrunchbaseClient):
                     coverage = len(financials.rounds)
                     if (
                         financials.funding_rounds_count is not None
@@ -181,6 +169,24 @@ def track_financials(
                     )
                 else:
                     save()
+                return changes
+
+            try:
+                financials = client.fetch(company, max_rounds=max_rounds)
+            except (FinancialsInterrupted, CompanyFetchInterrupted) as interrupt:
+                captured = (
+                    interrupt.financials
+                    if isinstance(interrupt, FinancialsInterrupted)
+                    else interrupt.result
+                )
+                try:
+                    with defer_interrupt():
+                        commit(captured, interrupted=True)
+                except ApplicantError as error:
+                    logger.error('could not save the interrupted company capture: %s', error)
+                raise
+            with defer_interrupt():
+                changes = commit(financials)
             logger.info(f'financials: {source} {company!r}: {len(changes)} change(s) recorded')
             emit(FinancialsTracked(source, financials, changes))
             return financials

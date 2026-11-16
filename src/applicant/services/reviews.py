@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -146,7 +147,7 @@ def fetch_reviews(
                 updates.append((source, locator, scope, previous, rating, stamp))
         write(payloads)
         for source, locator, scope, previous, rating, stamp in updates:
-            cache.keep(
+            cache.keep_locked(
                 source,
                 locator,
                 scope,
@@ -160,6 +161,10 @@ def fetch_reviews(
     def persist():
         if discard:
             return
+        with cache.locked() if cache is not None else nullcontext():
+            persist_locked()
+
+    def persist_locked():
         if backend == 'sqlite':
             from ..infra.store.sqlite import Store
 
