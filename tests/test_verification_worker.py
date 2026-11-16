@@ -143,6 +143,7 @@ class VerificationWorkerTest(unittest.TestCase):
             )
             self.assertTrue(worker.call_args.kwargs['interactive'])
         connection = Mock()
+        connection.recv.return_value = ''
 
         def inline(name, state, *, factory, pause, interactive):
             self.assertEqual((name, interactive), ('linkedin', True))
@@ -153,7 +154,7 @@ class VerificationWorkerTest(unittest.TestCase):
 
         with patch('applicant.services.provider_setup._verify_inline', side_effect=inline):
             self.assertIs(_verification_worker(connection, ('linkedin', state, True)), state)
-        self.assertEqual(connection.send.call_args_list[0].args[0], ('pause', 'login prompt'))
+        self.assertEqual(connection.send.call_args_list[0].args[0], ('prompt', 'login prompt'))
         connection.recv.assert_called_once()
         connection.send.assert_called_with(('closing', None))
 

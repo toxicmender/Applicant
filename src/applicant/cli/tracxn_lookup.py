@@ -6,7 +6,6 @@ import logging
 import re
 import signal
 import sys
-import time
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -28,7 +27,7 @@ from ..financials.tracxn import (
 )
 from ..infra.browser import STATE_FILE, BrowserSession, looks_blocked
 from ..infra.browser_diagnostics import event, safe_origin, stage
-from ..infra.owned_worker import CleanupUnconfirmed, WorkerFailure, run_worker
+from ..infra.owned_worker import CleanupUnconfirmed, WorkerFailure, WorkerInteraction, run_worker
 from ..infra.profile_lock import profile_lock
 from ..infra.ranking_documents import read_ranking_document
 from ..interaction import Terminal
@@ -473,28 +472,6 @@ class InteractiveTracxn:
             ) from None
 
 
-class _WorkerInteraction:
-    def __init__(self, connection, check):
-        self.connection = connection
-        self.check = check
-
-    def pause(self, message: str) -> None:
-        self.ask(message)
-
-    def ask(self, question: str, *, secret: bool = False) -> str:
-        self.connection.send(('prompt', question))
-        heartbeat = time.monotonic() + 0.25
-        while not self.connection.poll(0):
-            self.check()
-            if time.monotonic() >= heartbeat:
-                self.connection.send(('heartbeat', None))
-                heartbeat = time.monotonic() + 0.25
-        answer = self.connection.recv()
-        if answer is None:
-            raise LookupStopped('Tracxn lookup was cancelled.')
-        return answer
-
-
 def _lookup_worker(connection, arguments):
     state, company, max_rounds, timeout, reauth, previously_captured = arguments
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # The parent owns terminal cancellation.
@@ -505,7 +482,7 @@ def _lookup_worker(connection, arguments):
 
     resolver = InteractiveTracxn(
         client,
-        _WorkerInteraction(connection, check),
+        WorkerInteraction(connection, check, LookupStopped('Tracxn lookup was cancelled.')),
         reauth,
         browser_factory=partial(BrowserSession, storage_state=state),
     )

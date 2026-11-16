@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from contextvars import copy_context
+from contextvars import ContextVar, copy_context
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -40,6 +40,7 @@ BLOCKED_SELECTORS = '#challenge-platform, #cf-challenge-running, form#captcha-fo
 
 # where a profile's signed in state is exported, inside the profile itself
 STATE_FILE = 'storage_state.json'
+browser_state: ContextVar[Any] = ContextVar('browser_state', default=None)
 
 
 def _observe_page(page: Page) -> None:
@@ -103,7 +104,7 @@ class BrowserSession:
         self.headless = headless
         self.timeout = timeout
         self.channels = tuple(channels)
-        self.storage_state = storage_state
+        self.storage_state = browser_state.get() if storage_state is None else storage_state
         self.require_saved_state = require_saved_state
         self._playwright: Playwright | None = None
         self._closer: Any = None
