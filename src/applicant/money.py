@@ -131,19 +131,35 @@ class Rates:
             cache['ppp'].setdefault(country, dict(entry, fetched=0, seeded=True))
         return cache
 
-    def _save(self):
+    def _save(self, section, key, incoming):
+        from .errors import StoreError
+        from .infra.store.financials_lock import export_lock
+
         try:
-            write_document(self.path, self._cache)
-        except OSError as error:
+            with export_lock(self.path):
+                reloaded = self._load()
+                prior = reloaded[section].get(key)
+                field = 'date' if section == 'fx' else 'year'
+                version = (str(incoming.get(field) or ''), incoming['fetched'])
+                if prior is None or version > (
+                    str(prior.get(field) or ''),
+                    prior.get('fetched', 0),
+                ):
+                    reloaded[section][key] = incoming
+                    write_document(self.path, reloaded)
+                self._cache = reloaded
+        except (OSError, StoreError) as error:
             # a read only cwd should not break a search, but it should be visible
             logger.warning(f'could not write the rate cache {self.path}: {error}')
+            self._cache[section][key] = incoming
+        return self._cache[section][key]
 
     # -- exchange rates ---------------------------------------------------
 
     def fx(self, base='USD'):
         """{currency: units per 1 base}. Empty dict when unavailable."""
         entry = self._cache['fx'].get(base)
-        if entry and time.time() - entry.get('fetched', 0) < FX_TTL:
+        if entry and 0 <= time.time() - entry.get('fetched', 0) < FX_TTL:
             return entry['rates']
         if self.offline:
             return entry['rates'] if entry else {}
@@ -161,6 +177,13 @@ class Rates:
             ) as http:
                 payload = http.get(FX_URL, params={'base': base}).json()
             rates = dict(payload['rates'])
+            import math
+
+            if not rates or any(
+                type(value) not in (int, float) or not math.isfinite(value) or value <= 0
+                for value in rates.values()
+            ):
+                raise ValueError('invalid exchange rates')
             rates[base] = 1.0
         except Exception as error:  # noqa: BLE001 - any FX failure falls back to the cache
             logger.warning(
@@ -170,13 +193,16 @@ class Rates:
             return entry['rates'] if entry else {}
         logger.info(f'fetched {len(rates)} exchange rates against {base}')
 
-        self._cache['fx'][base] = {
-            'rates': rates,
-            'fetched': time.time(),
-            'date': payload.get('date'),
-        }
-        self._save()
-        return rates
+        saved = self._save(
+            'fx',
+            base,
+            {
+                'rates': rates,
+                'fetched': time.time(),
+                'date': payload.get('date'),
+            },
+        )
+        return saved['rates']
 
     # -- ppp factors ------------------------------------------------------
 
@@ -187,7 +213,7 @@ class Rates:
             return None
 
         entry = self._cache['ppp'].get(country)
-        if entry and (entry.get('seeded') or time.time() - entry.get('fetched', 0) < PPP_TTL):
+        if entry and (entry.get('seeded') or 0 <= time.time() - entry.get('fetched', 0) < PPP_TTL):
             return entry['value']
         if self.offline:
             return entry['value'] if entry else None
@@ -201,9 +227,7 @@ class Rates:
             # the World Bank throttles hard; a stale or seeded value beats nothing
             return entry['value'] if entry else None
 
-        self._cache['ppp'][country] = dict(newest, fetched=time.time())
-        self._save()
-        return newest['value']
+        return self._save('ppp', country, dict(newest, fetched=time.time()))['value']
 
     # -- a fixed view for one run -----------------------------------------
 
