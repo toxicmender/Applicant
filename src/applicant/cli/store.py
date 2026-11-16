@@ -14,13 +14,17 @@ class ResolveExport(DatabaseRequest):
     export: str
     use: str
     confirm: str | None = None
+    dry_run: bool = False
 
 
 def resolve(args, settings):
     from ..infra.store.export_resolution import resolve_export
 
     result = resolve_export(
-        database_path(settings, args.database), settings.path(args.export), args.use, args.confirm
+        database_path(settings, args.database),
+        settings.path(args.export),
+        args.use,
+        None if args.dry_run else args.confirm,
     )
     print(canonical_json(result))
     return 0
