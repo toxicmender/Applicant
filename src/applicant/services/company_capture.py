@@ -6,9 +6,10 @@ from urllib.parse import urlsplit
 from ..boards.public import structured_records
 from ..domain.canonical import canonical_json, content_hash
 from ..domain.company_evidence import CompanyResponse
-from ..domain.company_resolution import resolve_company
+from ..domain.company_resolution import resolve_company, suggest_manual_matches
 from ..domain.contracts import now
 from ..domain.providers import provider
+from ..domain.ranking_facts import country
 from ..domain.research import Company, CompanyIdentifier, Culture, ResearchEvidence, ResearchImport
 from ..errors import AuthFailed, Blocked, SourceError, Unparseable
 from ..infra.http import HttpClient
@@ -21,15 +22,19 @@ PROFILE_PROVIDERS = ('flexa', 'wellfound', 'builtin', 'welcometothejungle')
 
 
 def capture_profile(database, selection, *, client=None, clock=now):
-    if not isinstance(selection, dict) or set(selection) != {
-        'entity_id',
-        'provider',
-        'url',
-        'provider_company_id',
-    }:
+    required = {'entity_id', 'provider', 'url', 'provider_company_id'}
+    optional = {'legal_name', 'country'}
+    if (
+        not isinstance(selection, dict)
+        or not required <= selection.keys()
+        or set(selection) - required not in (set(), optional)
+        or any(not isinstance(value, str) or not value.strip() for value in selection.values())
+    ):
         raise ValueError(
-            'profile capture requires entity_id, provider, url and provider_company_id'
+            'profile capture requires entity_id, provider, url and provider_company_id; '
+            'legal_name and country may be supplied together for manual suggestions'
         )
+    manual_country = country(selection['country'].upper()) if 'country' in selection else None
     name = provider(selection['provider']).id
     if name not in PROFILE_PROVIDERS:
         raise ValueError('unsupported public profile provider')
@@ -55,9 +60,21 @@ def capture_profile(database, selection, *, client=None, clock=now):
         )
         != selection['entity_id']
     ):
-        raise ValueError(
-            'capture requires an explicit verified company identifier and exact profile URL'
-        )
+        message = 'capture requires an explicit verified company identifier and exact profile URL'
+        if manual_country is not None:
+            candidates = suggest_manual_matches(
+                data['names'],
+                data['identifiers'],
+                legal_name=selection['legal_name'],
+                country=manual_country,
+                effective_date=cutoff.date(),
+                knowledge_cutoff=cutoff,
+            )
+            message += '; legal name and country candidates for manual review: ' + (
+                ', '.join(candidates) if candidates else 'none'
+            )
+        raise ValueError(message)
+    selection = {key: selection[key] for key in sorted(required)}
     with Acquisition(database, name, clock=clock) as owner:
         if owner.result['status'] != 'acquired':
             return {'provider': name, **owner.result}
