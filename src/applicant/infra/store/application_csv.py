@@ -4,6 +4,7 @@ import codecs
 import csv
 import io
 import re
+from typing import Literal
 
 from ...storage import APPLIED_COLUMNS, neutralise, restore
 
@@ -15,7 +16,7 @@ class ApplicationCSV:
         self.bom = raw is None or raw.startswith(codecs.BOM_UTF8)
         self.header = list(APPLIED_COLUMNS)
         self.terminator = '\r\n'
-        self.quoting = csv.QUOTE_ALL if raw is None else csv.QUOTE_MINIMAL
+        self.quoting: Literal[0, 1] = csv.QUOTE_ALL if raw is None else csv.QUOTE_MINIMAL
         self.cells = []
         if raw is None:
             return

@@ -10,6 +10,7 @@ from applicant.infra.store.application_csv import ApplicationCSV
 from applicant.infra.store.financials_lock import export_lock
 from applicant.infra.store.repositories import applications
 from applicant.services.application_attempts import AttemptJournal
+from applicant.services.application_projection import publish_file
 from applicant.services.status import summarise
 
 
@@ -72,3 +73,16 @@ class ApplicationProjectionTest(unittest.TestCase):
         for row in (b'linkedin,31,failed\n', b'linkedin,31,failed,note\r\n'):
             with self.assertRaises(ValueError):
                 ApplicationCSV(b'source,id,status,note\n' + row)
+
+    def test_file_acknowledges_unchanged_tag_after_an_unrelated_edit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'applications.csv'
+            job = Job(source='linkedin', id='31', title='Engineer')
+            event = {'attempt': 'sample', 'entry': {'job': job.to_dict(), 'state': 'submitted'}}
+            publish_file(path, event, lambda: None)
+            layout = ApplicationCSV(path.read_bytes())
+            layout.set(None, {'source': 'indeed', 'id': '2', 'status': 'failed'})
+            edited = layout.render()
+            path.write_bytes(edited)
+            publish_file(path, event, lambda: self.fail('existing intent was overwritten'))
+            self.assertEqual(path.read_bytes(), edited)

@@ -6,7 +6,9 @@ import json
 import logging
 import re
 import secrets
-from contextlib import contextmanager
+from collections.abc import Iterable
+from contextlib import closing, contextmanager
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -40,13 +42,20 @@ class AttemptJournal:
         self.backend: Backend = backend
 
     def exists(self) -> bool:
-        if self.path.is_file() or self._legacy_path.is_file():
-            return True
-        if self.backend == 'sqlite':
-            from ..infra.store.sqlite import DB_NAME
+        return self.path.is_file() or bool(self._legacy())
 
-            return (self.log.parent / DB_NAME).is_file()
-        return False
+    def protected_postings(self) -> set[str]:
+        """Read the published journal without recovering or mutating attempts."""
+        if not self.path.is_file():
+            return set()
+        document = read_ranking_document(self.path)
+        if document.get('schema_version') != 2:
+            raise ConfigError(f'{self.path}: unsupported application journal schema')
+        return {
+            entry['job_key']
+            for entry in document['entries'].values()
+            if entry['state'] in ('armed', 'uncertain', 'abandoned', 'submitted')
+        }
 
     @property
     def _legacy_path(self):
@@ -57,7 +66,10 @@ class AttemptJournal:
         return log.with_name(f'.{log.name}.attempt-index.json')
 
     def _legacy(self):
-        from ..infra.store.sqlite import Store
+        import sqlite3
+
+        from ..infra.store.maintenance import configure_connection
+        from ..infra.store.sqlite import MIGRATIONS, Store
 
         entries = read_ranking_document(self._legacy_path) if self._legacy_path.is_file() else {}
         if self.backend == 'sqlite':
@@ -65,11 +77,24 @@ class AttemptJournal:
 
             database = self.log.parent / DB_NAME
             if database.is_file():
-                with Store.open_readonly(database) as store:
-                    name = store._managed_name('applications', self.log)
-                    row = store.db.execute(
-                        'SELECT payload FROM application_attempt_journals WHERE log=?', (name,)
+                with closing(sqlite3.connect(database.as_uri() + '?mode=ro', uri=True)) as db:
+                    configure_connection(db, writable=False)
+                    version = db.execute('PRAGMA user_version').fetchone()[0]
+                    if version > len(MIGRATIONS):
+                        raise ConfigError(
+                            f'{database}: application database schema is newer than supported'
+                        )
+                    name = Store._managed_alias(db, 'applications', self.log.name, self.log)
+                    table = db.execute(
+                        "SELECT 1 FROM sqlite_master WHERE name='application_attempt_journals'"
                     ).fetchone()
+                    row = (
+                        db.execute(
+                            'SELECT payload FROM application_attempt_journals WHERE log=?', (name,)
+                        ).fetchone()
+                        if table
+                        else None
+                    )
                     if row is not None:
                         payload = json.loads(row[0])
                         for identifier, entry in payload.items():
@@ -108,7 +133,7 @@ class AttemptJournal:
 
             yield (document if full else entries), save
 
-    def import_legacy(self, paths):
+    def import_legacy(self, paths: Iterable[str | Path]) -> None:
         candidates = [
             (
                 path,
@@ -137,7 +162,7 @@ class AttemptJournal:
                 for identifier, incoming in document.get('conflicts', {}).items()
             }
 
-    def resolve_conflict(self, identifier, choice, digest):
+    def resolve_conflict(self, identifier: str, choice: str, digest: str | None) -> None:
         with self.profile_owner(), self._locked(full=True) as (document, save):
             entries = document['entries']
             conflicts = document.get('conflicts', {})
@@ -321,10 +346,7 @@ class AttemptJournal:
             checkpoint()
 
     def begin(self, job, *, armed=False):
-        url = urlsplit(job['url'])
-        match = re.fullmatch(r'/jobs/view/(?:[^/]+-)?(\d+)/?', url.path)
-        target = match[1] if match else job.get('id') or url.path.rstrip('/')
-        key = content_hash(['linkedin', str(target)])
+        key = linkedin_posting_key(job)
         with self._locked(full=True) as (document, save):
             entries = document['entries']
             for identifier, group in document.get('conflicts', {}).items():
@@ -498,3 +520,10 @@ def _brief(entry):
         'timestamp': entry.get('recorded_at'),
         'destination': entry.get('destination'),
     }
+
+
+def linkedin_posting_key(job: dict[str, Any]) -> str:
+    url = urlsplit(job.get('url') or '')
+    match = re.fullmatch(r'/jobs/view/(?:[^/]+-)?(\d+)/?', url.path)
+    target = match[1] if match else job.get('id') or url.path.rstrip('/')
+    return content_hash(['linkedin', str(target)])

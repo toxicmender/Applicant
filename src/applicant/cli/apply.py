@@ -201,7 +201,7 @@ def run(args: Apply, settings: Settings) -> int:
         journal.recover_confirmed()
     if declined:
         print('not submitted: {} application(s); nothing was logged for them'.format(len(declined)))
-    if isinstance(results, list) and any(
+    if any(
         note.startswith('application_uncertain:')
         for _, status, note in results
         if status == 'failed'

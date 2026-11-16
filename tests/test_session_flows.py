@@ -283,7 +283,10 @@ class LinkedInPagesTest(unittest.TestCase):
         )
         page = FakePage([(r'jobs/view', visit)])
         posting = {'url': 'https://www.linkedin.com/jobs/view/9', 'title': 'ML'}
-        with self.assertLogs('applicant', 'INFO'):
+        with (
+            self.assertLogs('applicant', 'INFO'),
+            mock.patch('applicant.boards.linkedin_apply._prepare_submit', return_value=None),
+        ):
             outcome = self.client._apply_one(page, posting)
         self.assertIs(outcome, False)
         self.assertEqual(page.pressed, ['Escape'])

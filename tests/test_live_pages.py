@@ -173,6 +173,40 @@ class LinkedInLiveTest(RealBrowserTest):
         pages = [url for url in self.requested if not url.endswith('/favicon.ico')]
         self.assertEqual(pages, [posting['url']])
 
+    def test_guard_accepts_a_shadow_button_that_submits_via_javascript(self):
+        from applicant.boards.linkedin_apply import _prepare_submit
+
+        page = self.client._start()
+        page.set_content("""
+            <div role="dialog" aria-modal="true"><div id="host"></div></div>
+            <script>
+                window.submissions = 0;
+                const root = document.getElementById('host').attachShadow({mode: 'open'});
+                root.innerHTML = '<button type="button"><span>Submit application</span></button>';
+                root.querySelector('button').onclick = () => window.submissions++;
+            </script>
+        """)
+        dispatch = _prepare_submit(page)
+        self.assertIsNotNone(dispatch)
+        assert dispatch is not None
+        self.assertTrue(dispatch())
+        self.assertEqual(page.evaluate('window.submissions'), 1)
+
+    def test_replaced_submit_control_does_not_receive_input(self):
+        from applicant.boards.linkedin_apply import _prepare_submit
+
+        page = self.client._start()
+        page.set_content("""
+            <div role="dialog" aria-modal="true">
+                <button type="button">Submit application</button>
+            </div>
+        """)
+        dispatch = _prepare_submit(page)
+        self.assertIsNotNone(dispatch)
+        assert dispatch is not None
+        page.locator('button').evaluate('button => button.replaceWith(button.cloneNode(true))')
+        self.assertFalse(dispatch())
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -99,6 +99,15 @@ def _origin(url):
     return parts.scheme, parts.hostname, parts.port
 
 
+def _linkedin_url(url):
+    scheme, host, port = _origin(url)
+    return (
+        scheme == 'https'
+        and port in (None, 443)
+        and bool(host and (host == 'linkedin.com' or host.endswith('.linkedin.com')))
+    )
+
+
 def _prepare_submit(page):
     """Locate and trial a single final control before arming an attempt."""
     from playwright.sync_api import Error
@@ -475,6 +484,8 @@ class LinkedIn(LinkedInGuest):
         """Submit one single-step Easy Apply form. True once LinkedIn confirms it;
         UNCONFIRMED_SUBMIT when Submit was clicked and no confirmation came - it
         may have gone through; False when nothing was submitted."""
+        if not _linkedin_url(item['url']):
+            return False
         page.goto(item['url'], wait_until='domcontentloaded')
         # a login wall has no Easy Apply button either - but it is no answer
         # about this job, and every job after it would read the same
@@ -494,6 +505,12 @@ class LinkedIn(LinkedInGuest):
         if follow.count() and follow.is_checked():
             follow.uncheck(force=True)
 
+        from ..services.application_attempts import linkedin_posting_key
+
+        if not _linkedin_url(page.url) or linkedin_posting_key(item) != linkedin_posting_key(
+            {'url': page.url}
+        ):
+            return False
         submit = _prepare_submit(page)
         if submit is not None:
             journal = self.attempt_journal

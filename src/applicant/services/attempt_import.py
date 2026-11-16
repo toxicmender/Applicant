@@ -1,7 +1,9 @@
 """Stable snapshots and deterministic merging of legacy application journals."""
 
 import json
+import sqlite3
 from collections import defaultdict
+from contextlib import closing
 
 from ..domain.canonical import content_hash
 from ..errors import ConfigError
@@ -9,7 +11,7 @@ from ..financials.tracker import _utc_timestamp
 from ..infra.path_identity import physical_path
 from ..infra.store.financials_lock import export_lock
 
-_ROUTING = ('destination', 'log_path', 'source_path')
+_ROUTING = ('destination', 'log_path', 'source_path', 'backend')
 _STATES = {
     'armed',
     'uncertain',
@@ -39,6 +41,10 @@ def _load(path):
         value = json.loads(raw)
     except ValueError as error:
         raise ConfigError(f'{path}: invalid legacy application journal') from error
+    return _validate(value, path)
+
+
+def _validate(value, path):
     if not isinstance(value, dict) or 'schema_version' in value:
         raise ConfigError(f'{path}: expected a legacy application journal')
     for identifier, entry in value.items():
@@ -51,6 +57,21 @@ def _load(path):
     return value
 
 
+def _database(path):
+    try:
+        with (
+            export_lock(path),
+            closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as db,
+        ):
+            db.execute('PRAGMA query_only=ON')
+            rows = db.execute(
+                'SELECT log, payload FROM application_attempt_journals ORDER BY log'
+            ).fetchall()
+    except sqlite3.Error as error:
+        raise ConfigError(f'{path}: could not read a legacy application journal') from error
+    return [(f'{path} ({log})', _validate(json.loads(payload), path)) for log, payload in rows]
+
+
 def snapshots(paths):
     selected = set()
     for name in paths:
@@ -59,7 +80,7 @@ def snapshots(paths):
             for child in path.iterdir():
                 if not child.is_file() or child.name.startswith(('.', '~')):
                     continue
-                if child.name.endswith('.attempts.json'):
+                if child.name.endswith('.attempts.json') or child.name == 'applicant.db':
                     selected.add(child)
                 elif child.suffix.lower() == '.csv':
                     journal = child.with_name(f'.{child.name}.attempts.json')
@@ -69,7 +90,13 @@ def snapshots(paths):
             selected.add(path.with_name(f'.{path.name}.attempts.json'))
         else:
             selected.add(path)
-    return [(path, _load(path)) for path in sorted(selected, key=str)]
+    found = []
+    for path in sorted(selected, key=str):
+        if path.suffix.casefold() in ('.db', '.sqlite', '.sqlite3'):
+            found.extend(_database(path))
+        else:
+            found.append((str(path), _load(path)))
+    return found
 
 
 def canonical_entry(entry):

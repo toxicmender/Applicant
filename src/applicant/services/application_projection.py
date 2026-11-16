@@ -81,4 +81,18 @@ def publish_file(target, event, checkpoint):
         event['intent'] = [encode(baseline), encode(intended)]
         checkpoint()
     baseline, intended = map(decode, event['intent'])
+    current = read_bytes(target)
+    if current is None and baseline is not None:
+        raise ExportConflict(f'{target}: application export was removed after staging')
+    if current is not None and current not in (baseline, intended):
+        completed, staged = ApplicationCSV(current), ApplicationCSV(intended)
+        mark = f'[applicant-attempt-v1:{event["attempt"]}]'
+
+        def matching(csv):
+            note = csv.header.index('note')
+            return [row for row in csv.cells if row[note].split(' ', 1)[0] == mark]
+
+        saved, expected = matching(completed), matching(staged)
+        if completed.header == staged.header and len(expected) == 1 and saved == expected:
+            return
     reconcile(target, (baseline, digest(baseline), intended, digest(intended)), lambda _: None)
