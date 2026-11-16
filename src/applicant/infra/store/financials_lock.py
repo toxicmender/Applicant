@@ -3,17 +3,17 @@
 import errno
 import sqlite3
 from contextlib import contextmanager
-from pathlib import Path
 
 from ...errors import DatabaseBusy, FinancialsBusy, StorageFull, StoreError, sqlite_busy
 from ..advisory_lock import advisory_lock
+from ..path_identity import physical_path
 
 SQLITE_FULL = getattr(sqlite3, 'SQLITE_FULL', 13)
 
 
 @contextmanager
 def export_lock(file):
-    target = Path(file).resolve()
+    target = physical_path(file)
     try:
         with advisory_lock(
             target.with_name(f'.{target.name}.lock'),
