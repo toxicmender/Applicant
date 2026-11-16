@@ -81,6 +81,21 @@ uv run applicant jobs --overwrite
 
 #### Applications (`apply`)
 
+An interrupted LinkedIn submission can leave an uncertain attempt. Use the attempt
+ID printed in the run log and inspect the exact posting in **Jobs → Job tracker →
+Applied** under the original account. Leave the attempt unresolved if the portal
+has yet to show a conclusive result.
+
+```console
+uv run applicant apply --reconcile ATTEMPT_ID --outcome submitted
+uv run applicant apply --reconcile ATTEMPT_ID --outcome not-submitted
+uv run applicant apply --retry-attempt ATTEMPT_ID --acknowledge-duplicate-risk
+```
+
+The second command asks for an interactive attestation. The third consumes that
+authorization at dispatch and then follows the regular submission rules. A retry
+can create a duplicate if the original submission was accepted.
+
 Filter a stored listing and start with a dry run. Dry runs record `would_apply`
 rows in the selected CSV. A live run previews the batch and asks for confirmation.
 `--yes` explicitly approves the batch for scripting.
@@ -144,6 +159,16 @@ collection. See [provider access and session behavior](research.md#authenticatio
 ### Company and job research
 
 #### Company reviews (`reviews`)
+
+Verified review results can be reused for up to seven days when they cover the
+requested review count and match the active profile scope. Pass `--refresh` to
+fetch live results. Verified Crunchbase financials for name lookups use a 30-day
+window when the result covers the requested funding rounds.
+
+Cache age uses UTC timestamps. Applicant accounts for a backward clock change
+of up to 15 minutes while the process is running. After a restart, a retrieval
+time up to two minutes ahead counts as age zero. Check the system clock if the
+run log reports a larger discrepancy.
 
 Fetch ratings, review counts, and review excerpts. AmbitionBox takes a company
 slug. Glassdoor takes a reviews URL or an employer ID slug and can reuse a
@@ -242,6 +267,12 @@ uv run applicant research report --database demo-research.db --selection selecti
 The selection can pin evidence and job versions. Dated employer schedules use
 the applicant's timezone and preserve seasonal offset changes. See [research
 templates, report sections, and freshness rules](research.md).
+
+For manual review when `research capture-profile` cannot verify an exact
+association, add `legal_name` and an ISO two-letter `country` to the selection.
+Suggestions use effective, documented legal names and verified identifiers
+whose provider is `legal-country`. Capture still requires a verified provider
+company ID and profile URL.
 
 #### Cross-board feeds (`feed`)
 
@@ -454,6 +485,26 @@ current schema.
 uv run applicant db upgrade --database applicant.db
 ```
 
+#### Managed export recovery (`store`)
+
+When a managed export reports `export_conflict`, preview which version to keep.
+Use the token from the preview with the same choice to apply it. The displaced
+bytes are backed up beside the export.
+
+```console
+uv run applicant store resolve-export --database applicant.db --export job_listing.json --use sqlite --dry-run
+uv run applicant store resolve-export --database applicant.db --export job_listing.json --use sqlite --confirm TOKEN
+```
+
+Use `--use file` to select validated on-disk changes. Settled applications and the
+attempt journal are protected. If either version changes, generate a new preview.
+For `export_pending`, close applications holding the destination and rerun the
+original command. Applicant recovers the committed export before the next managed
+read or write. If the log reports `storage_full`, free space before rerunning.
+If SQLite contains more than one case-equivalent collection name on Windows,
+back up the database and review both histories before resolving the duplicate
+keys. Keep the sibling export lock file while Applicant is using the path.
+
 #### WAL checkpoints (`store`)
 
 Use a passive checkpoint for routine maintenance. Request `truncate` explicitly
@@ -515,7 +566,7 @@ or disable it with `--no-log-file`.
 | 5 | Provider response could not be parsed |
 | 6 | Authentication or API quota failure |
 | 7 | Provider unreachable |
-| 8 | Database busy or retryable database operation |
+| 8 | Database or export busy, or publication pending |
 | 130 | Interrupted |
 
 ### Usage notes for scripting
