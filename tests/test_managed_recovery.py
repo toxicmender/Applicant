@@ -39,7 +39,10 @@ class ManagedRecoveryTest(unittest.TestCase):
                     *args,
                 ]
             )
-        return code, json.loads(stdout.getvalue()) if stdout.getvalue() else stderr.getvalue()
+        self.assertTrue(stdout.getvalue(), stderr.getvalue())
+        payload = json.loads(stdout.getvalue())
+        assert isinstance(payload, dict)
+        return code, payload
 
     def test_listing_recovery_keeps_disjoint_changes_and_can_accept_conflicting_file(self):
         target = self.root / 'jobs.json'
