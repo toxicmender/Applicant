@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -411,23 +412,26 @@ class JobsSignInTest(unittest.TestCase):
 
     @unittest.skipUnless(os.name == 'nt', 'Windows short paths')
     def test_short_cookie_path_is_resolved(self):
-        import ctypes
+        if sys.platform == 'win32':
+            import ctypes
 
-        child = Path(self._dir.name) / 'long-directory-for-short-alias'
-        child.mkdir()
-        short_name = ctypes.WinDLL('kernel32', use_last_error=True).GetShortPathNameW
-        short_name.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint]
-        short_name.restype = ctypes.c_uint
-        buffer = ctypes.create_unicode_buffer(32768)
-        size = short_name(str(child), buffer, len(buffer))
-        if not size or size >= len(buffer):
-            raise ctypes.WinError(ctypes.get_last_error())
-        alias = self._short_alias(str(child), buffer.value)
-        if alias is None:
-            self.skipTest('filesystem did not provide a distinct short path')
-        assert alias is not None
-        self.assertTrue(alias.samefile(child))
-        self._assert_sign_in(alias / 'cookies.json')
+            child = Path(self._dir.name) / 'long-directory-for-short-alias'
+            child.mkdir()
+            short_name = ctypes.WinDLL('kernel32', use_last_error=True).GetShortPathNameW
+            short_name.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint]
+            short_name.restype = ctypes.c_uint
+            buffer = ctypes.create_unicode_buffer(32768)
+            size = short_name(str(child), buffer, len(buffer))
+            if not size or size >= len(buffer):
+                raise ctypes.WinError(ctypes.get_last_error())
+            alias = self._short_alias(str(child), buffer.value)
+            if alias is None:
+                self.skipTest('filesystem did not provide a distinct short path')
+            assert alias is not None
+            self.assertTrue(alias.samefile(child))
+            self._assert_sign_in(alias / 'cookies.json')
+        else:
+            self.skipTest('Windows short paths')
 
     def _assert_sign_in(self, cookie_path: Path, *, has_parent_component: bool = False):
         from applicant.interaction import Scripted
