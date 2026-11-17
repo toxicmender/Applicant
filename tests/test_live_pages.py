@@ -104,6 +104,7 @@ class CrunchbaseLiveTest(RealBrowserTest):
             (result.last_funding_type, result.revenue_range), ('Post-IPO Equity', '$1B to $10B')
         )
         self.assertEqual(result.employees, '5001-10000')
+        self.assertEqual([item.round for item in result.rounds], ['Series J', 'Series E'])
 
     def test_an_organization_that_is_not_there(self):
         with self.assertRaises(NotFound):

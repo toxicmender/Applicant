@@ -170,6 +170,52 @@ class ReliabilityTest(unittest.TestCase):
                     track_financials(['Acme'], {'crunchbase': client}, str(path), refresh=True)
             self.assertEqual(path.read_bytes(), original)
 
+    def test_degraded_crunchbase_refresh_keeps_history_and_does_not_replace_cache(self):
+        import pickle
+
+        from applicant.financials import CompanyFinancials, FinancialsTracker, Money
+        from applicant.financials.crunchbase import CrunchbaseClient
+        from applicant.financials.models import FundingRound
+        from applicant.services.company_cache import CompanyCache
+        from applicant.services.financials import track_financials
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'financials.json'
+            client = CrunchbaseClient(api_key='', profile_dir=None)
+            self.addCleanup(client.close)
+            complete = CompanyFinancials(
+                company='Acme',
+                company_id='acme',
+                source='crunchbase',
+                total_funding=Money(amount=100, currency='USD'),
+                funding_rounds_count=0,
+            )
+            complete._identity_verified = True
+            with patch.object(client, 'fetch', return_value=complete):
+                track_financials(['Acme'], {'crunchbase': client}, str(path))
+            cache = CompanyCache(path)
+            original = cache.entry('crunchbase', 'acme', 'public')
+            partial = CompanyFinancials(
+                company='Acme',
+                company_id='acme',
+                source='crunchbase',
+                rounds=[FundingRound(date='2025-01-01', round='Seed')],
+                notes=['Some Crunchbase financial cards could not be verified or read.'],
+            )
+            partial._identity_verified = True
+            partial._capture_degraded = True
+            # The owned worker transports the model through a multiprocessing pipe.
+            received = pickle.loads(pickle.dumps(partial))
+            self.assertTrue(received._capture_degraded)
+            with patch.object(client, 'fetch', return_value=received):
+                track_financials(['Acme'], {'crunchbase': client}, str(path), refresh=True)
+            self.assertEqual(cache.entry('crunchbase', 'acme', 'public'), original)
+            latest = FinancialsTracker(path).latest('crunchbase:acme')
+            assert latest is not None
+            self.assertEqual(latest.total_funding, complete.total_funding)
+            self.assertEqual(latest.rounds, partial.rounds)
+            self.assertEqual(latest.notes, partial.notes)
+
     def test_concurrent_review_refresh_keeps_the_newer_export_and_both_observations(self):
         from applicant.files import read_document
         from applicant.infra.store.sqlite import Store

@@ -12,6 +12,7 @@ from ..errors import ApplicantError, Unparseable
 from ..financials import FinancialsTracker
 from ..financials.crunchbase import CrunchbaseClient, permalink
 from ..financials.models import CompanyFinancials
+from ..financials.tracker import has_financial_data
 from ..financials.tracxn import FinancialsInterrupted
 from ..infra.company_worker import CompanyFetchInterrupted
 from ..infra.interrupts import defer_interrupt
@@ -144,12 +145,27 @@ def track_financials(
                     raise Unparseable('company capture access scope changed during the refresh')
                 changes: list[str] = []
 
-                def save():
-                    changes.extend(
-                        tracker.record(financials, require_complete=use_history or verified)
+                degraded = (
+                    isinstance(financials, CompanyFinancials) and financials._capture_degraded
+                )
+                if degraded and (not verified or not has_financial_data(financials)):
+                    raise Unparseable(
+                        'partial company capture did not return verified financial data'
                     )
 
-                if verified and scope is not None and isinstance(client, CrunchbaseClient):
+                def save():
+                    changes.extend(
+                        tracker.record(
+                            financials, require_complete=(use_history or verified) and not degraded
+                        )
+                    )
+
+                if (
+                    verified
+                    and not degraded
+                    and scope is not None
+                    and isinstance(client, CrunchbaseClient)
+                ):
                     coverage = len(financials.rounds)
                     if (
                         financials.funding_rounds_count is not None

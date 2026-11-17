@@ -17,7 +17,7 @@ from applicant.financials.models import CompanyFinancials, FundingRound, Money, 
 from applicant.financials.tracxn import to_iso
 from applicant.interaction import Scripted
 from tests.fakes import FakePage, FakeResponse, Visit, patched_browser
-from tests.test_financials import TX_ID, crunchbase, tracxn
+from tests.test_financials import CB_ORG, TX_ID, crunchbase, tracxn
 
 
 def ng_state(document: dict) -> str:
@@ -66,16 +66,67 @@ class CrunchbaseWebTest(unittest.TestCase):
         self.assertEqual(len(page.visited), 2)
         self.assertEqual(session.options[0]['profile_dir'], '.cb_profile')
 
-    def test_the_rendered_text_alone_is_enough(self):
+    def test_the_rendered_text_without_matching_identity_is_rejected(self):
         text = (
             'Total Funding Amount\n$2.1B\nNumber of Employees\n5001-10000\n'
             'Number of Funding Rounds\n1,020\nLast Funding Type\nSeries J'
         )
-        result, *_ = self.fetch([(r'organization/zomato', Visit(body=text))])
-        assert result.total_funding is not None
-        self.assertEqual(result.total_funding.amount, 2.1e9)
-        self.assertEqual(result.employees, '5001-10000')
-        self.assertEqual(result.funding_rounds_count, 1020)
+        with self.assertRaisesRegex(Unparseable, 'identity is missing'):
+            self.fetch([(r'organization/zomato', Visit(body=text))])
+
+    def test_verified_envelope_keeps_sibling_rounds_and_valuation(self):
+        result, *_ = self.fetch([(r'organization/zomato', Visit(html=ng_state(CB_ORG)))])
+        self.assertEqual([item.round for item in result.rounds], ['Series J', 'Series E'])
+        assert result.valuation is not None
+        self.assertEqual(result.valuation.amount, 5.4e9)
+
+    def test_uuid_fragment_is_response_local_and_conflicts_are_isolated(self):
+        target = {
+            'identifier': {'permalink': 'zomato', 'uuid': 'key', 'entity_def_id': 'organization'}
+        }
+        other = {
+            'identifier': {'permalink': 'other', 'uuid': 'key', 'entity_def_id': 'organization'}
+        }
+        fragment = {'raised_funding_rounds': CB_ORG['cards']['raised_funding_rounds']}
+        client = CrunchbaseClient(api_key='')
+        good = client._build(
+            [{'entities': [target], 'key': fragment}], 'zomato', 'Zomato', 20, browser=True
+        )
+        self.assertEqual(len(good.rounds), 2)
+        separate = client._build([target, {'key': fragment}], 'zomato', 'Zomato', 20, browser=True)
+        self.assertEqual(separate.rounds, [])
+        with self.assertLogs('applicant.financials.crunchbase_scopes', level='WARNING') as logs:
+            partial = client._build(
+                [{'entities': [CB_ORG, target, other], 'key': fragment}],
+                'zomato',
+                'Zomato',
+                20,
+                browser=True,
+            )
+        self.assertTrue(partial._capture_degraded)
+        self.assertEqual(len(partial.rounds), 2)
+        self.assertIn('conflicting_organization_uuid at payload[0]', logs.output[0])
+
+    def test_primary_identity_conflict_fails_even_with_valid_sibling(self):
+        bad = {**CB_ORG, 'identifier': {'permalink': 'other', 'entity_def_id': 'organization'}}
+        with self.assertRaisesRegex(Unparseable, 'contradictory primary'):
+            self.fetch(
+                [(r'organization/zomato', Visit(html=ng_state({'data': bad, 'valid': CB_ORG})))]
+            )
+
+    def test_bad_round_keeps_verified_facts_and_marks_capture_incomplete(self):
+        first = CB_ORG['cards']['raised_funding_rounds'][0]
+        payload = {
+            'properties': CB_ORG['properties'],
+            'cards': {'raised_funding_rounds': [first, {'not_a_round': True}]},
+        }
+        with self.assertLogs('applicant.financials.crunchbase_scopes', level='WARNING') as logs:
+            result, *_ = self.fetch([(r'organization/zomato', Visit(html=ng_state(payload)))])
+        self.assertTrue(result._capture_degraded)
+        self.assertIsNone(result.funding_rounds_count)
+        self.assertEqual([item.round for item in result.rounds], ['Series J'])
+        self.assertTrue(result.notes)
+        self.assertIn('$.cards.raised_funding_rounds[1]', logs.output[0])
 
     def test_api_calls_the_page_makes_are_read_and_others_ignored(self):
         heard = [
