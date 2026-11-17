@@ -1,14 +1,14 @@
 """Validate and merge managed JSON listings and application CSV exports."""
 
 import csv
-import io
 import json
 
+from ...domain.application_cells import sanitize_external
 from ...domain.dedupe import key
 from ...domain.job import Job
 from ...errors import ExportConflict
 from ...files import document_bytes
-from ...storage import is_final, write_rows
+from ...storage import is_final
 from .application_csv import ApplicationCSV
 from .financials_merge import _merge
 
@@ -41,22 +41,28 @@ def keep_settled(old, new):
 def merge_export(kind, target, baseline, current, intended):
     try:
         if kind == 'applications':
-            base, edited, saved = (parse_applications(raw) for raw in (baseline, current, intended))
-            keep_settled(base, edited)
-            if edited[: len(base)] != base or saved[: len(base)] != base:
+            base, edited, saved = map(ApplicationCSV, (baseline, current, intended))
+            if baseline is None:
+                base.header = saved.header
+            if base.header != edited.header or base.header != saved.header:
+                raise ValueError('application export headers differ')
+            start = len(base.cells)
+            if edited.cells[:start] != base.cells or saved.cells[:start] != base.cells:
                 raise ValueError('application edits must be disjoint appends')
-            # Existing duplicate attempts can share a posting ID. Competing
-            # appended outcomes for the same posting need operator review.
-            additions = saved[len(base) :]
-            for row in edited[len(base) :]:
-                if row in additions:
+            rows = {tuple(map(sanitize_external, row)) for row in saved.cells[start:]}
+            names = (saved.header.index('source'), saved.header.index('id'))
+            identities = {(row[names[0]], row[names[1]]) for row in rows}
+            for row in edited.cells[start:]:
+                sanitized = tuple(map(sanitize_external, row))
+                if sanitized in rows:
                     continue
-                if any(key(other) == key(row) for other in additions):
+                identity = sanitized[names[0]], sanitized[names[1]]
+                if identity in identities:
                     raise ValueError('conflicting appended application outcomes')
-                additions.append(row)
-            output = io.StringIO(newline='')
-            write_rows(output, [*base, *additions], header=True)
-            return output.getvalue().encode('utf-8-sig')
+                saved.cells.append(list(sanitized))
+                rows.add(sanitized)
+                identities.add(identity)
+            return saved.render()
 
         base, edited, saved = (parse_listing(raw) for raw in (baseline, current, intended))
         conflicts = []

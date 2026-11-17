@@ -275,7 +275,7 @@ class AttemptJournal:
 
     def _register(self, document, target, backend):
         index = self.index_path(target)
-        with export_lock(target):
+        with export_lock(target, wait=True):
             registry = (
                 read_ranking_document(index)
                 if index.is_file()
@@ -316,7 +316,7 @@ class AttemptJournal:
         with (
             self.profile_owner(),
             self._locked(full=True) as (document, save),
-            export_lock(self.log),
+            export_lock(self.log, wait=True),
         ):
             self._drain(document, lambda: save(document['entries']))
 

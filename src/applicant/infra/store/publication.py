@@ -4,9 +4,27 @@ import errno
 import hashlib
 import os
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from ...errors import ExportConflict, ExportPending
 from ...files import write_document_bytes
+
+RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4)
+_single_attempt = ContextVar('single_export_attempt', default=False)
+
+
+@contextmanager
+def nonblocking_exports():
+    token = _single_attempt.set(True)
+    try:
+        yield
+    finally:
+        _single_attempt.reset(token)
+
+
+def single_attempt() -> bool:
+    return _single_attempt.get()
 
 
 def read_bytes(path):
@@ -45,15 +63,24 @@ def durable_replace(temporary, target):
 
 
 def reconcile(
-    target, pending, acknowledge, *, merge=None, publish=write_document_bytes, sleep=time.sleep
+    target,
+    pending,
+    acknowledge,
+    *,
+    merge=None,
+    publish=write_document_bytes,
+    sleep=time.sleep,
+    protect_deletion=False,
 ):
     if pending is None:
         return
     baseline, baseline_digest, intended, intended_digest = pending
-    for delay in (0.05, 0.1, 0.2, 0.4, None):
+    for delay in (None,) if single_attempt() else (*RETRY_DELAYS, None):
         current = read_bytes(target)
         current_digest = digest(current)
         if current_digest != intended_digest:
+            if current is None and baseline is not None and protect_deletion:
+                raise ExportConflict(f'{target}: export was removed after publication was staged')
             if current is not None and current_digest != baseline_digest:
                 if merge is None:
                     raise ExportConflict(
@@ -61,17 +88,30 @@ def reconcile(
                     )
                 intended, intended_digest = merge(baseline, current, intended)
                 baseline, baseline_digest = current, current_digest
+
+            def replace(temporary, destination, *, expected=baseline_digest):
+                if digest(read_bytes(target)) != expected:
+                    raise ExportConflict(f'{target}: export changed while replacement was prepared')
+                durable_replace(temporary, destination)
+
             try:
-                publish(target, intended, replace=durable_replace)
+                publish(target, intended, replace=replace if protect_deletion else durable_replace)
             except OSError as error:
                 code = getattr(error, 'winerror', None)
                 if error.errno == errno.ENOSPC or code == 112:
                     raise
-                if code == 5 or (code in (32, 33) and delay is None):
+                transient = code in (32, 33) or (
+                    protect_deletion
+                    and (
+                        code == 5
+                        or (code is None and error.errno in (errno.EAGAIN, errno.EWOULDBLOCK))
+                    )
+                )
+                if (transient and delay is None) or (code == 5 and not transient):
                     raise ExportPending(
                         f'{target}: close applications using the file or check permissions and rerun'
                     ) from error
-                if code not in (32, 33) or delay is None:
+                if not transient or delay is None:
                     raise
                 sleep(delay)
                 continue

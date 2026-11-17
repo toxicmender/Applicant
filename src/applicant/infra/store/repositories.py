@@ -80,7 +80,7 @@ class StoreApplications:
         self.path = path
 
     def record(self, entries: Iterable[Entry]) -> int:
-        with Store.managed(self.path, 'applications') as (store, target):
+        with Store.managed(self.path, 'applications', wait=True) as (store, target):
             return store._record_applications(entries, target)
 
     def rows(self) -> list[dict]:

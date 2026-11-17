@@ -70,7 +70,13 @@ class ApplicationCSV:
 
     def render(self):
         output = io.StringIO(newline='')
-        writer = csv.writer(output, quoting=self.quoting, lineterminator=self.terminator)
+        # A writer configured for LF alone does not quote a bare CR.
+        quoting = self.quoting
+        if self.terminator == '\n' and any(
+            '\r' in value for row in self.cells for value in row if isinstance(value, str)
+        ):
+            quoting = csv.QUOTE_ALL
+        writer = csv.writer(output, quoting=quoting, lineterminator=self.terminator)
         writer.writerow(self.header)
         writer.writerows(self.cells)
         return output.getvalue().encode('utf-8-sig' if self.bom else 'utf-8')

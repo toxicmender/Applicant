@@ -24,7 +24,6 @@ is one file to back up. See docs/architecture-plan.md, decision D8.
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import logging
 import os
@@ -46,7 +45,8 @@ from ...files import (
     write_document_bytes,
 )
 from ...permissions import make_private
-from ...storage import APPLIED_COLUMNS, PROVISIONAL, ApplicationLog, plan_rows, write_rows
+from ...storage import APPLIED_COLUMNS, PROVISIONAL, plan_rows
+from .application_csv import ApplicationCSV
 from .benchmarks import BENCHMARK_MIGRATION
 from .company_evidence import COMPANY_EVIDENCE_MIGRATION
 from .feedback import FEEDBACK_MIGRATION
@@ -56,7 +56,7 @@ from .maintenance import configure_connection
 from .personalization import PERSONALIZATION_MIGRATION
 from .publication import digest as _bytes_digest
 from .publication import read_bytes as _financials_bytes
-from .publication import reconcile
+from .publication import reconcile, single_attempt
 from .ranking_schema import RANKING_MIGRATION
 from .research import RESEARCH_MIGRATION
 
@@ -180,6 +180,12 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
             PRIMARY KEY (log, event)
         )""",
     ),
+    (
+        """CREATE TABLE application_csv_snapshots (
+            log TEXT PRIMARY KEY,
+            content BLOB NOT NULL
+        )""",
+    ),
 )
 
 
@@ -209,6 +215,8 @@ class Store:
             self.db = sqlite3.connect(self.path)
             try:
                 configure_connection(self.db)
+                if single_attempt():
+                    self.db.execute('PRAGMA busy_timeout = 0')
                 # REPLACE deletes conflicting rows. Fire delete guards for that
                 # path too, so it cannot bypass append-only history triggers.
                 self.db.execute('PRAGMA recursive_triggers = ON')
@@ -247,6 +255,8 @@ class Store:
             store.db = sqlite3.connect(store.path.resolve().as_uri() + '?mode=ro', uri=True)
             try:
                 configure_connection(store.db, writable=False)
+                if single_attempt():
+                    store.db.execute('PRAGMA busy_timeout = 0')
                 store.db.execute('PRAGMA query_only = ON')
                 version = store.db.execute('PRAGMA user_version').fetchone()[0]
                 if version < len(MIGRATIONS):
@@ -298,13 +308,22 @@ class Store:
 
     @classmethod
     @contextmanager
-    def managed(cls, file, kind):
+    def managed(cls, file, kind, *, wait=False):
         """Lock and check an existing collection before writable initialization."""
         target = Path(file).resolve()
-        with financials_lock(target):
+        with financials_lock(target, wait=wait):
             database = target.parent / DB_NAME
             if database.exists():
-                with closing(sqlite3.connect(database.as_uri() + '?mode=ro', uri=True)) as db, db:
+                with (
+                    closing(
+                        sqlite3.connect(
+                            database.as_uri() + '?mode=ro',
+                            uri=True,
+                            timeout=0 if single_attempt() else 5,
+                        )
+                    ) as db,
+                    db,
+                ):
                     db.execute('BEGIN')
                     cls._managed_alias(db, kind, target.name, target)
             with cls(database) as store:
@@ -579,22 +598,56 @@ class Store:
 
     # -- the application log ----------------------------------------------
 
+    def _application_snapshot(self, name):
+        row = self.db.execute(
+            'SELECT content FROM application_csv_snapshots WHERE log=?', (name,)
+        ).fetchone()
+        return row[0] if row else None
+
     def _sync_log(self, file: Path) -> str:
         name = self._managed_name('applications', file)
         self._reconcile_export('applications', name, file)
-        if not self._stale(name, file, 'applications', 'log'):
+        raw = _financials_bytes(file)
+        snapshot = self._application_snapshot(name)
+        if snapshot is not None:
+            try:
+                ApplicationCSV(snapshot)
+            except ValueError as error:
+                raise StoreError(f'{file}: invalid committed application CSV snapshot') from error
+        if raw is not None:
+            if raw != snapshot or _bytes_digest(raw) != self._known_digest(name):
+                try:
+                    ApplicationCSV(raw)
+                except ValueError as error:
+                    guidance = (
+                        'preview restoration with store resolve-export --use sqlite'
+                        if snapshot is not None
+                        else 'back up and repair or restore the CSV'
+                    )
+                    raise ExportConflict(f'{file}: invalid application CSV; {guidance}') from error
+                with self._transaction() as db:
+                    self._replace_managed(db, 'applications', name, raw)
+                    self._remember_financials(db, name, _bytes_digest(raw))
             return name
-        rows = ApplicationLog(str(file)).rows()
-        with self._transaction() as db:
-            db.execute('DELETE FROM applications WHERE log = ?', (name,))
-            db.executemany(
-                'INSERT INTO applications (log, seq, source, source_id, fingerprint, status, row) '
-                'VALUES (?, ?, ?, ?, ?, ?, ?)',
-                [_application(name, seq, row) for seq, row in enumerate(rows)],
+
+        if snapshot is None:
+            existing = [
+                json.loads(row[0])
+                for row in self.db.execute(
+                    'SELECT row FROM applications WHERE log=? ORDER BY seq', (name,)
+                )
+            ]
+            if not existing:
+                return name
+            logger.warning(
+                '%s: reconstructing legacy CSV; original layout and duplicate columns are unavailable',
+                file,
             )
-            self._remember(db, name, file)
-        if rows:
-            logger.info(f'{file}: imported {len(rows)} application(s) into {self.path}')
+            snapshot = _csv_bytes(existing)
+        with self._transaction() as db:
+            self._replace_managed(db, 'applications', name, snapshot)
+            self._stage_export(db, 'applications', name, None, snapshot)
+        self._reconcile_export('applications', name, file)
         return name
 
     def application_rows(self, file: str | os.PathLike[str]) -> list[dict]:
@@ -613,25 +666,14 @@ class Store:
 
     def project_application(self, target, event_id, prepare):
         """Commit one projection under the caller's export lock."""
-        name = self._managed_name('applications', target)
-        self._reconcile_export('applications', name, target)
+        name = self._sync_log(target)
         if self.db.execute(
             'SELECT 1 FROM application_projection_receipts WHERE log=? AND event=?',
             (name, event_id),
         ).fetchone():
             return
-        baseline = _financials_bytes(target)
+        baseline = self._application_snapshot(name)
         original = baseline
-        if original is None:
-            existing = [
-                json.loads(row)
-                for (row,) in self.db.execute(
-                    'SELECT row FROM applications WHERE log=? ORDER BY seq',
-                    (name,),
-                )
-            ]
-            if existing:
-                original = _csv_bytes(existing)
         intended = prepare(original)
         with self._transaction() as db:
             self._replace_managed(db, 'applications', name, intended)
@@ -665,12 +707,12 @@ class Store:
         The dedupe questions are answered from the indexes, not a re-read.
         """
         target = Path(file).resolve()
-        with financials_lock(target):
+        with financials_lock(target, wait=True):
             return self._record_applications(entries, target)
 
     def _record_applications(self, entries, target):
         name = self._sync_log(target)
-        baseline = _financials_bytes(target)
+        baseline = self._application_snapshot(name)
         reader = self.db
 
         def seen(source: str | None, job_id: str | None) -> bool:
@@ -700,22 +742,13 @@ class Store:
             logger.debug(f'{target}: nothing new to record')
             return 0
 
+        layout = ApplicationCSV(baseline)
+        for row in fresh:
+            layout.set(None, row)
+        intended = layout.render()
         with self._transaction() as db:
-            (last,) = db.execute(
-                'SELECT COALESCE(MAX(seq), -1) FROM applications WHERE log = ?', (name,)
-            ).fetchone()
-            db.executemany(
-                'INSERT INTO applications (log, seq, source, source_id, fingerprint, status, row) '
-                'VALUES (?, ?, ?, ?, ?, ?, ?)',
-                [_application(name, last + 1 + index, row) for index, row in enumerate(fresh)],
-            )
-            rows = [
-                json.loads(row)
-                for (row,) in db.execute(
-                    'SELECT row FROM applications WHERE log = ? ORDER BY seq', (name,)
-                )
-            ]
-            self._stage_export(db, 'applications', name, baseline, _csv_bytes(rows))
+            self._replace_managed(db, 'applications', name, intended)
+            self._stage_export(db, 'applications', name, baseline, intended)
         self._reconcile_export('applications', name, target)
         logger.info(f'{target}: recorded {len(fresh)} application(s)')
         return len(fresh)
@@ -841,8 +874,20 @@ class Store:
 
         def acknowledge(digest):
             with self._transaction() as db:
+                removed = db.execute(
+                    'DELETE FROM pending_exports WHERE kind=? AND document=? AND intended_digest=? '
+                    'AND baseline_digest IS ?',
+                    (kind, name, digest, revision[0]),
+                )
+                if removed.rowcount != 1:
+                    raise ExportConflict(
+                        f'{target}: pending publication changed before acknowledgement'
+                    )
                 self._remember_financials(db, name, digest)
-                db.execute('DELETE FROM pending_exports WHERE kind=? AND document=?', (kind, name))
+
+        if pending is None:
+            return
+        revision = [pending[1]]
 
         def merge(baseline, current, intended):
             from .managed_merge import merge_export
@@ -851,6 +896,7 @@ class Store:
             with self._transaction() as db:
                 self._replace_managed(db, kind, name, output)
                 self._stage_export(db, kind, name, current, output)
+            revision[0] = _bytes_digest(current)
             return output, _bytes_digest(output)
 
         reconcile(
@@ -860,6 +906,7 @@ class Store:
             merge=merge if kind != 'ratings' else None,
             publish=write_document_bytes,
             sleep=time.sleep,
+            protect_deletion=kind == 'applications',
         )
 
     def _replace_managed(self, db, kind, name, content):
@@ -877,6 +924,11 @@ class Store:
             )
         elif kind == 'applications':
             rows = parse_applications(content)
+            db.execute(
+                'INSERT INTO application_csv_snapshots (log, content) VALUES (?,?) '
+                'ON CONFLICT(log) DO UPDATE SET content=excluded.content',
+                (name, content),
+            )
             db.execute('DELETE FROM applications WHERE log=?', (name,))
             db.executemany(
                 'INSERT INTO applications (log,seq,source,source_id,fingerprint,status,row) '
@@ -1076,9 +1128,13 @@ def _application(name: str, seq: int, row: dict) -> tuple:
 
 
 def _csv_bytes(rows):
-    output = io.StringIO(newline='')
-    write_rows(output, rows, header=True)
-    return output.getvalue().encode('utf-8-sig')
+    layout = ApplicationCSV(None)
+    layout.header = list(
+        dict.fromkeys([*layout.header, *(key for row in rows for key in row if key)])
+    )
+    for row in rows:
+        layout.set(None, row)
+    return layout.render()
 
 
 def _export_log(target: Path, rows: list[dict]) -> None:

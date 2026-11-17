@@ -95,4 +95,9 @@ def publish_file(target, event, checkpoint):
         saved, expected = matching(completed), matching(staged)
         if completed.header == staged.header and len(expected) == 1 and saved == expected:
             return
-    reconcile(target, (baseline, digest(baseline), intended, digest(intended)), lambda _: None)
+    reconcile(
+        target,
+        (baseline, digest(baseline), intended, digest(intended)),
+        lambda _: None,
+        protect_deletion=True,
+    )

@@ -1103,7 +1103,7 @@ class WrittenFilesTest(TempDir):
         preview = resolve_export(self.root / DB_NAME, path, 'sqlite')
         with (
             mock.patch(
-                'applicant.infra.store.export_resolution.write_document_bytes', side_effect=OSError
+                'applicant.infra.store.export_backup.write_document_bytes', side_effect=OSError
             ),
             self.assertRaises(StoreError),
         ):

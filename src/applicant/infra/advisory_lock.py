@@ -4,6 +4,7 @@ import errno
 import os
 import stat
 import sys
+import time
 from contextlib import contextmanager, suppress
 from pathlib import Path
 from threading import Lock
@@ -68,7 +69,7 @@ def _take_lock(descriptor):
 
 
 @contextmanager
-def advisory_lock(path, busy, *, retain_on_cleanup_failure=False):
+def advisory_lock(path, busy, *, retain_on_cleanup_failure=False, retry_delays=()):
     requested = Path(path).expanduser()
     path = physical_path(requested.parent) / requested.name
     identity = lock_identity(path)
@@ -93,12 +94,22 @@ def advisory_lock(path, busy, *, retain_on_cleanup_failure=False):
                     os.set_inheritable(descriptor, False)
                     relative = None if os.name == 'nt' else parent
                     _verify_leaf(descriptor, path, relative)
-                    try:
-                        _take_lock(descriptor)
-                    except OSError as error:
-                        if error.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
-                            raise busy() from None
-                        raise
+                    for delay in (*retry_delays, None):
+                        try:
+                            _take_lock(descriptor)
+                        except OSError as error:
+                            if error.errno not in (
+                                errno.EACCES,
+                                errno.EAGAIN,
+                                errno.EWOULDBLOCK,
+                                errno.EDEADLK,
+                            ):
+                                raise
+                            if delay is None:
+                                raise busy() from None
+                            time.sleep(delay)
+                        else:
+                            break
                     _verify_leaf(descriptor, path, relative)
                     if os.name == 'nt':
                         make_private(path)

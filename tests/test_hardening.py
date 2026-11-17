@@ -591,6 +591,7 @@ class StatusEdgesTest(Folder):
                 'jobs': {'total': 0, 'by_source': {}},
                 'applications': {'total': 0, 'by_status': {}},
                 'projection_pending': False,
+                'export_pending': False,
             },
         )
 

@@ -7,17 +7,19 @@ from contextlib import contextmanager
 from ...errors import DatabaseBusy, FinancialsBusy, StorageFull, StoreError, sqlite_busy
 from ..advisory_lock import advisory_lock
 from ..path_identity import physical_path
+from .publication import RETRY_DELAYS, single_attempt
 
 SQLITE_FULL = getattr(sqlite3, 'SQLITE_FULL', 13)
 
 
 @contextmanager
-def export_lock(file):
+def export_lock(file, *, wait=False):
     target = physical_path(file)
     try:
         with advisory_lock(
             target.with_name(f'.{target.name}.lock'),
-            lambda: FinancialsBusy(f'{target}: financials history is in use; rerun the command'),
+            lambda: FinancialsBusy(f'{target}: export is in use; rerun the command'),
+            retry_delays=RETRY_DELAYS if wait and not single_attempt() else (),
         ):
             yield
     except (OSError, sqlite3.Error, StoreError) as error:

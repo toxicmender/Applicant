@@ -218,7 +218,7 @@ class ApplicationLog:
 
     def record(self, entries: Iterable[tuple[Job, str, str]]) -> int:
         """entries: iterable of (job, status, note). Returns rows written."""
-        with export_lock(self.path):
+        with export_lock(self.path, wait=True):
             return self._record(entries)
 
     def _record(self, entries):

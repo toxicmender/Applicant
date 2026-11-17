@@ -183,7 +183,7 @@ class StoreEdgesTest(TempDir):
 
         log = self.root / 'applied_jobs.csv'
         with (
-            mock.patch.object(module, 'write_rows', side_effect=OSError('disk full')),
+            mock.patch('applicant.files.os.replace', side_effect=OSError('disk full')),
             self.assertRaises(OSError),
         ):
             module._export_log(log, [{'status': 'applied'}])
