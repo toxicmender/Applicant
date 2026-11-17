@@ -230,6 +230,10 @@ uv run applicant financials zomato --source crunchbase --login
 For Tracxn company names without an API key, Applicant reuses a uniquely matched
 saved result checked less than 30 days ago. Pass `--refresh` to bypass it.
 Legacy records with no timezone offset stay stale until a successful refresh.
+Use `financials --source crunchbase --refresh` to refresh earlier captures
+that lack expected funding rounds. A verified partial capture reports which
+data could not be read, adds usable facts to history, and preserves previous
+facts and rounds. Applicant keeps partial results out of the reusable cache.
 In a terminal, Applicant offers to open your saved session when it first needs a profile URL.
 Set up that session with `uv run applicant setup provider tracxn` if needed.
 
@@ -420,6 +424,12 @@ uv run applicant rank replay RUN_ID --provenance provenance.json
 ```
 
 Reports show eligibility, fit, evidence confidence, and coverage separately.
+Ranking skips pending enrichment stubs and uses the vetted record when both
+share a posting identity. Identities include the source. Repeated identical
+vetted records use the first occurrence, and conflicting vetted records
+report the input record that conflicts. An all-pending input creates no run
+and exits with code 1. Resume saved requests with `search --resume-pending`
+for the same listing or rerun the original search for stubs without requests.
 Use full job IDs from `rank show` for explanations and feedback. Replay verifies
 a completed engine run with its exact archived inputs and retained build
 provenance. See [ranking input and replay details](milestone-3-plan.md).
@@ -511,8 +521,8 @@ ranking and research analytics.
 
 #### Schema upgrades (`db`)
 
-Upgrade an existing SQLite database before using commands that require the
-current schema.
+Back up the database and its exports before upgrading. Read-only and writable
+database commands reject databases newer than the schema they support.
 
 ```console
 uv run applicant db upgrade --database applicant.db
@@ -531,15 +541,42 @@ uv run applicant store resolve-export --database applicant.db --export job_listi
 
 Use `--use file` to select validated on-disk changes. Settled applications and the
 attempt journal are protected. If either version changes, generate a new preview.
+
+Applicant preserves application CSV columns by position in both backends,
+including duplicate custom headers and populated blank columns. SQLite keeps
+a complete snapshot of each log and restores missing exports on managed access.
+If both a legacy export and its layout are gone, reconstruction uses the stored
+named values. A backup is needed to recover layout or values already lost.
+
+A malformed application CSV stays on disk until you repair it or explicitly
+restore a valid SQLite snapshot. Use the commands above with
+`--export applied_jobs.csv --use sqlite`. Confirmation verifies the original
+bytes, saves a private backup, and stages publication. If a separate editor
+changes the file during capture, preview the new version. Applicant coordinates
+its own writers with advisory locks. Other editors can still change the file
+between the final check and replacement.
+
+Automatic recovery can merge disjoint appends with identical ordered headers.
+Edits to existing cells, changed headers, uneven row widths, and competing
+outcomes require intervention. Generated values use reversible formula escaping.
+Recovery protects newly incorporated external cells while preserving whitespace
+and existing leading apostrophes. Spreadsheet display of apostrophes varies by
+importer. Existing recorded cells retain their values.
+
 For `export_pending`, close applications holding the destination and rerun the
 original command. Applicant recovers the committed export before the next managed
 read or write. If the log reports `storage_full`, free space before rerunning.
+Application writes use bounded retries for transient lock or replacement errors.
+Each retry checks for drift on disk. If publication fails after the database
+commits, Applicant keeps the pending export for recovery on the next relevant
+command.
 If SQLite contains more than one case-equivalent collection name on Windows,
 back up the database and review both histories before resolving the duplicate
 keys. Keep the sibling export lock file while Applicant is using the path.
 
-`status --json PATH` sets `projection_pending` when it can show committed results
-but cannot complete application export recovery. A readable deferred summary
+`status --json PATH` sets `projection_pending` when journal projection is
+deferred and `export_pending` when an export could not be published.
+Status makes a single attempt and uses committed data when it can. A readable deferred summary
 returns `0` and warns on stderr. Mutating commands return `8` on retryable
 contention or pending publication. Storage failure and `export_conflict` return
 `1` with distinct statuses. CLI usage errors return `2`, blocked application
@@ -549,7 +586,8 @@ returns `130`. Provider-specific exit codes continue to apply.
 Before rolling back, stop writers, reconcile attempts, and finish pending
 exports. Move the upgraded database and private v2 journals, keys, and export
 indexes out of their active paths. Restore a compatible database backup or use
-vetted-only exports in a separate data directory. Keep dispatch disabled on the
+vetted-only exports in a separate data directory. Leave `PRAGMA user_version`
+at the value assigned by the migration. Keep dispatch disabled on the
 older version for profiles with unresolved attempts. Remove unused lock files
 only after every process using their paths has stopped.
 
