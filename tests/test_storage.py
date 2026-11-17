@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import csv
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +18,24 @@ from applicant.storage import (
     restore,
     save_jobs,
 )
+
+
+def test_application_cell_imports_in_fresh_processes():
+    for first, second in (
+        ('applicant.storage', 'applicant.domain.application_cells'),
+        ('applicant.domain.application_cells', 'applicant.storage'),
+    ):
+        subprocess.run(
+            [
+                sys.executable,
+                '-c',
+                f'import {first}; import {second}; '
+                'from applicant import storage; from applicant.domain import application_cells; '
+                'assert storage.neutralise is application_cells.neutralise; '
+                'assert storage.APPLIED_COLUMNS is application_cells.APPLIED_COLUMNS',
+            ],
+            check=True,
+        )
 
 
 class TempDirTest(unittest.TestCase):

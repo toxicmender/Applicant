@@ -6,7 +6,7 @@ import io
 import re
 from typing import Literal
 
-from ...storage import APPLIED_COLUMNS, neutralise, restore
+from ...domain.application_cells import APPLIED_COLUMNS, neutralise, restore
 
 _CELL = re.compile(r'"(?:[^"]|"")*"|[^",\r\n]*')
 
