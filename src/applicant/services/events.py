@@ -47,6 +47,7 @@ class BoardSearched(Event):
 class RatingFetched(Event):
     source: str
     rating: Any  # applicant.reviews.CompanyRating
+    cached_at: str | None = None
 
 
 @dataclass(frozen=True)

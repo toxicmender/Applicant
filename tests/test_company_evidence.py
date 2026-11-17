@@ -30,6 +30,8 @@ from applicant.errors import SourceError, StoreError, Unparseable
 from applicant.financials import CrunchbaseClient, TracxnClient
 from applicant.financials.models import CompanyFinancials
 from applicant.infra.company_sources import CompanyRecorder, company_client
+from applicant.infra.company_worker import _fetch
+from applicant.infra.owned_worker import WorkerFailure
 from applicant.infra.store.company_evidence import (
     CompanyEvidenceNotFound,
     CompanyEvidenceRepository,
@@ -262,6 +264,28 @@ class CompanyContractTest(unittest.TestCase):
 
 
 class CompanyAdapterCaptureTest(unittest.TestCase):
+    def test_owned_browser_translates_saved_session_login_redirect(self):
+        login = 'https://tracxn.com/login'
+        page = FakePage([(r'/d/companies', Visit(redirect=login))])
+        messages = mock.Mock()
+        state = {'cookies': [{'name': 'session'}], 'origins': []}
+        with patched_browser(page) as session:
+            result = _fetch(
+                messages,
+                (
+                    'tracxn',
+                    state,
+                    'https://tracxn.com/d/companies/acme/__profile',
+                    0,
+                    True,
+                    30,
+                    False,
+                ),
+            )
+        self.assertEqual(result, {'error': 'AuthFailed'})
+        messages.send.assert_called_once_with(('closing', None))
+        self.assertEqual(session.closed, 1)
+
     def test_capture_mode_rejects_missing_wrong_or_ambiguous_structured_ids(self):
         client = GlassdoorClient(capture=CompanyRecorder())
         for payload in (
@@ -615,6 +639,71 @@ class CompanyStoreTest(unittest.TestCase):
                     self.path, ('glassdoor',), settings=Settings(), clock=lambda: NOW
                 )['success']
             )
+
+    def test_owned_capture_archives_completed_response_before_teardown(self):
+        import_company_evidence(self.path, CompanyEvidenceImport(associations=(self.a,)))
+        settings = Settings(data_dir=self.root)
+        payload = {'employer': {'id': 42, 'ratingOverall': 4.2, 'reviewCount': 12}}
+        html = apollo_html(payload)
+
+        def exercise(interrupted):
+            page = FakePage([(r'E42\.htm$', Visit(html=html))])
+            with patched_browser(page) as session:
+                messages = []
+
+                def simulate_worker(target, arguments, *, progress, check, **options):
+                    check()
+
+                    def send(message):
+                        self.assertEqual(session.closed, 0)
+                        messages.append(message[0])
+                        if message[0] == 'progress':
+                            progress(message[1])
+
+                    connection = mock.Mock()
+                    connection.send.side_effect = send
+                    result = target(connection, arguments)
+                    if interrupted:
+                        raise KeyboardInterrupt
+                    return result
+
+                with mock.patch(
+                    'applicant.infra.company_worker.run_worker', side_effect=simulate_worker
+                ):
+                    if interrupted:
+                        with self.assertRaises(KeyboardInterrupt):
+                            capture_company_evidence(
+                                self.path, ('glassdoor',), settings=settings, clock=lambda: NOW
+                            )
+                    else:
+                        report = capture_company_evidence(
+                            self.path, ('glassdoor',), settings=settings, clock=lambda: NOW
+                        )
+                        self.assertTrue(report['success'], report)
+                self.assertEqual(messages, ['progress', 'closing'])
+                self.assertEqual(session.closed, 1)
+
+        exercise(False)
+        exercise(True)
+        with Store.open_readonly(self.path) as store:
+            rows = store.db.execute('SELECT payload FROM company_evidence_snapshots').fetchall()
+        self.assertEqual(len(rows), 2)
+        for (stored,) in rows:
+            captured = CompanyEvidenceSnapshot.model_validate_json(stored)
+            self.assertEqual(captured.responses[0].body, html.encode())
+
+        with mock.patch(
+            'applicant.infra.company_worker.run_worker', side_effect=WorkerFailure('worker died')
+        ):
+            report = capture_company_evidence(
+                self.path, ('glassdoor',), settings=settings, clock=lambda: NOW
+            )
+        self.assertEqual(report['outcomes'][0]['error_type'], 'WorkerFailure')
+        with Store.open_readonly(self.path) as store:
+            health = store.db.execute(
+                "SELECT status, failures, lease_token FROM provider_health WHERE provider='glassdoor'"
+            ).fetchone()
+        self.assertEqual(health, ('ready', 0, None))
 
 
 class CompanyJourneyTest(unittest.TestCase):

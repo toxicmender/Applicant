@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -394,11 +396,49 @@ class JobsSignInTest(unittest.TestCase):
         self.addCleanup(self._dir.cleanup)
 
     def test_no_saved_session_signs_in_with_what_the_person_types(self):
+        self._assert_sign_in(Path(self._dir.name) / 'cookies.json')
+
+    def test_cookie_path_with_parent_component_is_resolved(self):
+        child = Path(self._dir.name) / 'child'
+        child.mkdir()
+        self._assert_sign_in(child / '..' / 'cookies.json', has_parent_component=True)
+
+    @staticmethod
+    def _short_alias(original: str, candidate: str) -> Path | None:
+        return Path(candidate) if Path(candidate) != Path(original) else None
+
+    def test_unchanged_short_path_is_not_an_alias(self):
+        self.assertIsNone(self._short_alias(self._dir.name, self._dir.name))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows short paths')
+    def test_short_cookie_path_is_resolved(self):
+        if sys.platform == 'win32':
+            import ctypes
+
+            child = Path(self._dir.name) / 'long-directory-for-short-alias'
+            child.mkdir()
+            short_name = ctypes.WinDLL('kernel32', use_last_error=True).GetShortPathNameW
+            short_name.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint]
+            short_name.restype = ctypes.c_uint
+            buffer = ctypes.create_unicode_buffer(32768)
+            size = short_name(str(child), buffer, len(buffer))
+            if not size or size >= len(buffer):
+                raise ctypes.WinError(ctypes.get_last_error())
+            alias = self._short_alias(str(child), buffer.value)
+            if alias is None:
+                self.skipTest('filesystem did not provide a distinct short path')
+            assert alias is not None
+            self.assertTrue(alias.samefile(child))
+            self._assert_sign_in(alias / 'cookies.json')
+        else:
+            self.skipTest('Windows short paths')
+
+    def _assert_sign_in(self, cookie_path: Path, *, has_parent_component: bool = False):
         from applicant.interaction import Scripted
 
         root = Path(self._dir.name)
         operator = mock.MagicMock()
-        operator.login.return_value = root / 'cookies.json'
+        operator.login.return_value = cookie_path.resolve()
         operator.scrape_jobs.return_value = []
         asked = Scripted('me@example.com', 'hunter2')
         with (
@@ -407,12 +447,26 @@ class JobsSignInTest(unittest.TestCase):
             redirect_stdout(io.StringIO()) as out,
         ):
             linkedin.return_value.__enter__.return_value = operator
-            code = main(['jobs', '--data-dir', str(root), '--no-log-file', '--store', 'files'])
+            if has_parent_component:
+                self.assertIn('..', Path(str(cookie_path)).parts)
+            code = main(
+                [
+                    'jobs',
+                    '--data-dir',
+                    str(root),
+                    '--cookies',
+                    str(cookie_path),
+                    '--no-log-file',
+                    '--store',
+                    'files',
+                ]
+            )
         self.assertEqual(code, 0)
         self.assertEqual(asked.said, ['Username/Email ID: ', 'Password: '])
         kwargs = operator.login.call_args.kwargs
         self.assertEqual((kwargs['username'], kwargs['password']), ('me@example.com', 'hunter2'))
-        self.assertEqual(kwargs['filepath'], root / 'cookies.json')
+        self.assertEqual(kwargs['filepath'].resolve(), cookie_path.resolve())
+        self.assertEqual(kwargs['filepath'], cookie_path.resolve())
         self.assertIn('session saved to', out.getvalue())
         operator.scrape_jobs.assert_called_once()
 

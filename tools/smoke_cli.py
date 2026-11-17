@@ -2,12 +2,14 @@
 
 import argparse
 import io
+import json
 import os
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import time
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -63,32 +65,105 @@ CASES = [
 ]
 
 
+@contextmanager
+def installed_probe(active):
+    if not active:
+        yield
+        return
+    site = Path(sysconfig.get_path('purelib'))
+    bootstrap = site / '_applicant_wheel_ci_probe.pth'
+    module = site / '_applicant_wheel_ci_probe.py'
+    with module.open('x', encoding='utf-8') as handle:
+        handle.write("""\
+import atexit
+import json
+import os
+import sys
+from pathlib import Path
+
+@atexit.register
+def record_launcher():
+    import applicant
+
+    target = Path(os.environ['APPLICANT_WHEEL_PROBE'])
+    target.write_text(json.dumps([sys.prefix, sys.path, applicant.__file__]), encoding='utf-8')
+""")
+    try:
+        with bootstrap.open('x', encoding='utf-8') as handle:
+            handle.write(
+                "import os; os.getenv('APPLICANT_WHEEL_PROBE') and __import__('_applicant_wheel_ci_probe')\n"
+            )
+        try:
+            yield
+        finally:
+            bootstrap.unlink()
+    finally:
+        module.unlink()
+
+
+def isolated_environment(executable):
+    values = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.upper().startswith(('PYTHON', 'APPLICANT_', 'COVERAGE_'))
+        and name.upper() not in ('VIRTUAL_ENV', 'PATH', 'CRUNCHBASE_API_KEY', 'TRACXN_API_KEY')
+    }
+    paths = [str(executable.parent)]
+    if os.name == 'nt':
+        paths.append(str(Path(os.environ.get('SYSTEMROOT', r'C:\Windows')) / 'System32'))
+    else:
+        paths.extend(('/usr/bin', '/bin'))
+    values['PATH'] = os.pathsep.join(paths)
+    values['PYTHONNOUSERSITE'] = '1'
+    if sys.version_info >= (3, 11):
+        values['PYTHONSAFEPATH'] = '1'
+    return values
+
+
 def check(require_installed: bool) -> None:
     started = time.perf_counter()
     source = Path(__file__).resolve().parents[1] / 'src'
     if require_installed and Path(applicant.__file__).resolve().is_relative_to(source):
         raise RuntimeError('expected an installed wheel, found the source tree')
     executable = Path(sys.executable).with_name('applicant.exe' if os.name == 'nt' else 'applicant')
-    environment = {
-        name: value
-        for name, value in os.environ.items()
-        if not name.startswith('APPLICANT_')
-        and name not in ('CRUNCHBASE_API_KEY', 'TRACXN_API_KEY')
-    }
+    environment = isolated_environment(executable)
     with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, environment, clear=True):
         config = Path(folder) / 'applicant.toml'
         config.write_text('', encoding='utf-8')
-        for launcher in ([str(executable)], [sys.executable, '-m', 'applicant']):
-            result = subprocess.run(
-                [*launcher, '--version'],
-                cwd=folder,
-                capture_output=True,
-                text=True,
-                timeout=45,
-                check=True,
-            )
-            if result.stdout.strip() != f'applicant {applicant.__version__}' or result.stderr:
-                raise RuntimeError(f'{launcher}: unexpected version output {result}')
+        probe = Path(folder) / 'launcher.json'
+        cwd = Path(folder) / 'empty'
+        cwd.mkdir()
+        with installed_probe(require_installed):
+            for launcher in ([str(executable)], [sys.executable, '-I', '-m', 'applicant']):
+                result = subprocess.run(
+                    [*launcher, '--version'],
+                    cwd=cwd,
+                    env={**environment, 'APPLICANT_WHEEL_PROBE': str(probe)},
+                    capture_output=True,
+                    text=True,
+                    timeout=45,
+                    check=True,
+                )
+                if result.stdout.strip() != f'applicant {applicant.__version__}' or result.stderr:
+                    raise RuntimeError(f'{launcher}: unexpected version output {result}')
+                if require_installed:
+                    root, sys_path, module = json.loads(probe.read_bytes())
+                    probe.unlink()
+                    checkout = source.parent
+                    installed = Path(sysconfig.get_path('purelib')).resolve()
+                    if Path(root).resolve() != Path(sys.prefix).resolve() or not Path(
+                        module
+                    ).resolve().is_relative_to(installed):
+                        raise RuntimeError(f'{launcher}: package came from outside the wheel venv')
+                    if any(
+                        entry == ''
+                        or Path(entry).resolve() == cwd.resolve()
+                        or Path(entry).resolve().is_relative_to(checkout)
+                        for entry in sys_path
+                    ):
+                        raise RuntimeError(
+                            f'{launcher}: checkout or working directory found in sys.path'
+                        )
         for argv, expected, required, forbidden in CASES:
             out, err = io.StringIO(), io.StringIO()
             with redirect_stdout(out), redirect_stderr(err):

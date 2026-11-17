@@ -12,7 +12,7 @@ from ..domain.ranking_inputs import JobVersionBundle, ProvenanceDocument
 from ..domain.ranking_v2 import RankingRunV3, ScoringConfigurationV2
 from ..errors import ConfigError, StoreError
 from ..infra.ranking_documents import read_ranking_document
-from ..infra.store.listing_snapshots import listing_snapshot
+from ..infra.store.listing_snapshots import select_listing
 from ..infra.store.profiles import ProfileNotFound, ProfileRepository
 from ..infra.store.sqlite import Store
 from .ranking import prepare_job, rank_jobs
@@ -71,6 +71,7 @@ def create_ranking_run(
                 profile = ProfileRepository(reader.db).get(profile_id, revision)
             except ProfileNotFound as error:
                 raise ConfigError(f'{error}; run applicant survey edit first') from error
+            selection = select_listing(listing, store=reader) if bundle is None else None
             jobs = (
                 bundle.jobs
                 if bundle is not None
@@ -80,10 +81,19 @@ def create_ranking_run(
                         captured_at=at,
                         parser_version='cli-listing-1',
                     )
-                    for j in listing_snapshot(listing, store=reader)
+                    for j in (selection.jobs if selection is not None else ())
                 )
             )
         if not jobs:
+            if selection is not None and selection.pending_only:
+                advice = (
+                    'run search --resume-pending for this listing'
+                    if selection.resumable
+                    else 'rerun the original search for this listing'
+                )
+                raise EmptyRankingInput(
+                    f'{selection.pending_only} candidate(s) pending enrichment; {advice}'
+                )
             raise EmptyRankingInput('no jobs selected; no ranking run created')
         if len({j.job_id for j in jobs}) != len(jobs):
             raise ValueError('select exactly one version of each job')

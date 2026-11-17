@@ -74,8 +74,11 @@ def loaded_after(script: str) -> set[str]:
 # the network, answered with an empty page: a guest search that finds nothing
 NO_NETWORK = """
 import httpx
+from applicant.infra.board_worker import OwnedBoard
 from applicant.infra.http import HttpClient
 HttpClient.request = lambda self, method, url, **kw: httpx.Response(200, text='')
+# The parent monkeypatch does not cross the spawn boundary.
+OwnedBoard._call = lambda self, method, *args, **kwargs: []
 """
 
 
@@ -345,6 +348,25 @@ class ConfirmedApplicationTest(unittest.TestCase):
             return located[selector]
 
         page.locator.side_effect = locator
+        page.frames = [page]
+        page.main_frame = page
+        modal = locator('[role="dialog"][aria-modal="true"]').filter.return_value.last
+        modal.get_by_text.return_value.count.return_value = 0
+        control = mock.MagicMock()
+        control.count.return_value = 1
+        other = mock.MagicMock()
+        other.count.return_value = 0
+        modal.get_by_role.side_effect = lambda *args, name, **kwargs: (
+            control if name == 'Submit application' else other
+        )
+        dialogs = locator('[role="dialog"][aria-modal="true"]').filter.return_value
+        dialogs.count.return_value = 1
+        control.element_handle.return_value.bounding_box.return_value = {
+            'x': 10,
+            'y': 10,
+            'width': 2,
+            'height': 2,
+        }
         # landed on the job itself, signed in, with no bot check
         page.url = POSTING['url']
         page.title.return_value = 'ML | LinkedIn'

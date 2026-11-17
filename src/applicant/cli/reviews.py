@@ -24,6 +24,7 @@ class ReviewsRequest(Request):
     login: bool = False
     profile: str | None = None
     show: bool = False
+    refresh: bool = False
 
 
 def add_parser(add: AddParser) -> argparse.ArgumentParser:
@@ -60,6 +61,7 @@ def add_parser(add: AddParser) -> argparse.ArgumentParser:
         'glassdoor_profile, .gd_profile)',
     )
     reviews.add_argument('--show', action='store_true', help='run the browser visibly')
+    reviews.add_argument('--refresh', action='store_true', help='fetch live reviews')
     return reviews
 
 
@@ -83,6 +85,8 @@ def clients(
                 headless=not args.show,
                 interaction=terminal(),
             )
+            if isinstance(review := made[source], GlassdoorClient):
+                review.owned = True
     return made
 
 
@@ -109,6 +113,7 @@ def run(args: ReviewsRequest, settings: Settings) -> int:
             max_reviews=args.max_reviews,
             emit=Renderer(),
             backend=settings.store,
+            refresh=args.refresh,
         )
     if found.written_to is None:
         return 1

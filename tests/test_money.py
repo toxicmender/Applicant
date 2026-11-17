@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import ClassVar
+from unittest.mock import patch
 
 import httpx
 
@@ -24,6 +25,14 @@ from applicant.money import (
     load_factors,
     refresh_factors,
 )
+
+
+def setUpModule():
+    directory = tempfile.TemporaryDirectory()
+    unittest.addModuleCleanup(directory.cleanup)
+    override = patch('applicant.money.LOCAL_FACTORS', Path(directory.name) / 'user-factors.json')
+    override.start()
+    unittest.addModuleCleanup(override.stop)
 
 
 class OfflineRates(Rates):
@@ -409,6 +418,26 @@ class RefreshFactorsTest(unittest.TestCase):
         )
         self.assertEqual(updated, ['GBR'])
         self.assertEqual(self.read()['GBR']['value'], 13.0)
+
+    def test_refresh_retains_newer_overlapping_and_disjoint_updates(self):
+        def intervening(request):
+            refresh_factors(
+                path=self.path,
+                currencies=['GBP', 'SEK'],
+                pause=0,
+                client=self.client(lambda request: worldbank([{'date': '2026', 'value': 15.0}])),
+            )
+            return self.ok(request)
+
+        updated, failed, skipped = refresh_factors(
+            path=self.path, currencies=['GBP'], pause=0, client=self.client(intervening)
+        )
+
+        self.assertEqual((updated, failed, skipped), ([], [], ['GBR']))
+        self.assertEqual(
+            {key: entry['value'] for key, entry in self.read().items()},
+            {'GBR': 15.0, 'SWE': 15.0, 'USA': 1.0},
+        )
 
     def test_a_failed_fetch_writes_nothing(self):
         """The whole point: a factor that could not be had is never invented."""

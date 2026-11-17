@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
-from contextvars import copy_context
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar, copy_context
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from ..errors import AuthFailed, SourceError
 from ..permissions import make_private
@@ -40,6 +41,8 @@ BLOCKED_SELECTORS = '#challenge-platform, #cf-challenge-running, form#captcha-fo
 
 # where a profile's signed in state is exported, inside the profile itself
 STATE_FILE = 'storage_state.json'
+browser_state: ContextVar[Any] = ContextVar('browser_state', default=None)
+browser_cleanup: ContextVar[ExitStack | None] = ContextVar('browser_cleanup', default=None)
 
 
 def _observe_page(page: Page) -> None:
@@ -103,7 +106,7 @@ class BrowserSession:
         self.headless = headless
         self.timeout = timeout
         self.channels = tuple(channels)
-        self.storage_state = storage_state
+        self.storage_state = browser_state.get() if storage_state is None else storage_state
         self.require_saved_state = require_saved_state
         self._playwright: Playwright | None = None
         self._closer: Any = None
@@ -244,7 +247,11 @@ class BrowserSession:
         return self
 
     def __exit__(self, *exc_info: object) -> None:
-        self.close()
+        cleanup = browser_cleanup.get()
+        if cleanup is None:
+            self.close()
+        else:
+            cleanup.callback(self.close)
 
 
 @contextmanager
@@ -257,6 +264,24 @@ def browser(
     """A Playwright page for the length of a `with` block."""
     with BrowserSession(profile_dir, headless, timeout, channels) as session:
         yield session.start()
+
+
+def check_company_session(page: Page, provider: str) -> None:
+    state = browser_state.get()
+    if state and (state.get('cookies') or state.get('origins')):
+        segments = set(urlsplit(page.url).path.lower().split('/'))
+        if segments & {
+            'login',
+            'sign-in',
+            'signin',
+            'authwall',
+            'checkpoint',
+            'login.htm',
+            'login_input.htm',
+        }:
+            raise AuthFailed(
+                f'{provider} session expired; run applicant setup provider {provider} --reauth'
+            )
 
 
 def looks_blocked(page) -> bool:

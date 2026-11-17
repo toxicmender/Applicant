@@ -32,6 +32,9 @@ def key(item: Mapping[str, Any]) -> tuple:
     Jobs) fall back to the posting itself, otherwise every one of their rows
     would collapse into a single (source, None) entry.
     """
+    pending = item.get('pending_job_v1')
+    if isinstance(pending, dict):
+        item = pending
     if item.get('id'):
         return item.get('source'), item['id']
     return item.get('source'), item.get('title'), item.get('company'), item.get('location')

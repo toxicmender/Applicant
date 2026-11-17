@@ -125,3 +125,15 @@ class ProfileBusy(ConfigError):
 
     status = 'profile_busy'
     retryable = True
+
+
+class ApplicationBlocked(SourceError):
+    """A prior attempt prevents a new dispatch."""
+
+    status = 'application_uncertain'
+
+
+class AttestationRequired(ConfigError):
+    """Portal attestation requires an interactive terminal."""
+
+    status = 'attestation_required'

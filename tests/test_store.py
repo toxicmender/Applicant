@@ -634,7 +634,9 @@ class FinancialsHistoryTest(TempDir):
         original = path.read_bytes()
         error = OSError(errno.ENOSPC, 'no space', str(path))
         with (
-            mock.patch('applicant.infra.store.sqlite.os.replace', side_effect=error) as replace,
+            mock.patch(
+                'applicant.infra.store.publication.durable_replace', side_effect=error
+            ) as replace,
             mock.patch('applicant.infra.store.sqlite.time.sleep') as sleep,
             self.assertRaises(StorageFull),
         ):
@@ -656,7 +658,7 @@ class FinancialsHistoryTest(TempDir):
                 error = WindowsFileError(code, errno.EACCES)
                 with (
                     mock.patch(
-                        'applicant.infra.store.sqlite.os.replace', side_effect=error
+                        'applicant.infra.store.publication.durable_replace', side_effect=error
                     ) as replace,
                     mock.patch('applicant.infra.store.sqlite.time.sleep') as sleep,
                     self.assertRaises(ExportPending),
@@ -681,7 +683,9 @@ class FinancialsHistoryTest(TempDir):
                 tracker = FinancialsTracker(path, backend='sqlite')
                 error = WindowsFileError(112, posix_errno)
                 with (
-                    mock.patch('applicant.infra.store.sqlite.os.replace', side_effect=error),
+                    mock.patch(
+                        'applicant.infra.store.publication.durable_replace', side_effect=error
+                    ),
                     mock.patch('applicant.infra.store.sqlite.time.sleep') as sleep,
                     self.assertRaisesRegex(StorageFull, 'free disk space'),
                 ):
@@ -707,7 +711,10 @@ class FinancialsHistoryTest(TempDir):
         ):
             tracker.record(self.financials(2))
         if isinstance(failure.exception, ExportPending):
-            self.assertEqual(sleep.call_count, 4)
+            self.assertEqual(
+                sleep.call_count,
+                0 if getattr(failure.exception.__cause__, 'winerror', None) == 5 else 4,
+            )
         else:
             self.assertEqual(getattr(failure.exception.__cause__, 'winerror', None), 5)
             self.assertIn('pending export', str(failure.exception))
@@ -1066,7 +1073,45 @@ class WrittenFilesTest(TempDir):
         record = repositories.applications(str(log), 'sqlite')
         record.record([(JOB, 'would_apply', 'x')])
         record.record([(JOB, 'applied', 'x')])
-        self.assertEqual(sorted(p.name for p in self.root.iterdir()), [DB_NAME, 'applied.csv'])
+        self.assertEqual(
+            sorted(p.name for p in self.root.iterdir()),
+            ['.applied.csv.lock', DB_NAME, 'applied.csv'],
+        )
+
+    def test_interrupted_listing_recovers_and_conflict_resolution_is_digest_bound(self):
+        from applicant.errors import ExportConflict
+        from applicant.infra.store.export_resolution import resolve_export
+
+        path = self.root / 'jobs.json'
+        repo = repositories.listing(path, 'sqlite')
+        repo.save([JOB])
+        newer = JOB.model_copy(update={'title': 'New title'})
+        with (
+            mock.patch('applicant.infra.store.sqlite.write_document_bytes', side_effect=OSError),
+            self.assertRaises(StoreError),
+        ):
+            repo.save([newer])
+        edited = json.loads(path.read_bytes())
+        edited['list'][0]['title'] = 'Manual edit'
+        path.write_text(json.dumps(edited), encoding='utf-8')
+        with self.assertRaises(ExportConflict):
+            repo.load()
+        preview = resolve_export(self.root / DB_NAME, path, 'sqlite')
+        path.write_bytes(path.read_bytes() + b' ')
+        with self.assertRaises(ExportConflict):
+            resolve_export(self.root / DB_NAME, path, 'sqlite', preview['token'])
+        preview = resolve_export(self.root / DB_NAME, path, 'sqlite')
+        with (
+            mock.patch(
+                'applicant.infra.store.export_backup.write_document_bytes', side_effect=OSError
+            ),
+            self.assertRaises(StoreError),
+        ):
+            resolve_export(self.root / DB_NAME, path, 'sqlite', preview['token'])
+        original = path.read_bytes()
+        result = resolve_export(self.root / DB_NAME, path, 'sqlite', preview['token'])
+        self.assertEqual(Path(result['backup']).read_bytes(), original)
+        self.assertEqual(repo.load()[0].title, 'New title')
 
 
 class AtomicMigrationTest(TempDir):

@@ -90,6 +90,16 @@ class GateTest(unittest.TestCase):
         assert found is not None
         self.assertEqual({name.strip() for name in found.group(1).split(',')}, jobs)
 
+    def test_types_use_the_shared_runner_and_retain_reports_on_failure(self):
+        types = self.text.split('\n  types:\n', 1)[1].split('\n  unit:\n', 1)[0]
+        self.assertIn('uv sync --locked --extra pdf --python 3.12', types)
+        self.assertIn('run: uv run --frozen python tools/check_types.py', types)
+        self.assertIn('outcome: ${{ steps.pyright.outputs.outcome }}', types)
+        self.assertIn('if: always()', types)
+        self.assertIn('path: pyright-*', types)
+        for escape in ('continue-on-error', '|| true', 'strategy:'):
+            self.assertNotIn(escape, types)
+
     def test_the_gate_holds_the_tests_types_coverage_and_browser(self):
         gate = self.text.split('- name: Gate', 1)[1]
         for job in ('types', 'unit', 'coverage', 'browser'):

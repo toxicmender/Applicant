@@ -67,12 +67,12 @@ class StoreListing:
     def load(self) -> list[Job]:
         if _nothing_there(self.path):
             return []
-        with Store.beside(self.path) as store:
-            return jobs_from(store.job_items(self.path), self.path)
+        with Store.managed(self.path, 'jobs') as (store, target):
+            return jobs_from(store._job_items(target), self.path)
 
     def save(self, jobs: Iterable[Job]) -> int:
-        with Store.beside(self.path) as store:
-            return store.save_jobs(jobs, self.path)
+        with Store.managed(self.path, 'jobs') as (store, target):
+            return store._save_jobs(jobs, target)
 
 
 class StoreApplications:
@@ -80,14 +80,14 @@ class StoreApplications:
         self.path = path
 
     def record(self, entries: Iterable[Entry]) -> int:
-        with Store.beside(self.path) as store:
-            return store.record_applications(entries, self.path)
+        with Store.managed(self.path, 'applications', wait=True) as (store, target):
+            return store._record_applications(entries, target)
 
     def rows(self) -> list[dict]:
         if _nothing_there(self.path):
             return []
-        with Store.beside(self.path) as store:
-            return store.application_rows(self.path)
+        with Store.managed(self.path, 'applications') as (store, target):
+            return store._application_rows(target)
 
     def settled(self) -> Settled:
         return Settled.from_rows(self.rows())
@@ -95,8 +95,8 @@ class StoreApplications:
     def counts(self) -> dict[str, int]:
         if _nothing_there(self.path):
             return {}
-        with Store.beside(self.path) as store:
-            return store.application_counts(self.path)
+        with Store.managed(self.path, 'applications') as (store, target):
+            return store._application_counts(target)
 
 
 def listing(path: str | os.PathLike[str], backend: Backend = 'files') -> Listing:

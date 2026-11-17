@@ -207,6 +207,7 @@ class TracxnClient:
         self._client = client
         self._http: HttpClient | None = None
         self.capture = capture
+        self.owned = False
 
     def accepts(self, company: str) -> bool:
         """Whether Tracxn can look this up: anything but a profile url on crunchbase.com."""
@@ -242,7 +243,12 @@ class TracxnClient:
         if self.api_key:
             financials = self._fetch_api(company, max_rounds)
         elif profile_match(company.strip()):
-            financials = self._fetch_web(company.strip(), max_rounds)
+            if self.owned:
+                from ..infra.company_worker import fetch_company
+
+                financials = fetch_company('tracxn', self, company.strip(), max_rounds)
+            else:
+                financials = self._fetch_web(company.strip(), max_rounds)
         else:
             error = TracxnLookupRequired if self.requires_lookup(company) else SourceError
             raise error(
@@ -484,7 +490,7 @@ class TracxnClient:
         return financials
 
     def _fetch_web(self, url, max_rounds, *, page=None, check=None, selected_name=None):
-        from ..infra.browser import browser, looks_blocked
+        from ..infra.browser import browser, check_company_session, looks_blocked
 
         match = profile_match(url)
         if match is None:
@@ -528,6 +534,7 @@ class TracxnClient:
                             if already_open
                             else tab.goto(target, wait_until='domcontentloaded')
                         )
+                        check_company_session(tab, 'tracxn')
                         if check:
                             check()
                         if response is not None and response.status >= 400:

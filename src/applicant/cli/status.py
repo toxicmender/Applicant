@@ -54,6 +54,9 @@ def run(args: StatusRequest, settings: Settings) -> int:
     for name in sorted(status.by_status):
         print('  {}: {}'.format(name, status.by_status[name]))
 
+    if status.export_pending:
+        print('Export publication deferred. Showing committed data.')
+
     if args.json_path:
         target = settings.path(args.json_path)
         # all at once or not at all, like every other file the CLI writes

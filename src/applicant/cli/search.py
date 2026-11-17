@@ -83,6 +83,9 @@ def add_parser(add: AddParser) -> argparse.ArgumentParser:
         metavar='N',
         help='how many postings --enrich may read in one run (default 25)',
     )
+    search.add_argument(
+        '--resume-pending', action='store_true', help='resume saved enrichment requests'
+    )
     add_filters(search)
     return search
 
@@ -91,6 +94,7 @@ class Overrides(SavedSearch, Request):
     saved: str | None = None
     list_saved: bool = False
     show: bool = False
+    resume_pending: bool = False
 
 
 class Search(FilterOptions, Request):
@@ -106,11 +110,27 @@ class Search(FilterOptions, Request):
     enrich: bool = False
     enrich_limit: PositiveInt = 25
     output: str | None = None
+    resume_pending: bool = False
 
     @model_validator(mode='before')
     @classmethod
     def resolve(cls, raw: dict[str, Any], info: ValidationInfo) -> dict[str, Any]:
         overrides = Overrides.model_validate(raw)
+        if overrides.resume_pending:
+            inputs = overrides.model_dump(exclude_none=True)
+            unexpected = set(inputs) - {
+                'source',
+                'output',
+                'enrich_limit',
+                'resume_pending',
+                'show',
+                'list_saved',
+            }
+            if unexpected or overrides.show or overrides.list_saved:
+                raise ConfigError(
+                    '--resume-pending accepts source, output, and enrichment budget only'
+                )
+            return inputs
         values: dict[str, Any] = {}
         if overrides.saved is not None and not overrides.list_saved:
             settings = info.context
@@ -144,16 +164,31 @@ def list_saved(saved: dict[str, SavedSearch]) -> int:
 
 def run(args: Search, settings: Settings) -> int:
     from ..search import Jobs
-    from ..services.search import store
+    from ..services.pending_enrichment import PendingEnrichment
+    from ..services.search import Stored, store
 
     if args.list_saved:
         return list_saved(settings.searches)
     wanted = SOURCES if 'all' in args.source else args.source
+    output = configured_path(settings, args.output, settings.files.listing)
+    batches: list[Stored] = []
     logger.info(
         f'search: {args.keywords!r} on {", ".join(wanted)}, up to {args.limit} per board'
         + (f' (saved search {args.saved!r})' if args.saved else '')
     )
-    with Jobs(sources=wanted, headless=not args.show, backend=settings.store) as board:
+    with Jobs(
+        sources=wanted,
+        headless=not args.show,
+        backend=settings.store,
+        session=settings.path(settings.files.cookies),
+    ) as board:
+        board.owned_search = True
+        if args.resume_pending:
+            result = board.resume_pending(output, args.enrich_limit)
+            print(
+                f'{result["promoted"]} promoted, {result["pruned"]} pruned, {result["remaining"]} remaining'
+            )
+            return 0
         found = board.search(
             args.keywords,
             filters_from(args),
@@ -162,6 +197,8 @@ def run(args: Search, settings: Settings) -> int:
             max_rounds=args.max_rounds,
             enrich=args.enrich,
             enrich_limit=args.enrich_limit,
+            on_batch=lambda jobs: batches.append(store(jobs, output, settings.store)),
+            pending=PendingEnrichment(output, settings.store) if args.enrich else None,
         )
 
     if not found:
@@ -169,10 +206,8 @@ def run(args: Search, settings: Settings) -> int:
         print('nothing matched')
         return 1
 
-    stored = store(
-        found, configured_path(settings, args.output, settings.files.listing), settings.store
-    )
+    stored = batches[-1] if batches else store(found, output, settings.store)
     print(
-        '{} jobs written to {} ({} stored in total)'.format(stored.saved, stored.path, stored.total)
+        '{} jobs written to {} ({} stored in total)'.format(len(found), stored.path, stored.total)
     )
     return 0

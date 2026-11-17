@@ -6,6 +6,7 @@ import argparse
 import sys
 
 from ..domain.job import Job
+from ..errors import ApplicationBlocked, AttestationRequired, ConfigError
 from ..log import get
 from ..settings import FilterOptions, Settings
 from .common import add_filters, configured_path, filters_from
@@ -22,6 +23,18 @@ class Apply(FilterOptions, Request):
     dry_run: bool = False
     show: bool = False
     yes: bool = False
+    reconcile: str | None = None
+    outcome: str | None = None
+    retry_attempt: str | None = None
+    reopen_attempt: str | None = None
+    rotate_attestation_key: bool = False
+    import_attempts_from: list[str] | None = None
+    list_conflicts: bool = False
+    resolve_conflict: str | None = None
+    keep: str | None = None
+    dismiss: bool = False
+    digest: str | None = None
+    acknowledge_duplicate_risk: bool = False
 
 
 def add_parser(add: AddParser) -> argparse.ArgumentParser:
@@ -48,6 +61,20 @@ def add_parser(add: AddParser) -> argparse.ArgumentParser:
         'cookies.json)',
     )
     add_filters(apply_)
+    mode = apply_.add_mutually_exclusive_group()
+    mode.add_argument('--reconcile', metavar='ATTEMPT_ID')
+    mode.add_argument('--retry-attempt', metavar='ATTEMPT_ID')
+    mode.add_argument('--reopen-attempt', metavar='ATTEMPT_ID')
+    mode.add_argument('--rotate-attestation-key', action='store_true')
+    mode.add_argument('--import-attempts-from', action='append', metavar='PATH')
+    mode.add_argument('--list-conflicts', action='store_true')
+    mode.add_argument('--resolve-conflict', metavar='ATTEMPT_ID')
+    resolution = apply_.add_mutually_exclusive_group()
+    resolution.add_argument('--keep', choices=('journal', 'incoming', 'both'))
+    resolution.add_argument('--dismiss', action='store_true')
+    apply_.add_argument('--digest', metavar='HASH')
+    apply_.add_argument('--outcome', choices=('submitted', 'not-submitted', 'abandoned'))
+    apply_.add_argument('--acknowledge-duplicate-risk', action='store_true')
     apply_.add_argument(
         '-y',
         '--yes',
@@ -61,13 +88,81 @@ def add_parser(add: AddParser) -> argparse.ArgumentParser:
 
 def run(args: Apply, settings: Settings) -> int:
     from ..search import Jobs
+    from ..services.application_attempts import HISTORY, AttemptJournal
     from ..services.apply import worklist
 
     source, log = (
         configured_path(settings, args.input, settings.files.listing),
         configured_path(settings, args.log, settings.files.applications),
     )
-    work = worklist(source, filters_from(args), settings.store)
+    session = configured_path(settings, args.cookies, settings.files.cookies)
+    if bool(args.reconcile) != bool(args.outcome):
+        raise ConfigError('--reconcile and --outcome must be used together')
+    if bool(args.retry_attempt) != args.acknowledge_duplicate_risk:
+        raise ConfigError('--retry-attempt requires --acknowledge-duplicate-risk')
+    if args.reconcile and (args.dry_run or args.retry_attempt):
+        raise ConfigError('--reconcile cannot be combined with --dry-run or --retry-attempt')
+    if args.dry_run and (args.reopen_attempt or args.rotate_attestation_key):
+        raise ConfigError('journal maintenance cannot be combined with --dry-run')
+    if bool(args.resolve_conflict) != bool(args.keep or args.dismiss) or (
+        args.digest and not args.resolve_conflict
+    ):
+        raise ConfigError('--resolve-conflict requires --keep or --dismiss')
+    if args.dry_run and (args.import_attempts_from or args.resolve_conflict):
+        raise ConfigError('journal maintenance cannot be combined with --dry-run')
+    needs_attestation = args.reopen_attempt or args.outcome in ('not-submitted', 'abandoned')
+    if needs_attestation and not sys.stdin.isatty():
+        raise AttestationRequired(
+            'use a terminal to attest to the original LinkedIn portal history'
+        )
+    journal = AttemptJournal(log, session, args.retry_attempt, backend=settings.store)
+    if args.import_attempts_from or args.list_conflicts or args.resolve_conflict:
+        from ..domain.canonical import canonical_json
+
+        if args.import_attempts_from:
+            journal.import_legacy([settings.path(path) for path in args.import_attempts_from])
+        if args.resolve_conflict:
+            journal.resolve_conflict(args.resolve_conflict, args.keep or 'dismiss', args.digest)
+            journal.recover_confirmed()
+        print(canonical_json({'conflicts': journal.conflicts()}))
+        return 0
+    if args.rotate_attestation_key:
+        journal.rotate()
+        print('Attestation key rotated. Attest again before retrying an application.')
+        return 0
+    if identifier := args.reconcile or args.reopen_attempt:
+        entry = journal.detail(identifier)
+        print(f'{shown(entry["job"]["url"])} · account {shown(entry["account"])}')
+        print(f'Check Jobs → Job tracker → Applied using the original account: {HISTORY}')
+        attested = False
+        if needs_attestation:
+            attested = (
+                terminal()
+                .ask(
+                    'If the history is conclusive, type verified not submitted. '
+                    'Retrying may create a duplicate: '
+                )
+                .strip()
+                == 'verified not submitted'
+            )
+        with journal.profile_owner():
+            if args.reopen_attempt and journal.detail(identifier)['state'] != 'abandoned':
+                raise ConfigError('only an abandoned attempt can be reopened')
+            journal.resolve(identifier, args.outcome or 'not-submitted', attested=attested)
+        journal.recover_confirmed()
+        return 0
+    if not args.dry_run and journal.exists():
+        journal.recover_armed()
+        journal.recover_confirmed()
+    if args.retry_attempt:
+        from ..services.apply import Worklist, select
+
+        entry = journal.detail(args.retry_attempt)
+        if entry['state'] != 'not-submitted':
+            raise ConfigError('attempt must be reconciled as not-submitted before retrying')
+        work = Worklist(1, select([Job.model_validate(entry['job'])], filters_from(args)))
+    else:
+        work = worklist(source, filters_from(args), settings.store)
     if not work.read:
         print('no jobs to apply to in {}'.format(source))
         return 1
@@ -99,9 +194,17 @@ def run(args: Apply, settings: Settings) -> int:
             declined.extend(targets)
         return answered
 
-    session = configured_path(settings, args.cookies, settings.files.cookies)
     with Jobs(headless=not args.show, backend=settings.store, session=session) as board:
-        board.apply(work.matching, log=log, dry_run=args.dry_run, confirm=confirm)
+        board.attempts = journal
+        results = board.apply(work.matching, log=log, dry_run=args.dry_run, confirm=confirm)
+    if not args.dry_run and journal.path.is_file():
+        journal.recover_confirmed()
     if declined:
         print('not submitted: {} application(s); nothing was logged for them'.format(len(declined)))
+    if any(
+        note.startswith('application_uncertain:')
+        for _, status, note in results
+        if status == 'failed'
+    ):
+        raise ApplicationBlocked('inspect the application log and reconcile the blocked attempt')
     return 0

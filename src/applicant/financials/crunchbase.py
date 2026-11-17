@@ -4,13 +4,16 @@ import logging
 import os
 import re
 from contextlib import suppress
+from urllib.parse import urlsplit
 
 import httpx
+from pydantic import ValidationError
 
 from .. import log
 from ..errors import AuthFailed, Blocked, NotFound, SourceError, Unparseable
 from ..infra.http import USER_AGENT, HttpClient
 from ..interaction import Interaction, Terminal
+from .crunchbase_scopes import verified_components, warn
 from .models import CompanyFinancials, FundingRound
 from .parsing import (
     clean_name,
@@ -93,7 +96,7 @@ class CrunchbaseClient:
     def __init__(
         self,
         api_key=None,
-        profile_dir='.cb_profile',
+        profile_dir: str | None = '.cb_profile',
         login=False,
         headless=True,
         timeout=30.0,
@@ -117,6 +120,7 @@ class CrunchbaseClient:
         self._client = client
         self._http: HttpClient | None = None
         self.capture = capture
+        self.owned = False
 
     def accepts(self, company: str) -> bool:
         """Whether Crunchbase can look this up: anything but a profile url on tracxn.com."""
@@ -130,6 +134,10 @@ class CrunchbaseClient:
         try:
             if self.api_key:
                 financials = self._fetch_api(company, max_rounds)
+            elif self.owned:
+                from ..infra.company_worker import fetch_company
+
+                financials = fetch_company('crunchbase', self, company, max_rounds)
             else:
                 financials = self._fetch_web(company, max_rounds)
         except httpx.HTTPStatusError as error:
@@ -137,7 +145,7 @@ class CrunchbaseClient:
         except httpx.HTTPError as error:
             raise SourceError(f'could not reach Crunchbase: {error}') from error
         except ValueError as error:  # a response body that was not JSON
-            raise Unparseable(f'Crunchbase sent unreadable data: {error}') from error
+            raise Unparseable('Crunchbase sent unreadable data') from error
         financials.fill_from_rounds()
         logger.info(
             f'crunchbase: {financials.company}: {len(financials.rounds)} round(s), '
@@ -237,7 +245,7 @@ class CrunchbaseClient:
     # -- web --------------------------------------------------------------
 
     def _fetch_web(self, company, max_rounds):
-        from ..infra.browser import browser, looks_blocked
+        from ..infra.browser import browser, check_company_session, looks_blocked
 
         slug = permalink(company)
         url = '{}/organization/{}'.format(WEB, slug)
@@ -259,9 +267,18 @@ class CrunchbaseClient:
                 page.on('response', capture)
                 for target in (url, url + '/company_financials'):
                     response = page.goto(target, wait_until='domcontentloaded')
+                    check_company_session(page, 'crunchbase')
                     if response is not None and response.status == 404:
                         raise NotFound('no Crunchbase organization at {}'.format(target))
                     self._settle(page, looks_blocked)
+                    expected, actual = urlsplit(target), urlsplit(page.url)
+                    if (actual.scheme, actual.netloc) != (
+                        expected.scheme,
+                        expected.netloc,
+                    ) or actual.path.rstrip('/') != expected.path:
+                        raise Unparseable(
+                            'Crunchbase navigated away from the requested organization'
+                        )
                     payloads.extend(embedded_json(page.content()))
                     if self.capture is not None:
                         self.capture(target, page.content().encode('utf-8'), 'browser_dom')
@@ -276,7 +293,7 @@ class CrunchbaseClient:
                 'could not load {}: {}'.format(url, str(error).split('\n')[0][:160])
             ) from error
 
-        financials = self._build(payloads, slug, company, max_rounds, url=url)
+        financials = self._build(payloads, slug, company, max_rounds, url=url, browser=True)
         self._from_text('\n'.join(texts), financials)
         if (
             financials.total_funding is None
@@ -309,20 +326,7 @@ class CrunchbaseClient:
 
     # -- parsing ----------------------------------------------------------
 
-    def _build(self, payloads, slug, company, max_rounds, url=None):
-        if self.capture is not None:
-            identifiers = {
-                identity['permalink']
-                for payload in payloads
-                for node in walk(payload)
-                if isinstance(identity := node.get('identifier'), dict)
-                and identity.get('permalink')
-                and identity.get('entity_def_id', 'organization') == 'organization'
-            }
-            if identifiers != {slug}:
-                raise Unparseable(
-                    'captured Crunchbase organization identity is missing or ambiguous'
-                )
+    def _build(self, payloads, slug, company, max_rounds, url=None, *, browser=False):
         financials = CompanyFinancials(
             source='crunchbase',
             company=company,
@@ -331,20 +335,76 @@ class CrunchbaseClient:
         )
         rounds = {}
 
-        for payload in payloads:
-            for node in walk(payload):
-                self._read_org(node, slug, financials)
-                funding_round = self._read_round(node, slug)
-                if funding_round is not None:
-                    key = funding_round.key()
-                    if key not in rounds or _richer(funding_round, rounds[key]):
-                        rounds[key] = funding_round
+        if browser or self.capture is not None:
+            for index, payload in enumerate(payloads):
+                for kind, path, node in verified_components(payload, slug, index):
+                    if kind == 'degraded':
+                        financials._capture_degraded = True
+                    elif kind == 'verified':
+                        financials._identity_verified = True
+                    elif kind == 'organization' and isinstance(node, dict):
+                        candidate = financials.model_copy()
+                        try:
+                            self._read_org(node, slug, candidate)
+                            CompanyFinancials.model_validate(candidate.model_dump())
+                        except (ValueError, TypeError):
+                            warn(index, path, 'invalid_organization_fields')
+                            financials._capture_degraded = True
+                        else:
+                            financials = candidate
+                    elif kind == 'rounds' and isinstance(node, (dict, list)):
+                        self._collect_rounds(node, slug, rounds, financials, index, path)
+                    else:
+                        warn(index, path, 'invalid_financial_card')
+                        financials._capture_degraded = True
+            if not financials._identity_verified:
+                raise Unparseable(
+                    'captured Crunchbase organization identity is missing; the layout may have changed'
+                )
+        else:
+            for payload in payloads:
+                for node in walk(payload):
+                    self._read_org(node, slug, financials)
+                    self._keep_round(rounds, self._read_round(node, slug))
 
         financials.rounds = sorted(rounds.values(), key=lambda r: r.date or '', reverse=True)[
             : max(0, max_rounds)
         ]
-        financials.rounds_cut(len(rounds) > len(financials.rounds))
+        financials.rounds_cut(financials._capture_degraded or len(rounds) > len(financials.rounds))
+        if financials._capture_degraded:
+            financials.notes.append(
+                'Some Crunchbase financial cards could not be verified or read.'
+            )
         return financials
+
+    @staticmethod
+    def _keep_round(rounds, funding_round):
+        if funding_round is not None:
+            key = funding_round.key()
+            if key not in rounds or _richer(funding_round, rounds[key]):
+                rounds[key] = funding_round
+
+    def _collect_rounds(self, value, slug, rounds, financials, index, path):
+        if isinstance(value, list):
+            for offset, item in enumerate(value):
+                self._collect_rounds(item, slug, rounds, financials, index, f'{path}[{offset}]')
+            return
+        if isinstance(value, dict):
+            if 'investment_type' in value:
+                try:
+                    self._keep_round(rounds, self._read_round(value, slug))
+                except (ValidationError, TypeError):
+                    warn(index, path, 'invalid_funding_round')
+                    financials._capture_degraded = True
+                return
+            for name in ('items', 'entities', 'data', 'results'):
+                if name in value:
+                    self._collect_rounds(
+                        value[name], slug, rounds, financials, index, f'{path}.{name}'
+                    )
+                    return
+        warn(index, path, 'invalid_funding_round')
+        financials._capture_degraded = True
 
     def _read_org(self, node, slug, financials):
         identifier = node.get('identifier')

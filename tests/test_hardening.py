@@ -526,7 +526,7 @@ class SearchServiceEdgesTest(Folder):
             client.describe.call_count, 2, 'the known one skipped, stopped at the refusal'
         )
         self.assertTrue(plan.stopped)
-        self.assertEqual(plan.budget, 4)
+        self.assertEqual(plan.budget, 3)
         self.assertEqual((unknown[0].experience_min, unknown[0].experience_max), (3.0, 5.0))
 
     def test_enrichment_goes_on_past_a_page_that_says_nothing(self):
@@ -590,6 +590,8 @@ class StatusEdgesTest(Folder):
                 'log': log,
                 'jobs': {'total': 0, 'by_source': {}},
                 'applications': {'total': 0, 'by_status': {}},
+                'projection_pending': False,
+                'export_pending': False,
             },
         )
 

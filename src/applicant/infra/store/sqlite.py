@@ -23,13 +23,11 @@ is one file to back up. See docs/architecture-plan.md, decision D8.
 
 from __future__ import annotations
 
-import errno
 import hashlib
 import json
 import logging
 import os
 import sqlite3
-import tempfile
 import time
 from collections.abc import Iterable, Iterator
 from contextlib import closing, contextmanager
@@ -39,16 +37,16 @@ from typing import Any
 
 from ...domain.dedupe import fingerprint, key
 from ...domain.job import Job
-from ...errors import DatabaseBusy, ExportConflict, ExportPending, StoreError, sqlite_busy
+from ...errors import DatabaseBusy, ExportConflict, StoreError, sqlite_busy
 from ...files import (
     decode_document,
     document_bytes,
     read_document,
-    write_document,
     write_document_bytes,
 )
 from ...permissions import make_private
-from ...storage import APPLIED_COLUMNS, PROVISIONAL, ApplicationLog, plan_rows, write_rows
+from ...storage import APPLIED_COLUMNS, PROVISIONAL, plan_rows
+from .application_csv import ApplicationCSV
 from .benchmarks import BENCHMARK_MIGRATION
 from .company_evidence import COMPANY_EVIDENCE_MIGRATION
 from .feedback import FEEDBACK_MIGRATION
@@ -56,6 +54,9 @@ from .financials_lock import financials_lock
 from .financials_merge import merge_financial_exports
 from .maintenance import configure_connection
 from .personalization import PERSONALIZATION_MIGRATION
+from .publication import digest as _bytes_digest
+from .publication import read_bytes as _financials_bytes
+from .publication import reconcile, single_attempt
 from .ranking_schema import RANKING_MIGRATION
 from .research import RESEARCH_MIGRATION
 
@@ -147,6 +148,44 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
             intended_digest TEXT NOT NULL
         )""",
     ),
+    (
+        """CREATE TABLE pending_exports (
+            kind TEXT NOT NULL,
+            document TEXT NOT NULL,
+            baseline BLOB,
+            baseline_digest TEXT,
+            intended BLOB NOT NULL,
+            intended_digest TEXT NOT NULL,
+            PRIMARY KEY (kind, document)
+        )""",
+        """CREATE TABLE export_resolutions (
+            token TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            document TEXT NOT NULL,
+            choice TEXT NOT NULL,
+            archived_path TEXT NOT NULL,
+            recorded_at TEXT NOT NULL
+        )""",
+    ),
+    (
+        """CREATE TABLE application_attempt_journals (
+            log TEXT PRIMARY KEY,
+            payload TEXT NOT NULL
+        )""",
+    ),
+    (
+        """CREATE TABLE application_projection_receipts (
+            log TEXT NOT NULL,
+            event TEXT NOT NULL,
+            PRIMARY KEY (log, event)
+        )""",
+    ),
+    (
+        """CREATE TABLE application_csv_snapshots (
+            log TEXT PRIMARY KEY,
+            content BLOB NOT NULL
+        )""",
+    ),
 )
 
 
@@ -155,34 +194,6 @@ def _digest(path: Path) -> str | None:
         return hashlib.sha256(path.read_bytes()).hexdigest()
     except FileNotFoundError:
         return None
-
-
-def _financials_bytes(path: Path) -> bytes | None:
-    try:
-        return path.read_bytes()
-    except FileNotFoundError:
-        return None
-
-
-def _bytes_digest(content: bytes | None) -> str | None:
-    return hashlib.sha256(content).hexdigest() if content is not None else None
-
-
-def _replace_financial_export(temporary: str, target: Path) -> None:
-    try:
-        os.replace(temporary, target)
-    except OSError as error:
-        winerror = getattr(error, 'winerror', None)
-        if error.errno == errno.ENOSPC or winerror == 112:
-            raise
-        if winerror in (32, 33):
-            raise ExportPending(f'{target}: close applications using it and rerun') from error
-        if winerror == 5:
-            raise StoreError(
-                f'{target}: access denied while publishing the pending export. '
-                'Close applications using it or check file permissions, then rerun.'
-            ) from error
-        raise
 
 
 def _now() -> str:
@@ -204,6 +215,8 @@ class Store:
             self.db = sqlite3.connect(self.path)
             try:
                 configure_connection(self.db)
+                if single_attempt():
+                    self.db.execute('PRAGMA busy_timeout = 0')
                 # REPLACE deletes conflicting rows. Fire delete guards for that
                 # path too, so it cannot bypass append-only history triggers.
                 self.db.execute('PRAGMA recursive_triggers = ON')
@@ -242,6 +255,8 @@ class Store:
             store.db = sqlite3.connect(store.path.resolve().as_uri() + '?mode=ro', uri=True)
             try:
                 configure_connection(store.db, writable=False)
+                if single_attempt():
+                    store.db.execute('PRAGMA busy_timeout = 0')
                 store.db.execute('PRAGMA query_only = ON')
                 version = store.db.execute('PRAGMA user_version').fetchone()[0]
                 if version < len(MIGRATIONS):
@@ -290,6 +305,29 @@ class Store:
     def beside(cls, file: str | os.PathLike[str]) -> Store:
         """The store for a file: applicant.db in the same directory."""
         return cls(Path(file).resolve().parent / DB_NAME)
+
+    @classmethod
+    @contextmanager
+    def managed(cls, file, kind, *, wait=False):
+        """Lock and check an existing collection before writable initialization."""
+        target = Path(file).resolve()
+        with financials_lock(target, wait=wait):
+            database = target.parent / DB_NAME
+            if database.exists():
+                with (
+                    closing(
+                        sqlite3.connect(
+                            database.as_uri() + '?mode=ro',
+                            uri=True,
+                            timeout=0 if single_attempt() else 5,
+                        )
+                    ) as db,
+                    db,
+                ):
+                    db.execute('BEGIN')
+                    cls._managed_alias(db, kind, target.name, target)
+            with cls(database) as store:
+                yield store, target
 
     def close(self) -> None:
         self.db.close()
@@ -378,6 +416,45 @@ class Store:
 
     # -- the job listing --------------------------------------------------
 
+    def _managed_name(self, kind, file):
+        return self._managed_alias(self.db, kind, self.name(file), file)
+
+    @staticmethod
+    def _managed_alias(db, kind, name, file):
+        if os.name != 'nt':
+            return name
+        from ..windows_paths import directory_handle, insensitive_for
+
+        target = Path(file).resolve()
+        if target.parent.is_dir():
+            with directory_handle(target.parent, create=False) as parent:
+                if not insensitive_for(parent, target.parent, target.name):
+                    return name
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        sources = {'jobs': ('jobs', 'listing'), 'applications': ('applications', 'log')}
+        keys = []
+        if kind in sources:
+            table, column = sources[kind]
+            if table in tables:
+                keys.extend(row[0] for row in db.execute(f'SELECT DISTINCT {column} FROM {table}'))
+        if 'pending_exports' in tables:
+            keys.extend(
+                row[0]
+                for row in db.execute(
+                    'SELECT document FROM pending_exports WHERE kind=?',
+                    (kind,),
+                )
+            )
+        if 'documents' in tables:
+            keys.extend(row[0] for row in db.execute('SELECT name FROM documents'))
+        matching = {key for key in keys if os.path.normcase(key) == os.path.normcase(name)}
+        if len(matching) > 1:
+            raise ExportConflict(
+                f'{file}: conflicting collection keys {sorted(matching)!r}; '
+                'back up the database and review the histories'
+            )
+        return next(iter(matching), name)
+
     def _sync_listing(self, file: Path, quarantine: bool) -> str | None:
         """Bring the collection in line with the file, if the file moved on.
 
@@ -385,7 +462,9 @@ class Store:
         left in place (a read that must not destroy it): the caller then sees
         what `load_jobs` would, an empty listing.
         """
-        name = self.name(file)
+        name = self._managed_name('jobs', file)
+        self._reconcile_export('jobs', name, file)
+        baseline = _financials_bytes(file)
         if not self._stale(name, file, 'jobs', 'listing'):
             return name
 
@@ -403,8 +482,8 @@ class Store:
                         'SELECT payload FROM jobs WHERE listing = ? ORDER BY seq', (name,)
                     )
                 ]
-                write_document(file, {'list': kept})
-                self._remember(db, name, file)
+                self._stage_export(db, 'jobs', name, None, document_bytes({'list': kept}))
+            self._reconcile_export('jobs', name, file)
             logger.warning(f'{file}: rewritten from the {len(kept)} job(s) in {self.path}')
             return name
 
@@ -420,14 +499,19 @@ class Store:
                     for seq, (item_key, item) in enumerate(items.items())
                 ],
             )
-            self._remember(db, name, file)
+            self._remember_financials(db, name, _bytes_digest(baseline) if file.exists() else None)
         if existed:
             logger.info(f'{file}: imported {len(items)} job(s) into {self.path}')
         return name
 
     def job_items(self, file: str | os.PathLike[str]) -> list[dict]:
         """Every stored record of a listing, in the order it was first seen."""
-        name = self._sync_listing(Path(file), quarantine=False)
+        target = Path(file).resolve()
+        with financials_lock(target):
+            return self._job_items(target)
+
+    def _job_items(self, target):
+        name = self._sync_listing(target, quarantine=False)
         if name is None:
             return []
         rows = self.db.execute(
@@ -441,9 +525,14 @@ class Store:
         The same merge as `storage.save_jobs`: a job already held is updated in
         place, a new one goes on the end.
         """
-        target = Path(file)
+        target = Path(file).resolve()
+        with financials_lock(target):
+            return self._save_jobs(jobs, target)
+
+    def _save_jobs(self, jobs, target):
         name = self._sync_listing(target, quarantine=True)
         assert name is not None  # quarantine moved anything unreadable aside
+        baseline = _financials_bytes(target)
         with self._transaction() as db:
             before = self._count(db, name)
             (last,) = db.execute(
@@ -451,6 +540,13 @@ class Store:
             ).fetchone()
             for job in jobs:
                 item = job.to_dict()
+                prior = db.execute(
+                    'SELECT payload FROM jobs WHERE listing=? AND key=?', (name, _key(item))
+                ).fetchone()
+                if prior is not None:
+                    metadata = json.loads(prior[0]).get('enrichment_v1')
+                    if metadata is not None:
+                        item['enrichment_v1'] = metadata
                 last += 1
                 db.execute(
                     'INSERT INTO jobs (listing, key, seq, fingerprint, payload) '
@@ -471,37 +567,96 @@ class Store:
                     'SELECT payload FROM jobs WHERE listing = ? ORDER BY seq', (name,)
                 )
             ]
-            # the export is part of the transaction: if it cannot be written,
-            # the database does not move on without it
-            write_document(target, {'list': items})
-            self._remember(db, name, target)
+            self._stage_export(db, 'jobs', name, baseline, document_bytes({'list': items}))
+        self._reconcile_export('jobs', name, target)
         logger.info(f'{target}: {total - before} new job(s), {total} stored')
         return total
+
+    def update_listing_payloads(self, target, update):
+        """Resolve pending posting revisions and stage the resulting listing."""
+        from ...domain.dedupe import key
+
+        name = self._sync_listing(target, quarantine=True)
+        assert name is not None
+        baseline = _financials_bytes(target)
+        with self._transaction() as db:
+            db.execute('BEGIN IMMEDIATE')
+            payloads = db.execute('SELECT payload FROM jobs WHERE listing=? ORDER BY seq', (name,))
+            records = (json.loads(payload) for (payload,) in payloads)
+            items = {key(item): item for item in records}
+            changed = update(items)
+            if changed:
+                intended = document_bytes({'list': list(items.values())})
+                self._replace_managed(db, 'jobs', name, intended)
+                self._stage_export(db, 'jobs', name, baseline, intended)
+        if changed:
+            self._reconcile_export('jobs', name, target)
+        return changed
 
     def _count(self, db: sqlite3.Connection, name: str) -> int:
         return db.execute('SELECT COUNT(*) FROM jobs WHERE listing = ?', (name,)).fetchone()[0]
 
     # -- the application log ----------------------------------------------
 
+    def _application_snapshot(self, name):
+        row = self.db.execute(
+            'SELECT content FROM application_csv_snapshots WHERE log=?', (name,)
+        ).fetchone()
+        return row[0] if row else None
+
     def _sync_log(self, file: Path) -> str:
-        name = self.name(file)
-        if not self._stale(name, file, 'applications', 'log'):
+        name = self._managed_name('applications', file)
+        self._reconcile_export('applications', name, file)
+        raw = _financials_bytes(file)
+        snapshot = self._application_snapshot(name)
+        if snapshot is not None:
+            try:
+                ApplicationCSV(snapshot)
+            except ValueError as error:
+                raise StoreError(f'{file}: invalid committed application CSV snapshot') from error
+        if raw is not None:
+            if raw != snapshot or _bytes_digest(raw) != self._known_digest(name):
+                try:
+                    ApplicationCSV(raw)
+                except ValueError as error:
+                    guidance = (
+                        'preview restoration with store resolve-export --use sqlite'
+                        if snapshot is not None
+                        else 'back up and repair or restore the CSV'
+                    )
+                    raise ExportConflict(f'{file}: invalid application CSV; {guidance}') from error
+                with self._transaction() as db:
+                    self._replace_managed(db, 'applications', name, raw)
+                    self._remember_financials(db, name, _bytes_digest(raw))
             return name
-        rows = ApplicationLog(str(file)).rows()
-        with self._transaction() as db:
-            db.execute('DELETE FROM applications WHERE log = ?', (name,))
-            db.executemany(
-                'INSERT INTO applications (log, seq, source, source_id, fingerprint, status, row) '
-                'VALUES (?, ?, ?, ?, ?, ?, ?)',
-                [_application(name, seq, row) for seq, row in enumerate(rows)],
+
+        if snapshot is None:
+            existing = [
+                json.loads(row[0])
+                for row in self.db.execute(
+                    'SELECT row FROM applications WHERE log=? ORDER BY seq', (name,)
+                )
+            ]
+            if not existing:
+                return name
+            logger.warning(
+                '%s: reconstructing legacy CSV; original layout and duplicate columns are unavailable',
+                file,
             )
-            self._remember(db, name, file)
-        if rows:
-            logger.info(f'{file}: imported {len(rows)} application(s) into {self.path}')
+            snapshot = _csv_bytes(existing)
+        with self._transaction() as db:
+            self._replace_managed(db, 'applications', name, snapshot)
+            self._stage_export(db, 'applications', name, None, snapshot)
+        self._reconcile_export('applications', name, file)
         return name
 
     def application_rows(self, file: str | os.PathLike[str]) -> list[dict]:
-        name = self._sync_log(Path(file))
+        target = Path(file).resolve()
+        with financials_lock(target):
+            return self._application_rows(target)
+
+    def _application_rows(self, target):
+        name = self._sync_log(target)
         return [
             json.loads(row)
             for (row,) in self.db.execute(
@@ -509,9 +664,33 @@ class Store:
             )
         ]
 
+    def project_application(self, target, event_id, prepare):
+        """Commit one projection under the caller's export lock."""
+        name = self._sync_log(target)
+        if self.db.execute(
+            'SELECT 1 FROM application_projection_receipts WHERE log=? AND event=?',
+            (name, event_id),
+        ).fetchone():
+            return
+        baseline = self._application_snapshot(name)
+        original = baseline
+        intended = prepare(original)
+        with self._transaction() as db:
+            self._replace_managed(db, 'applications', name, intended)
+            self._stage_export(db, 'applications', name, baseline, intended)
+            db.execute(
+                'INSERT INTO application_projection_receipts VALUES (?, ?)', (name, event_id)
+            )
+        self._reconcile_export('applications', name, target)
+
     def application_counts(self, file: str | os.PathLike[str]) -> dict[str, int]:
         """status -> rows holding it; an empty status counts as 'unknown'."""
-        name = self._sync_log(Path(file))
+        target = Path(file).resolve()
+        with financials_lock(target):
+            return self._application_counts(target)
+
+    def _application_counts(self, target):
+        name = self._sync_log(target)
         return dict(
             self.db.execute(
                 "SELECT COALESCE(NULLIF(status, ''), 'unknown'), COUNT(*) FROM applications "
@@ -527,8 +706,13 @@ class Store:
 
         The dedupe questions are answered from the indexes, not a re-read.
         """
-        target = Path(file)
+        target = Path(file).resolve()
+        with financials_lock(target, wait=True):
+            return self._record_applications(entries, target)
+
+    def _record_applications(self, entries, target):
         name = self._sync_log(target)
+        baseline = self._application_snapshot(name)
         reader = self.db
 
         def seen(source: str | None, job_id: str | None) -> bool:
@@ -558,23 +742,14 @@ class Store:
             logger.debug(f'{target}: nothing new to record')
             return 0
 
+        layout = ApplicationCSV(baseline)
+        for row in fresh:
+            layout.set(None, row)
+        intended = layout.render()
         with self._transaction() as db:
-            (last,) = db.execute(
-                'SELECT COALESCE(MAX(seq), -1) FROM applications WHERE log = ?', (name,)
-            ).fetchone()
-            db.executemany(
-                'INSERT INTO applications (log, seq, source, source_id, fingerprint, status, row) '
-                'VALUES (?, ?, ?, ?, ?, ?, ?)',
-                [_application(name, last + 1 + index, row) for index, row in enumerate(fresh)],
-            )
-            rows = [
-                json.loads(row)
-                for (row,) in db.execute(
-                    'SELECT row FROM applications WHERE log = ? ORDER BY seq', (name,)
-                )
-            ]
-            _export_log(target, rows)
-            self._remember(db, name, target)
+            self._replace_managed(db, 'applications', name, intended)
+            self._stage_export(db, 'applications', name, baseline, intended)
+        self._reconcile_export('applications', name, target)
         logger.info(f'{target}: recorded {len(fresh)} application(s)')
         return len(fresh)
 
@@ -670,28 +845,96 @@ class Store:
             'FROM financial_pending_exports WHERE document = ?',
             (name,),
         ).fetchone()
+
+        def merge(baseline, current, intended):
+            merged = merge_financial_exports(file, baseline, current, intended)
+            return self._stage_financials(name, merged, current)
+
+        def acknowledge(digest):
+            with self._transaction() as db:
+                self._remember_financials(db, name, digest)
+                db.execute('DELETE FROM financial_pending_exports WHERE document = ?', (name,))
+
+        reconcile(
+            file, pending, acknowledge, merge=merge, publish=write_document_bytes, sleep=time.sleep
+        )
+
+    def _stage_export(self, db, kind, name, baseline, intended):
+        db.execute(
+            'INSERT OR REPLACE INTO pending_exports VALUES (?, ?, ?, ?, ?, ?)',
+            (kind, name, baseline, _bytes_digest(baseline), intended, _bytes_digest(intended)),
+        )
+
+    def _reconcile_export(self, kind, name, target):
+        pending = self.db.execute(
+            'SELECT baseline, baseline_digest, intended, intended_digest FROM pending_exports '
+            'WHERE kind=? AND document=?',
+            (kind, name),
+        ).fetchone()
+
+        def acknowledge(digest):
+            with self._transaction() as db:
+                removed = db.execute(
+                    'DELETE FROM pending_exports WHERE kind=? AND document=? AND intended_digest=? '
+                    'AND baseline_digest IS ?',
+                    (kind, name, digest, revision[0]),
+                )
+                if removed.rowcount != 1:
+                    raise ExportConflict(
+                        f'{target}: pending publication changed before acknowledgement'
+                    )
+                self._remember_financials(db, name, digest)
+
         if pending is None:
             return
-        baseline, baseline_digest, intended, intended_digest = pending
-        for delay in (0.05, 0.1, 0.2, 0.4, None):
-            current = _financials_bytes(file)
-            current_digest = _bytes_digest(current)
-            if current_digest != intended_digest:
-                if current is not None and current_digest != baseline_digest:
-                    merged = merge_financial_exports(file, baseline, current, intended)
-                    intended, intended_digest = self._stage_financials(name, merged, current)
-                    baseline, baseline_digest = current, current_digest
-                try:
-                    write_document_bytes(file, intended, replace=_replace_financial_export)
-                except ExportPending:
-                    if delay is None:
-                        raise
-                    time.sleep(delay)
-                    continue
+        revision = [pending[1]]
+
+        def merge(baseline, current, intended):
+            from .managed_merge import merge_export
+
+            output = merge_export(kind, target, baseline, current, intended)
             with self._transaction() as db:
-                self._remember_financials(db, name, intended_digest)
-                db.execute('DELETE FROM financial_pending_exports WHERE document = ?', (name,))
-            return
+                self._replace_managed(db, kind, name, output)
+                self._stage_export(db, kind, name, current, output)
+            revision[0] = _bytes_digest(current)
+            return output, _bytes_digest(output)
+
+        reconcile(
+            target,
+            pending,
+            acknowledge,
+            merge=merge if kind != 'ratings' else None,
+            publish=write_document_bytes,
+            sleep=time.sleep,
+            protect_deletion=kind == 'applications',
+        )
+
+    def _replace_managed(self, db, kind, name, content):
+        from .managed_merge import parse_applications, parse_listing
+
+        if kind == 'jobs':
+            items = parse_listing(content)['list']
+            db.execute('DELETE FROM jobs WHERE listing=?', (name,))
+            db.executemany(
+                'INSERT INTO jobs (listing,key,seq,fingerprint,payload) VALUES (?,?,?,?,?)',
+                [
+                    (name, _key(item), i, fingerprint(item), json.dumps(item, ensure_ascii=False))
+                    for i, item in enumerate(items)
+                ],
+            )
+        elif kind == 'applications':
+            rows = parse_applications(content)
+            db.execute(
+                'INSERT INTO application_csv_snapshots (log, content) VALUES (?,?) '
+                'ON CONFLICT(log) DO UPDATE SET content=excluded.content',
+                (name, content),
+            )
+            db.execute('DELETE FROM applications WHERE log=?', (name,))
+            db.executemany(
+                'INSERT INTO applications (log,seq,source,source_id,fingerprint,status,row) '
+                'VALUES (?,?,?,?,?,?,?)',
+                [_application(name, i, row) for i, row in enumerate(rows)],
+            )
 
     def financials_document(self, file: str | os.PathLike[str]) -> dict:
         """The history document, rebuilt exactly as the file holds it."""
@@ -832,6 +1075,27 @@ class Store:
             )
         ]
 
+    def _publish_ratings(self, target, company, ratings, observations):
+        name = self._managed_name('ratings', target)
+        self._reconcile_export('ratings', name, target)
+        baseline = _financials_bytes(target)
+        intended = document_bytes(ratings if len(ratings) > 1 else ratings[0])
+        with self._transaction() as db:
+            db.executemany(
+                'INSERT INTO ratings (company,source,fetched_at,payload) VALUES (?,?,?,?)',
+                [
+                    (
+                        company.lower(),
+                        rating['source'],
+                        stamp,
+                        json.dumps(rating, ensure_ascii=False),
+                    )
+                    for stamp, rating in observations
+                ],
+            )
+            self._stage_export(db, 'ratings', name, baseline, intended)
+        self._reconcile_export('ratings', name, target)
+
 
 def _is_empty_object(file: Path) -> bool:
     """A listing that is valid JSON and simply empty, rather than unreadable."""
@@ -863,26 +1127,18 @@ def _application(name: str, seq: int, row: dict) -> tuple:
     )
 
 
-def _export_log(target: Path, rows: list[dict]) -> None:
-    """The whole log as a CSV, written the way ApplicationLog appends it - so the
-    bytes match - but all at once, to a temporary file, then swapped in.
+def _csv_bytes(rows):
+    layout = ApplicationCSV(None)
+    layout.header = list(
+        dict.fromkeys([*layout.header, *(key for row in rows for key in row if key)])
+    )
+    for row in rows:
+        layout.set(None, row)
+    return layout.render()
 
-    The temporary file is mkstemp's: unique, so two runs cannot write into one,
-    and owner-only, so a new log is too. An existing log keeps its mode.
-    """
-    descriptor, name = tempfile.mkstemp(prefix=f'.{target.name}.', suffix='.tmp', dir=target.parent)
-    temporary = Path(name)
-    try:
-        if target.exists():
-            os.chmod(temporary, target.stat().st_mode & 0o777)
-        with os.fdopen(descriptor, 'w', encoding='utf-8-sig', newline='') as handle:
-            write_rows(handle, rows, header=True)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, target)
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
+
+def _export_log(target: Path, rows: list[dict]) -> None:
+    write_document_bytes(target, _csv_bytes(rows))
 
 
 __all__ = ['APPLIED_COLUMNS', 'DB_NAME', 'MIGRATIONS', 'Store']

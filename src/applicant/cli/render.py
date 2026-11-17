@@ -67,6 +67,8 @@ class Renderer:
                 len(rating.reviews),
             )
         )
+        if event.cached_at is not None:
+            print('  cached reviews retrieved at {}'.format(shown(event.cached_at)))
 
     def _financials(self, event: FinancialsTracked) -> None:
         from ..financials.tracker import describe_round

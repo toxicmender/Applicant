@@ -1,6 +1,7 @@
 """Explicit capture/import and offline enrichment; ranking never refreshes sources."""
 
 from collections.abc import Callable
+from contextlib import nullcontext
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -19,6 +20,8 @@ from ..domain.ranking_inputs import JobVersionBundle
 from ..errors import SourceError, StoreError
 from ..financials.models import CompanyFinancials, FundingRound, Money
 from ..infra.company_sources import CompanyRecorder, company_client
+from ..infra.company_worker import CompanyFetchInterrupted, company_session, fetch_company
+from ..infra.owned_worker import WorkerFailure
 from ..infra.store.company_evidence import CompanyEvidenceRepository
 from ..infra.store.job_versions import JobVersionRepository
 from ..infra.store.ranking_common import validated, write_transaction
@@ -134,6 +137,101 @@ def _matches(association, snapshot):
         raise ValueError('company snapshot does not match its verified association')
 
 
+def _acquire_evidence(database, association, settings, clock, observed_at, observation_note):
+    from ..financials import CrunchbaseClient, TracxnClient
+    from ..reviews import GlassdoorClient
+    from .provider_health import Acquisition
+
+    recorder = CompanyRecorder()
+    with company_client(association, recorder, settings=settings) as client:
+        owned = isinstance(client, GlassdoorClient) or (
+            isinstance(client, (CrunchbaseClient, TracxnClient)) and not client.api_key
+        )
+        access = company_session(association.provider, client) if owned else nullcontext(None)
+        with access as state, Acquisition(database, association.provider, clock=clock) as owner:
+            if owner.result['status'] != 'acquired':
+                return {'association_id': association.association_id, **owner.result}
+
+            def capture(limit):
+                if owned:
+                    return fetch_company(
+                        association.provider,
+                        client,
+                        association.locator,
+                        limit,
+                        state=state,
+                        check=owner.check,
+                        capture=recorder,
+                    )
+                return client.fetch(association.locator, limit)
+
+            return _commit_capture(
+                database,
+                association,
+                clock,
+                observed_at,
+                observation_note,
+                owner,
+                recorder,
+                capture,
+            )
+
+
+def _commit_capture(
+    database, association, clock, observed_at, observation_note, owner, recorder, capture
+):
+    from ..errors import AuthFailed, Blocked, Unparseable
+    from ..infra.owned_worker import defer_interrupt
+
+    interrupt = None
+    try:
+        limit = 0 if association.provider in ('glassdoor', 'ambitionbox') else 20
+        try:
+            result = capture(limit)
+        except CompanyFetchInterrupted as error:
+            interrupt, result = error, error.result
+        owner.check()
+        snapshot = CompanyEvidenceSnapshot(
+            snapshot_id=str(uuid4()),
+            association_id=association.association_id,
+            provider=association.provider,
+            provider_company_id=association.provider_company_id,
+            acquired_at=utc(clock()),
+            observed_at=observed_at,
+            observation_note=observation_note,
+            payload=result.to_dict(),
+            responses=recorder.completed(),
+        )
+        _matches(association, snapshot)
+        validate_payload(snapshot)
+    except WorkerFailure:
+        raise
+    except SourceError as error:
+        status = (
+            'needs_setup'
+            if isinstance(error, AuthFailed)
+            else 'adapter_degraded'
+            if isinstance(error, Unparseable)
+            else 'throttled'
+            if getattr(error, 'retry_at', None) is not None
+            else 'blocked'
+            if isinstance(error, Blocked)
+            else 'unavailable'
+        )
+        owner.finish(status, retry_at=getattr(error, 'retry_at', None))
+        raise
+    with defer_interrupt():
+        import_company_evidence(database, CompanyEvidenceImport(snapshots=(snapshot,)))
+        owner.finish('success')
+    if interrupt is not None:
+        raise interrupt
+    return {
+        'association_id': association.association_id,
+        'status': 'captured',
+        'snapshot': snapshot.model_dump(),
+    }
+
+
 def capture_company_evidence(
     database: Path,
     association_ids: tuple[str, ...],
@@ -148,35 +246,17 @@ def capture_company_evidence(
     with Store.open_readonly(database) as store, store.read_snapshot():
         repo = CompanyEvidenceRepository(store.db)
         associations = tuple(repo.association(key) for key in association_ids)
+    from .provider_health import LeaseFailure
+
     outcomes = []
     for association in associations:
         try:
-            recorder = CompanyRecorder()
-            with company_client(association, recorder, settings=settings) as client:
-                if association.provider in ('glassdoor', 'ambitionbox'):
-                    payload = client.fetch(association.locator, 0).to_dict()
-                else:
-                    payload = client.fetch(association.locator, 20).to_dict()
-            snapshot = CompanyEvidenceSnapshot(
-                snapshot_id=str(uuid4()),
-                association_id=association.association_id,
-                provider=association.provider,
-                provider_company_id=association.provider_company_id,
-                acquired_at=utc(clock()),
-                observed_at=observed_at,
-                observation_note=observation_note,
-                payload=payload,
-                responses=recorder.completed(),
-            )
-            import_company_evidence(database, CompanyEvidenceImport(snapshots=(snapshot,)))
             outcomes.append(
-                {
-                    'association_id': association.association_id,
-                    'status': 'captured',
-                    'snapshot': snapshot.model_dump(),
-                }
+                _acquire_evidence(
+                    database, association, settings, clock, observed_at, observation_note
+                )
             )
-        except (SourceError, ValueError, StoreError) as error:
+        except (SourceError, ValueError, StoreError, LeaseFailure) as error:
             outcomes.append(
                 {
                     'association_id': association.association_id,

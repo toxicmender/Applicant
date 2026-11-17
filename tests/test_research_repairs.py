@@ -1,17 +1,58 @@
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from applicant.domain.canonical import canonical_json
 from applicant.domain.company_time import event_bounds, event_phase
-from applicant.domain.research import CompanyEventV2, ResearchImport, parse_import
-from applicant.domain.research_reports import company_report
+from applicant.domain.research import (
+    CompanyEventV2,
+    CompanyIdentifier,
+    ResearchImport,
+    parse_import,
+)
+from applicant.domain.research_reports import company_report, snapshot_report
 from applicant.services.research import import_research, read_research
 from tests.research_fixtures import NOW, bundle
 
 
 class ResearchRepairsTest(unittest.TestCase):
+    def test_later_recorded_identifier_and_acquisition_do_not_change_replay(self):
+        with tempfile.TemporaryDirectory() as folder:
+            database = Path(folder) / 'db'
+            import_research(database, bundle())
+            identifier = CompanyIdentifier.model_validate(
+                {
+                    'identifier_id': 'original',
+                    'entity_id': 'startup',
+                    'provider': 'crunchbase',
+                    'provider_company_id': 'startup',
+                    'verification_url': 'https://www.crunchbase.com/organization/startup',
+                    'verified_at': NOW - timedelta(days=1),
+                }
+            )
+            import_research(database, ResearchImport(identifiers=(identifier,)))
+            selection = {'entity_ids': ['parent', 'startup']}
+            saved = company_report(read_research(database), selection, created_at=NOW)
+            before = canonical_json(saved)
+            self.assertEqual(
+                saved['manifest']['company_identifier_ids'], ['gd-startup', 'original']
+            )
+
+            later = (NOW + timedelta(days=1)).isoformat()
+            updated = identifier.model_dump(mode='json')
+            updated.update(
+                identifier_id='backdated', verified_at=later, effective_from='2025-01-01'
+            )
+            event = bundle().events[0].model_dump(mode='json')
+            event.update(event_id='later-recorded', recorded_at=later)
+            import_research(database, {'identifiers': [updated], 'events': [event]})
+            self.assertEqual(
+                canonical_json(company_report(read_research(database), selection, created_at=NOW)),
+                before,
+            )
+            self.assertEqual(canonical_json(snapshot_report(saved)), before)
+
     def test_versioned_persistence_keeps_v1_bytes_and_import_identity(self):
         with tempfile.TemporaryDirectory() as folder:
             database = Path(folder) / 'db'

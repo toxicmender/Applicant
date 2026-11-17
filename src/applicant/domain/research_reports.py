@@ -306,6 +306,15 @@ def company_report(data, selection, *, created_at):
         'sections': output,
         'manifest': {
             'cutoff': cutoff.isoformat(),
+            'knowledge_cutoff': cutoff.isoformat(),
+            'company_identifier_ids': sorted(
+                item.identifier_id
+                for item in data.get('identifiers', ())
+                if item.entity_id in entities | historical_entities
+                and item.verified_at < cutoff
+                and (item.effective_from is None or item.effective_from <= as_of)
+                and (item.effective_to is None or as_of < item.effective_to)
+            ),
             'corporate_time_policy': 'event-precision-2',
             'selection': selection,
             'job_version_ids': sorted(versions),

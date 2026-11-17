@@ -218,7 +218,10 @@ class ReviewsErrorTest(unittest.TestCase):
     def test_one_failing_source_no_longer_ends_the_reviews_run(self):
         err = io.StringIO()
         with (
-            mock.patch.object(GlassdoorClient, '_fetch', side_effect=RuntimeError('no chrome')),
+            mock.patch(
+                'applicant.infra.company_worker.fetch_company',
+                side_effect=RuntimeError('no chrome'),
+            ),
             mock.patch.object(
                 AmbitionBoxClient, '_fetch', side_effect=httpx.ConnectError('offline')
             ),

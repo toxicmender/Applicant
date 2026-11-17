@@ -30,6 +30,8 @@ from .services.search import SOURCES, Board, SearchJobs, close_quietly
 
 if TYPE_CHECKING:
     from .boards.linkedin_apply import LinkedIn
+    from .services.application_attempts import AttemptJournal
+    from .services.pending_enrichment import PendingEnrichment
 
 __all__ = ['SOURCES', 'Board', 'Jobs']
 
@@ -46,6 +48,7 @@ class Jobs:
         linkedin: LinkedIn | None = None,
         backend: Backend = 'files',
         session: str | Path = 'cookies.json',
+        attempts: AttemptJournal | None = None,
     ):
         self.sources = tuple(sources)
         self.headless = headless
@@ -55,6 +58,8 @@ class Jobs:
         self.backend: Backend = backend
         # the signed in session `applicant jobs` saved; apply() restores it
         self.session = session
+        self.attempts = attempts
+        self.owned_search = False
 
     def linkedin(self) -> LinkedIn:
         """The signed in LinkedIn client, made only when something is submitted.
@@ -100,6 +105,10 @@ class Jobs:
         self.close()
 
     def _client(self, name: str) -> Board:
+        if self.owned_search and name in ('linkedin', 'indeed', 'naukri', 'googlejobs'):
+            from .infra.board_worker import OwnedBoard
+
+            return OwnedBoard(name, headless=self.headless)
         if name == 'linkedin':
             if self._linkedin is not None:
                 return self._linkedin  # a client handed in: searched with, kept open
@@ -124,6 +133,8 @@ class Jobs:
         enrich_limit: int = 25,
         on_error: Callable[[str, Exception], None] | None = None,
         emit: Emit = ignore,
+        on_batch: Callable[[list[Job]], None] | None = None,
+        pending: PendingEnrichment | None = None,
     ) -> list[Job]:
         """Search every configured board and return the filtered, merged results.
 
@@ -136,6 +147,17 @@ class Jobs:
         # a LinkedIn client handed in belongs to the caller, so it stays open;
         # the guest client made for the search is closed with the rest
         keep_open = {'linkedin'} if self._linkedin is not None else set()
+        from .services.application_attempts import AttemptJournal, linkedin_posting_key
+
+        protected = (
+            AttemptJournal('applied_jobs.csv', self.session).protected_postings()
+            if 'linkedin' in self.sources
+            else set()
+        )
+
+        def eligible(job: Job) -> bool:
+            return job.source != 'linkedin' or linkedin_posting_key(job.to_dict()) not in protected
+
         return SearchJobs(self._client, keep_open=keep_open).run(
             self.sources,
             keywords,
@@ -146,7 +168,15 @@ class Jobs:
             enrich=enrich,
             enrich_limit=enrich_limit,
             emit=emit,
+            on_batch=on_batch,
+            pending=pending,
+            eligible=eligible if protected else None,
         )
+
+    def resume_pending(self, path: str, budget: int) -> dict[str, int]:
+        from .services.pending_enrichment import PendingEnrichment
+
+        return PendingEnrichment(path, self.backend).resume(self.sources, self._client, budget)
 
     def apply(
         self,
@@ -163,8 +193,22 @@ class Jobs:
         `dry_run` has no default: a call that sends applications in your name
         has to say so. `confirm` is asked before anything is submitted.
         """
+        attempts = self.attempts
+        if attempts is None and not dry_run:
+            from .services.application_attempts import AttemptJournal
+
+            attempts = AttemptJournal(log, self.session, backend=self.backend)
+
+        def client() -> LinkedIn:
+            board = self.linkedin()
+            board.attempt_journal = attempts
+            return board
+
         service = ApplyToJobs(
-            {'linkedin': EasyApply(self.linkedin)}, backend=self.backend, confirm=confirm
+            {'linkedin': EasyApply(client)},
+            backend=self.backend,
+            confirm=confirm,
+            retry=attempts.retry if attempts is not None else None,
         )
         return service.run(jobs, log=log, filters=filters, dry_run=dry_run)
 

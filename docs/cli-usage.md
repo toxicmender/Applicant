@@ -51,6 +51,7 @@ uv run applicant search "machine learning engineer" -l India -s linkedin indeed 
 uv run applicant search "software engineer" -l Bengaluru --title backend --title "machine learning" --experience 5 --posted-within 14
 uv run applicant search "python developer" --min-salary 1200000 --currency INR --salary-basis strict
 uv run applicant search "python engineer" -s linkedin --experience 5 --enrich --enrich-limit 10 --want 15
+uv run applicant search --resume-pending -s linkedin --enrich-limit 10
 uv run applicant search --list-saved
 uv run applicant search --saved ai-ml --title "nlp"
 ```
@@ -66,6 +67,17 @@ rounds to reach a target after filtering. `--enrich` reads a bounded number of
 supported posting pages for missing experience details. `--show` opens supported
 browser-backed searches visibly.
 
+If enrichment is interrupted, saved candidates that still need a description
+stay out of the application worklist. `--resume-pending` checks saved requests
+across earlier query signatures for the selected providers. It reuses local
+descriptions before spending its live budget. Ordinary searches reserve at most
+half their live enrichment budget for matching saved requests. With a budget of
+one, use `--resume-pending` to spend that request on a saved candidate.
+
+Completed descriptions are reusable for 30 days and completed empty responses
+for seven days. A contradictory job card triggers a fresh lookup. A clock-skew
+diagnostic means Applicant checked timestamps against its saved clock reference.
+
 #### Signed-in LinkedIn recommendations (`jobs`)
 
 Collect recommended jobs using your LinkedIn session. Set up the session first
@@ -80,6 +92,42 @@ uv run applicant jobs --overwrite
 ```
 
 #### Applications (`apply`)
+
+An interrupted LinkedIn submission can leave an uncertain attempt. Use the attempt
+ID printed in the run log and inspect the exact posting in **Jobs → Job tracker →
+Applied** under the original account. Leave the attempt unresolved if the portal
+has yet to show a conclusive result.
+
+```console
+uv run applicant apply --reconcile ATTEMPT_ID --outcome submitted
+uv run applicant apply --reconcile ATTEMPT_ID --outcome not-submitted
+uv run applicant apply --reconcile ATTEMPT_ID --outcome abandoned
+uv run applicant apply --reopen-attempt ATTEMPT_ID
+uv run applicant apply --retry-attempt ATTEMPT_ID --acknowledge-duplicate-risk
+```
+
+`not-submitted`, `abandoned`, and reopening require a terminal attestation.
+An abandoned attempt continues to block automatic dispatch until reopened.
+An authorized retry consumes its approval once at dispatch and still goes
+through regular confirmation. A retry can create a duplicate if the portal
+accepted the original submission. Session changes or key rotation require fresh
+attestation. `--rotate-attestation-key` leaves unresolved attempts protected.
+
+The attempt journal follows the saved profile across `--log` destinations.
+Import older journals explicitly before dispatching work originally tracked in
+other destinations. For external tools preparing a journal for import, publish
+the completed file by atomic rename.
+
+```console
+uv run applicant apply --import-attempts-from legacy.attempts.json
+uv run applicant apply --list-conflicts
+uv run applicant apply --resolve-conflict ATTEMPT_ID --keep incoming --digest HASH
+```
+
+The import quarantines conflicting candidates and reports their digests.
+`--keep journal` retains the canonical record. `--keep both` preserves an
+additional historical attempt under a distinct ID. `--dismiss` records a
+candidate as invalid so a repeated import does not reopen the conflict.
 
 Filter a stored listing and start with a dry run. Dry runs record `would_apply`
 rows in the selected CSV. A live run previews the batch and asks for confirmation.
@@ -145,6 +193,16 @@ collection. See [provider access and session behavior](research.md#authenticatio
 
 #### Company reviews (`reviews`)
 
+Verified review results can be reused for up to seven days when they cover the
+requested review count and match the active profile scope. Pass `--refresh` to
+fetch live results. Verified Crunchbase financials for name lookups use a 30-day
+window when the result covers the requested funding rounds.
+
+Cache age uses UTC timestamps. Applicant accounts for a backward clock change
+of up to 15 minutes while the process is running. After a restart, a retrieval
+time up to two minutes ahead counts as age zero. Check the system clock if the
+run log reports a larger discrepancy.
+
 Fetch ratings, review counts, and review excerpts. AmbitionBox takes a company
 slug. Glassdoor takes a reviews URL or an employer ID slug and can reuse a
 session created with `setup provider glassdoor`.
@@ -172,6 +230,10 @@ uv run applicant financials zomato --source crunchbase --login
 For Tracxn company names without an API key, Applicant reuses a uniquely matched
 saved result checked less than 30 days ago. Pass `--refresh` to bypass it.
 Legacy records with no timezone offset stay stale until a successful refresh.
+Use `financials --source crunchbase --refresh` to refresh earlier captures
+that lack expected funding rounds. A verified partial capture reports which
+data could not be read, adds usable facts to history, and preserves previous
+facts and rounds. Applicant keeps partial results out of the reusable cache.
 In a terminal, Applicant offers to open your saved session when it first needs a profile URL.
 Set up that session with `uv run applicant setup provider tracxn` if needed.
 
@@ -242,6 +304,12 @@ uv run applicant research report --database demo-research.db --selection selecti
 The selection can pin evidence and job versions. Dated employer schedules use
 the applicant's timezone and preserve seasonal offset changes. See [research
 templates, report sections, and freshness rules](research.md).
+
+For manual review when `research capture-profile` cannot verify an exact
+association, add `legal_name` and an ISO two-letter `country` to the selection.
+Suggestions use effective, documented legal names and verified identifiers
+whose provider is `legal-country`. Capture still requires a verified provider
+company ID and profile URL.
 
 #### Cross-board feeds (`feed`)
 
@@ -356,6 +424,12 @@ uv run applicant rank replay RUN_ID --provenance provenance.json
 ```
 
 Reports show eligibility, fit, evidence confidence, and coverage separately.
+Ranking skips pending enrichment stubs and uses the vetted record when both
+share a posting identity. Identities include the source. Repeated identical
+vetted records use the first occurrence, and conflicting vetted records
+report the input record that conflicts. An all-pending input creates no run
+and exits with code 1. Resume saved requests with `search --resume-pending`
+for the same listing or rerun the original search for stubs without requests.
 Use full job IDs from `rank show` for explanations and feedback. Replay verifies
 a completed engine run with its exact archived inputs and retained build
 provenance. See [ranking input and replay details](milestone-3-plan.md).
@@ -447,12 +521,75 @@ ranking and research analytics.
 
 #### Schema upgrades (`db`)
 
-Upgrade an existing SQLite database before using commands that require the
-current schema.
+Back up the database and its exports before upgrading. Read-only and writable
+database commands reject databases newer than the schema they support.
 
 ```console
 uv run applicant db upgrade --database applicant.db
 ```
+
+#### Managed export recovery (`store`)
+
+When a managed export reports `export_conflict`, preview which version to keep.
+Use the token from the preview with the same choice to apply it. The displaced
+bytes are backed up beside the export.
+
+```console
+uv run applicant store resolve-export --database applicant.db --export job_listing.json --use sqlite --dry-run
+uv run applicant store resolve-export --database applicant.db --export job_listing.json --use sqlite --confirm TOKEN
+```
+
+Use `--use file` to select validated on-disk changes. Settled applications and the
+attempt journal are protected. If either version changes, generate a new preview.
+
+Applicant preserves application CSV columns by position in both backends,
+including duplicate custom headers and populated blank columns. SQLite keeps
+a complete snapshot of each log and restores missing exports on managed access.
+If both a legacy export and its layout are gone, reconstruction uses the stored
+named values. A backup is needed to recover layout or values already lost.
+
+A malformed application CSV stays on disk until you repair it or explicitly
+restore a valid SQLite snapshot. Use the commands above with
+`--export applied_jobs.csv --use sqlite`. Confirmation verifies the original
+bytes, saves a private backup, and stages publication. If a separate editor
+changes the file during capture, preview the new version. Applicant coordinates
+its own writers with advisory locks. Other editors can still change the file
+between the final check and replacement.
+
+Automatic recovery can merge disjoint appends with identical ordered headers.
+Edits to existing cells, changed headers, uneven row widths, and competing
+outcomes require intervention. Generated values use reversible formula escaping.
+Recovery protects newly incorporated external cells while preserving whitespace
+and existing leading apostrophes. Spreadsheet display of apostrophes varies by
+importer. Existing recorded cells retain their values.
+
+For `export_pending`, close applications holding the destination and rerun the
+original command. Applicant recovers the committed export before the next managed
+read or write. If the log reports `storage_full`, free space before rerunning.
+Application writes use bounded retries for transient lock or replacement errors.
+Each retry checks for drift on disk. If publication fails after the database
+commits, Applicant keeps the pending export for recovery on the next relevant
+command.
+If SQLite contains more than one case-equivalent collection name on Windows,
+back up the database and review both histories before resolving the duplicate
+keys. Keep the sibling export lock file while Applicant is using the path.
+
+`status --json PATH` sets `projection_pending` when journal projection is
+deferred and `export_pending` when an export could not be published.
+Status makes a single attempt and uses committed data when it can. A readable deferred summary
+returns `0` and warns on stderr. Mutating commands return `8` on retryable
+contention or pending publication. Storage failure and `export_conflict` return
+`1` with distinct statuses. CLI usage errors return `2`, blocked application
+dispatch returns `9`, missing terminal attestation returns `10`, and interruption
+returns `130`. Provider-specific exit codes continue to apply.
+
+Before rolling back, stop writers, reconcile attempts, and finish pending
+exports. Move the upgraded database and private v2 journals, keys, and export
+indexes out of their active paths. Restore a compatible database backup or use
+vetted-only exports in a separate data directory. Leave `PRAGMA user_version`
+at the value assigned by the migration. Keep dispatch disabled on the
+older version for profiles with unresolved attempts. Remove unused lock files
+only after every process using their paths has stopped.
 
 #### WAL checkpoints (`store`)
 
@@ -515,7 +652,7 @@ or disable it with `--no-log-file`.
 | 5 | Provider response could not be parsed |
 | 6 | Authentication or API quota failure |
 | 7 | Provider unreachable |
-| 8 | Database busy or retryable database operation |
+| 8 | Database or export busy, or publication pending |
 | 130 | Interrupted |
 
 ### Usage notes for scripting

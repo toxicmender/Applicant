@@ -117,6 +117,18 @@ class AmbitionBoxClient:
             return self._from_json_ld(response.text, company, url)
 
         rating = self._to_rating(props, company, url)
+        header = props.get('companyHeaderData') or {}
+        declared = props.get('companyName') or header.get('companyName')
+        ids = {
+            str(value)
+            for value in (props.get('companyId'), header.get('companyId'))
+            if value is not None
+        }
+        if len(ids) > 1:
+            raise Unparseable('AmbitionBox response contains conflicting company IDs')
+        rating.identity_verified = bool(
+            rating.company_id and isinstance(declared, str) and slugify(declared) == slug
+        )
 
         wanted = max(0, max_reviews)
         rating.reviews = [self._to_review(item) for item in props.get('reviewsData') or []][:wanted]
@@ -136,6 +148,14 @@ class AmbitionBoxClient:
                 )
                 break
             items = page_props.get('reviewsData') or []
+            page_header = page_props.get('companyHeaderData') or {}
+            page_ids = {
+                str(value)
+                for value in (page_props.get('companyId'), page_header.get('companyId'))
+                if value is not None
+            }
+            if page_ids - ids:
+                break
             if not items:
                 break
             for item in items:

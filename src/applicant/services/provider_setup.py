@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 from ..domain.canonical import content_hash
 from ..domain.contracts import now
 from ..domain.providers import provider
-from ..errors import ConfigError
+from ..errors import AuthFailed, ConfigError
 from ..files import write_document
 from ..infra.browser import BrowserSession, looks_blocked
 from ..infra.browser_diagnostics import event, safe_origin, stage
@@ -189,25 +189,37 @@ def verify_state(name, state, *, interactive=False, factory: Callable[..., Any] 
             _verification_worker,
             (name, state, interactive),
             interactive=interactive,
-            pause=Terminal().pause,
+            prompt=Terminal().ask_interruptibly if interactive else None,
             provider=name,
         )
     return _verify_inline(name, state, interactive=interactive, factory=factory)
 
 
 def _verification_worker(connection, arguments):
+    from ..infra.owned_worker import WorkerInteraction
+
     name, state, interactive = arguments
+    current = None
 
     class Session(BrowserSession):
+        def start(self):
+            nonlocal current
+            current = super().start()
+            return current
+
         def __exit__(self, *args):
             connection.send(('closing', None))
             return super().__exit__(*args)
 
-    def pause(message):
-        connection.send(('pause', message))
-        connection.recv()
+    def check():
+        if current is None or current.is_closed():
+            raise AuthFailed('browser closed during login')
+        current.wait_for_timeout(50)
 
-    return _verify_inline(name, state, interactive=interactive, factory=Session, pause=pause)
+    interaction = WorkerInteraction(connection, check, AuthFailed('login cancelled'))
+    return _verify_inline(
+        name, state, interactive=interactive, factory=Session, pause=interaction.pause
+    )
 
 
 def _verify_inline(

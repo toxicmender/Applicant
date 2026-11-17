@@ -6,29 +6,35 @@ from urllib.parse import urlsplit
 from ..boards.public import structured_records
 from ..domain.canonical import canonical_json, content_hash
 from ..domain.company_evidence import CompanyResponse
+from ..domain.company_resolution import resolve_company, suggest_manual_matches
 from ..domain.contracts import now
 from ..domain.providers import provider
+from ..domain.ranking_facts import country
 from ..domain.research import Company, CompanyIdentifier, Culture, ResearchEvidence, ResearchImport
 from ..errors import AuthFailed, Blocked, SourceError, Unparseable
 from ..infra.http import HttpClient
 from ..infra.store.company_evidence import CompanyEvidenceRepository
 from ..infra.store.sqlite import Store
-from .provider_health import acquire, finish
+from .provider_health import Acquisition
 from .research import import_research, read_research
 
 PROFILE_PROVIDERS = ('flexa', 'wellfound', 'builtin', 'welcometothejungle')
 
 
 def capture_profile(database, selection, *, client=None, clock=now):
-    if not isinstance(selection, dict) or set(selection) != {
-        'entity_id',
-        'provider',
-        'url',
-        'provider_company_id',
-    }:
+    required = {'entity_id', 'provider', 'url', 'provider_company_id'}
+    optional = {'legal_name', 'country'}
+    if (
+        not isinstance(selection, dict)
+        or not required <= selection.keys()
+        or set(selection) - required not in (set(), optional)
+        or any(not isinstance(value, str) or not value.strip() for value in selection.values())
+    ):
         raise ValueError(
-            'profile capture requires entity_id, provider, url and provider_company_id'
+            'profile capture requires entity_id, provider, url and provider_company_id; '
+            'legal_name and country may be supplied together for manual suggestions'
         )
+    manual_country = country(selection['country'].upper()) if 'country' in selection else None
     name = provider(selection['provider']).id
     if name not in PROFILE_PROVIDERS:
         raise ValueError('unsupported public profile provider')
@@ -42,19 +48,40 @@ def capture_profile(database, selection, *, client=None, clock=now):
     ):
         raise ValueError('profile locator must be on the selected provider')
     data = read_research(database)
-    if not any(
-        x.entity_id == selection['entity_id']
-        and x.provider == name
-        and x.provider_company_id == selection['provider_company_id']
-        and x.verification_url == selection['url']
-        for x in data['identifiers']
-    ):
-        raise ValueError(
-            'capture requires an explicit verified company identifier and exact profile URL'
+    cutoff = clock()
+    if (
+        resolve_company(
+            data['identifiers'],
+            effective_date=cutoff.date(),
+            knowledge_cutoff=cutoff,
+            provider=name,
+            provider_id=selection['provider_company_id'],
+            locator=selection['url'],
         )
-    lease = acquire(database, name, clock=clock)
-    if lease['status'] != 'acquired':
-        return {'provider': name, **lease}
+        != selection['entity_id']
+    ):
+        message = 'capture requires an explicit verified company identifier and exact profile URL'
+        if manual_country is not None:
+            candidates = suggest_manual_matches(
+                data['names'],
+                data['identifiers'],
+                legal_name=selection['legal_name'],
+                country=manual_country,
+                effective_date=cutoff.date(),
+                knowledge_cutoff=cutoff,
+            )
+            message += '; legal name and country candidates for manual review: ' + (
+                ', '.join(candidates) if candidates else 'none'
+            )
+        raise ValueError(message)
+    selection = {key: selection[key] for key in sorted(required)}
+    with Acquisition(database, name, clock=clock) as owner:
+        if owner.result['status'] != 'acquired':
+            return {'provider': name, **owner.result}
+        return _capture_public(database, selection, name, owner, client, clock)
+
+
+def _capture_public(database, selection, name, owner, client, clock):
     http = HttpClient(name, client=client)
     try:
         response = http.get(selection['url'])
@@ -62,13 +89,21 @@ def capture_profile(database, selection, *, client=None, clock=now):
             raise Blocked('company profile access denied')
         if response.status_code >= 400 or len(response.content) > 8_000_000:
             raise Unparseable('profile unavailable or oversized; import evidence instead')
+        owner.check()
         records, _ = structured_records(response.text, 'Organization')
         matches = [
             x
             for x in records
-            if x.get('url') == selection['url']
-            or x.get('@id') == selection['url']
-            or str(x.get('identifier')) == selection['provider_company_id']
+            if (
+                x.get('identifier') is None
+                or str(x['identifier']) == selection['provider_company_id']
+            )
+            and (x.get('url') is None or x['url'] == selection['url'])
+            and (
+                x.get('url') == selection['url']
+                or x.get('@id') == selection['url']
+                or str(x.get('identifier')) == selection['provider_company_id']
+            )
         ]
         if len(matches) != 1 or not isinstance(matches[0].get('description'), str):
             raise Unparseable(
@@ -100,20 +135,13 @@ def capture_profile(database, selection, *, client=None, clock=now):
             if isinstance(error, Blocked)
             else 'unavailable'
         )
-        finish(
-            database,
-            name,
-            lease['token'],
-            status,
-            retry_at=getattr(error, 'retry_at', None),
-            clock=clock,
-        )
+        owner.finish(status, retry_at=getattr(error, 'retry_at', None))
         raise
     finally:
         http.close()
     # Persistence failures are never provider failures.
     result = import_research(database, ResearchImport(evidence=(item,)))
-    finish(database, name, lease['token'], 'success', clock=clock)
+    owner.finish('success')
     return {
         **result,
         'evidence_id': item.evidence_id,

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 from pathlib import Path
@@ -131,19 +132,35 @@ class Rates:
             cache['ppp'].setdefault(country, dict(entry, fetched=0, seeded=True))
         return cache
 
-    def _save(self):
+    def _save(self, section, key, incoming):
+        from .errors import StoreError
+        from .infra.store.financials_lock import export_lock
+
         try:
-            write_document(self.path, self._cache)
-        except OSError as error:
+            with export_lock(self.path):
+                reloaded = self._load()
+                prior = reloaded[section].get(key)
+                field = 'date' if section == 'fx' else 'year'
+                version = (str(incoming.get(field) or ''), incoming['fetched'])
+                if prior is None or version > (
+                    str(prior.get(field) or ''),
+                    prior.get('fetched', 0),
+                ):
+                    reloaded[section][key] = incoming
+                    write_document(self.path, reloaded)
+                self._cache = reloaded
+        except (OSError, StoreError) as error:
             # a read only cwd should not break a search, but it should be visible
             logger.warning(f'could not write the rate cache {self.path}: {error}')
+            self._cache[section][key] = incoming
+        return self._cache[section][key]
 
     # -- exchange rates ---------------------------------------------------
 
     def fx(self, base='USD'):
         """{currency: units per 1 base}. Empty dict when unavailable."""
         entry = self._cache['fx'].get(base)
-        if entry and time.time() - entry.get('fetched', 0) < FX_TTL:
+        if entry and 0 <= time.time() - entry.get('fetched', 0) < FX_TTL:
             return entry['rates']
         if self.offline:
             return entry['rates'] if entry else {}
@@ -161,6 +178,11 @@ class Rates:
             ) as http:
                 payload = http.get(FX_URL, params={'base': base}).json()
             rates = dict(payload['rates'])
+            if not rates or any(
+                type(value) not in (int, float) or not math.isfinite(value) or value <= 0
+                for value in rates.values()
+            ):
+                raise ValueError('invalid exchange rates')
             rates[base] = 1.0
         except Exception as error:  # noqa: BLE001 - any FX failure falls back to the cache
             logger.warning(
@@ -170,13 +192,16 @@ class Rates:
             return entry['rates'] if entry else {}
         logger.info(f'fetched {len(rates)} exchange rates against {base}')
 
-        self._cache['fx'][base] = {
-            'rates': rates,
-            'fetched': time.time(),
-            'date': payload.get('date'),
-        }
-        self._save()
-        return rates
+        saved = self._save(
+            'fx',
+            base,
+            {
+                'rates': rates,
+                'fetched': time.time(),
+                'date': payload.get('date'),
+            },
+        )
+        return saved['rates']
 
     # -- ppp factors ------------------------------------------------------
 
@@ -187,7 +212,7 @@ class Rates:
             return None
 
         entry = self._cache['ppp'].get(country)
-        if entry and (entry.get('seeded') or time.time() - entry.get('fetched', 0) < PPP_TTL):
+        if entry and (entry.get('seeded') or 0 <= time.time() - entry.get('fetched', 0) < PPP_TTL):
             return entry['value']
         if self.offline:
             return entry['value'] if entry else None
@@ -201,9 +226,7 @@ class Rates:
             # the World Bank throttles hard; a stale or seeded value beats nothing
             return entry['value'] if entry else None
 
-        self._cache['ppp'][country] = dict(newest, fetched=time.time())
-        self._save()
-        return newest['value']
+        return self._save('ppp', country, dict(newest, fetched=time.time()))['value']
 
     # -- a fixed view for one run -----------------------------------------
 
@@ -236,7 +259,16 @@ def _series(response: httpx.Response) -> list[dict] | None:
     """
     try:
         payload = response.json()
-        return [row for row in payload[1] if row.get('value') is not None]
+        return [
+            row
+            for row in payload[1]
+            if type(row.get('value')) in (int, float)
+            and math.isfinite(row['value'])
+            and row['value'] > 0
+            and str(row.get('date', '')).isascii()
+            and str(row.get('date', '')).isdigit()
+            and len(str(row['date'])) == 4
+        ]
     except Exception:  # noqa: BLE001 - any shape but the expected one is unusable
         return None
 
@@ -270,8 +302,8 @@ def fetch_factor(country, timeout=20.0, attempts=3, pause=2.0, client=None):
         # None: the retries ran out on unusable answers. []: a real answer,
         # the series has no data for this country
         return None
-    rows.sort(key=lambda row: row['date'], reverse=True)
-    return {'value': rows[0]['value'], 'year': rows[0]['date']}
+    latest = max(rows, key=lambda row: str(row['date']))
+    return {'value': latest['value'], 'year': str(latest['date'])}
 
 
 def refresh_factors(
@@ -304,18 +336,18 @@ def refresh_factors(
         ]
     )
 
-    # quarantined, not overwritten: this is the checked in table, and writing only
-    # this run's factors over an unreadable copy would silently drop the rest
+    from .infra.store.financials_lock import export_lock
+
     target = LOCAL_FACTORS if path is None else path
     document = read_document(target, quarantine=True)
-    factors = document.setdefault('factors', {})
+    factors = document.get('factors', {})
     if not isinstance(factors, dict):
-        factors = document['factors'] = {}
+        factors = {}
     # what counts as already known: this file, and the shipped table under it
     known = {**PPP_SEED, **factors} if path is None else factors
 
     updated, failed, skipped = [], [], []
-    today = time.strftime('%Y-%m-%d')
+    candidates = {}
 
     for country in dict.fromkeys(wanted):
         if country == 'USA' or (country in known and not force):
@@ -328,15 +360,30 @@ def refresh_factors(
         if found is None:
             failed.append(country)
         else:
-            factors[country] = dict(found, retrieved=today)
-            updated.append(country)
+            candidates[country] = dict(found, retrieved=time.strftime('%Y-%m-%d', time.gmtime()))
         if on_result:
-            on_result(country, factors.get(country), False)
+            on_result(country, candidates.get(country, factors.get(country)), False)
 
-    if updated:
-        document['factors'] = dict(sorted(factors.items()))
-        write_document(target, document, trailing_newline=True)
-        logger.info(f'PPP table {target}: {len(updated)} factor(s) written')
+    if candidates:
+        with export_lock(target):
+            document = read_document(target, quarantine=True)
+            factors = document.get('factors', {})
+            if not isinstance(factors, dict):
+                factors = {}
+            for country, entry in candidates.items():
+                prior = factors.get(country)
+                if isinstance(prior, dict) and (entry['year'], entry['retrieved']) <= (
+                    str(prior.get('year') or ''),
+                    str(prior.get('retrieved') or ''),
+                ):
+                    skipped.append(country)
+                    continue
+                factors[country] = entry
+                updated.append(country)
+            if updated:
+                document['factors'] = dict(sorted(factors.items()))
+                write_document(target, document, trailing_newline=True)
+                logger.info(f'PPP table {target}: {len(updated)} factor(s) written')
 
     return updated, failed, skipped
 

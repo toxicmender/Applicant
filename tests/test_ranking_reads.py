@@ -13,7 +13,7 @@ from unittest import mock
 from applicant.domain.job import Job
 from applicant.domain.ranking import RankingRun, ScoringConfiguration
 from applicant.errors import ConfigError, StoreError
-from applicant.infra.store.listing_snapshots import listing_snapshot
+from applicant.infra.store.listing_snapshots import listing_snapshot, select_listing
 from applicant.infra.store.ranking_runs import RankingRunRepository
 from applicant.infra.store.sqlite import MIGRATIONS, Store
 from applicant.services.preferences import save_profile
@@ -128,8 +128,57 @@ class RankingReadsTest(unittest.TestCase):
         path.write_text(json.dumps({'list': [other, self.job.model_dump()]}), encoding='utf-8')
         self.assertEqual([j.source for j in listing_snapshot(path)], ['linkedin', 'indeed'])
         path.write_text(json.dumps({'list': [other, other]}), encoding='utf-8')
-        with self.assertRaisesRegex(ConfigError, 'duplicate job identity'):
+        self.assertEqual(len(listing_snapshot(path)), 1)
+        path.write_text(
+            json.dumps({'list': [other, {**other, 'title': 'Conflicting'}]}), encoding='utf-8'
+        )
+        with self.assertRaisesRegex(ConfigError, r'list\[1\].*conflicting duplicate job identity'):
             listing_snapshot(path)
+
+    def test_pending_rows_never_supersede_vetted_jobs(self):
+        path = self.root / 'input.json'
+        ordinary = self.job.to_dict()
+        stub = {'source': ' indeed ', 'id': '1', 'url': None, 'pending_job_v1': ordinary}
+        pending_only = {**stub, 'id': '2', 'pending_job_v1': {**ordinary, 'id': '2'}}
+        other = {**ordinary, 'source': 'linkedin'}
+        for group in ([stub, ordinary], [ordinary, stub]):
+            with self.subTest(group=group):
+                payload = {
+                    'list': [*group, other, pending_only, {**pending_only, 'enrichment_v1': None}]
+                }
+                path.write_text(json.dumps(payload), encoding='utf-8')
+                before = path.read_bytes()
+                selected = select_listing(path)
+                self.assertEqual([job.source for job in selected.jobs], ['indeed', 'linkedin'])
+                self.assertEqual((selected.pending_only, selected.overlaps), (1, 1))
+                self.assertEqual(path.read_bytes(), before)
+        for invalid in (
+            {**stub, 'title': 'hybrid'},
+            {**stub, 'id': '3'},
+            {**stub, 'enrichment_v1': []},
+        ):
+            path.write_text(json.dumps({'list': [ordinary, invalid]}), encoding='utf-8')
+            with self.assertRaisesRegex(ConfigError, r'list\[1\]'):
+                select_listing(path)
+
+    def test_readonly_fallback_excludes_pending_enrichment(self):
+        from applicant.domain.filtering import JobFilter
+        from applicant.infra.store.sqlite import DB_NAME
+        from applicant.services.pending_enrichment import PendingEnrichment
+
+        path = self.root / 'input.json'
+        database = self.root / DB_NAME
+        with Store(database) as writer:
+            writer.save_jobs([self.job], path)
+        queued = PendingEnrichment(path, 'sqlite')
+        queued.queue([Job(source='indeed', id='2', title='Developer')], 'developer', JobFilter())
+        path.unlink()
+        with Store.open_readonly(database) as reader:
+            selection = select_listing(path, store=reader)
+        self.assertEqual(selection.jobs, (self.job,))
+        self.assertEqual(selection.pending_only, 1)
+        self.assertTrue(selection.resumable)
+        self.assertFalse(path.exists())
 
     def test_snapshot_is_consistent_across_a_concurrent_commit_and_released_on_error(self):
         with Store(self.path) as writer, Store.open_readonly(self.path) as reader:

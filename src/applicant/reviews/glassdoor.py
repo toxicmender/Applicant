@@ -52,7 +52,7 @@ class GlassdoorClient:
 
     def __init__(
         self,
-        profile_dir='.gd_profile',
+        profile_dir: str | None = '.gd_profile',
         login=False,
         headless=True,
         timeout=45000,
@@ -62,6 +62,7 @@ class GlassdoorClient:
         # asked to wait while a person clears the bot check in a --login run
         self.interaction = interaction or Terminal()
         self.profile_dir = profile_dir
+        self.owned = False
         self.login = login
         self.headless = False if login else headless
         self.timeout = timeout
@@ -73,7 +74,12 @@ class GlassdoorClient:
         """Every failure leaves as a SourceError, so a caller trying several
         sources can report this one and carry on with the rest."""
         try:
-            rating = self._fetch(company, max_reviews)
+            if self.owned:
+                from ..infra.company_worker import fetch_company
+
+                rating = fetch_company('glassdoor', self, company, max_reviews)
+            else:
+                rating = self._fetch(company, max_reviews)
         except SourceError:
             raise
         # the browser: launch failures, timeouts, a window closed by hand
@@ -140,6 +146,9 @@ class GlassdoorClient:
 
     def _settle(self, page):
         """Let XHRs land, and refuse to guess when a bot check is in the way."""
+        from ..infra.browser import check_company_session
+
+        check_company_session(page, 'glassdoor')
         # networkidle never arrives on some pages; the captured payloads still count
         with suppress(Exception):
             page.wait_for_load_state('networkidle', timeout=self.timeout)
@@ -200,20 +209,19 @@ class GlassdoorClient:
         if not sources:
             raise Unparseable('no review data found in Glassdoor responses for {}'.format(url))
 
-        if self.capture is not None:
-            identifiers = set()
-            for source in sources:
-                for node in self._walk(source):
-                    for name in ('employerId', 'employer_id'):
-                        if node.get(name) is not None:
-                            identifiers.add(str(node[name]))
-                    employer = node.get('employer')
-                    if isinstance(employer, dict) and employer.get('id') is not None:
-                        identifiers.add(str(employer['id']))
-                    if node.get('__typename') == 'Employer' and node.get('id') is not None:
-                        identifiers.add(str(node['id']))
-            if identifiers != {employer_id}:
-                raise Unparseable('captured Glassdoor employer identity is missing or ambiguous')
+        identifiers = set()
+        for source in sources:
+            for node in self._walk(source):
+                for name in ('employerId', 'employer_id'):
+                    if node.get(name) is not None:
+                        identifiers.add(str(node[name]))
+                employer = node.get('employer')
+                if isinstance(employer, dict) and employer.get('id') is not None:
+                    identifiers.add(str(employer['id']))
+                if node.get('__typename') == 'Employer' and node.get('id') is not None:
+                    identifiers.add(str(node['id']))
+        if identifiers - {employer_id} or (self.capture is not None and not identifiers):
+            raise Unparseable('captured Glassdoor employer identity is missing or ambiguous')
 
         rating = CompanyRating(
             source='glassdoor',
@@ -221,6 +229,7 @@ class GlassdoorClient:
             url=url,
             company_id=employer_id,
         )
+        rating.identity_verified = identifiers == {employer_id}
 
         seen = set()
         for source in sources:

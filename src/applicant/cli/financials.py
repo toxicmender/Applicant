@@ -125,6 +125,8 @@ def clients(
             headless=not args.show,
             interaction=terminal(),
         )
+    for client in made.values():
+        client.owned = True
     return made
 
 

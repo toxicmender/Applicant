@@ -103,6 +103,29 @@ class _ControlPipe:
         self.connection.close()
 
 
+class WorkerInteraction:
+    def __init__(self, connection, check, cancelled):
+        self.connection = connection
+        self.check = check
+        self.cancelled = cancelled
+
+    def pause(self, message: str) -> None:
+        self.ask(message)
+
+    def ask(self, question: str, *, secret: bool = False) -> str:
+        self.connection.send(('prompt', question))
+        heartbeat = time.monotonic() + 0.25
+        while not self.connection.poll(0):
+            self.check()
+            if time.monotonic() >= heartbeat:
+                self.connection.send(('heartbeat', None))
+                heartbeat = time.monotonic() + 0.25
+        answer = self.connection.recv()
+        if answer is None:
+            raise self.cancelled
+        return answer
+
+
 class WindowsJob:
     kernel: Any  # ctypes resolves Win32 functions and their signatures at runtime.
     handle: int | None

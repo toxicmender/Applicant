@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import csv
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
 
+from applicant.domain.application_cells import sanitize_external
 from applicant.domain.job import Job
+from applicant.errors import ExportConflict
+from applicant.infra.store.application_csv import ApplicationCSV
 from applicant.storage import (
     APPLIED_COLUMNS,
     ApplicationLog,
@@ -18,6 +23,24 @@ from applicant.storage import (
 )
 
 
+def test_application_cell_imports_in_fresh_processes():
+    for first, second in (
+        ('applicant.storage', 'applicant.domain.application_cells'),
+        ('applicant.domain.application_cells', 'applicant.storage'),
+    ):
+        subprocess.run(
+            [
+                sys.executable,
+                '-c',
+                f'import {first}; import {second}; '
+                'from applicant import storage; from applicant.domain import application_cells; '
+                'assert storage.neutralise is application_cells.neutralise; '
+                'assert storage.APPLIED_COLUMNS is application_cells.APPLIED_COLUMNS',
+            ],
+            check=True,
+        )
+
+
 class TempDirTest(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()
@@ -26,6 +49,49 @@ class TempDirTest(unittest.TestCase):
 
     def path(self, name: str) -> str:
         return str(self.root / name)
+
+
+class PositionalApplicationLogTest(TempDirTest):
+    def test_append_preserves_custom_and_unnamed_cells(self):
+        target = self.root / 'log.csv'
+        original = (
+            'id,note,status,source,notes,,notes,,title\n'
+            '1,"first, note",applied,linkedin,left,blank-1,right,blank-2,"München\nRole"\n'
+        ).encode()
+        target.write_bytes(original)
+        log = ApplicationLog(str(target))
+        job = Job(source='linkedin', id='2', title='  =example')
+        self.assertEqual(log.record([(job, 'applied', 'new')]), 1)
+        saved = target.read_bytes()
+        layout = ApplicationCSV(saved)
+        self.assertEqual(layout.header, ApplicationCSV(original).header)
+        self.assertEqual(layout.cells[0], ApplicationCSV(original).cells[0])
+        self.assertEqual(layout.cells[1][4:8], ['', '', '', ''])
+        self.assertEqual(layout.cells[1][-1], "'=example")
+        self.assertFalse(layout.bom)
+        self.assertEqual(layout.terminator, '\n')
+        self.assertEqual(log.record([(job, 'applied', 'new')]), 0)
+        self.assertEqual(target.read_bytes(), saved)
+
+    def test_malformed_input_is_not_replaced(self):
+        for row in (b'1,applied,linkedin\n', b'1,applied,linkedin,x,extra\n', b'"broken\n'):
+            with self.subTest(row=row):
+                target = self.root / 'log.csv'
+                original = b'id,status,source,note\n' + row
+                target.write_bytes(original)
+                with self.assertRaises(ExportConflict):
+                    ApplicationLog(str(target)).record(
+                        [(Job(source='linkedin', id='2', title='Engineer'), 'applied', '')]
+                    )
+                self.assertEqual(target.read_bytes(), original)
+
+    def test_generated_and_external_values_use_different_escaping(self):
+        for value in (' =example', '\ttext', '  ＠example', '=example', "'=example", "''=example"):
+            with self.subTest(value=value):
+                self.assertEqual(restore(neutralise(value)), value)
+                expected = value if value.startswith("'") else "'" + value
+                self.assertEqual(sanitize_external(value), expected)
+                self.assertEqual(sanitize_external(expected), expected)
 
 
 class SaveJobsTest(TempDirTest):
