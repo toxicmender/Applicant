@@ -30,12 +30,21 @@ FORMULA_START = ('=', '+', '-', '@', '\t', '\r', '\n', '＝', '＋', '－', '＠
 ESCAPE = "'"
 
 
+def hazardous(value: str) -> bool:
+    """Detect formula operators without altering the value to be written."""
+    operators = ('=', '+', '-', '@', '＝', '＋', '－', '＠')
+    return value.startswith(FORMULA_START) or value.lstrip(' \t\r\n\v\f').startswith(operators)
+
+
+def sanitize_external(value: str) -> str:
+    """Protect external serialized cells without adding a second escape."""
+    if value.startswith(ESCAPE):
+        return value
+    return ESCAPE + value if hazardous(value) else value
+
+
 def _escaped(value: str) -> bool:
-    """Whether neutralise() quotes this: a formula start - or a quote before
-    one, so restore() never strips a quote that was really there."""
-    return value.startswith(FORMULA_START) or (
-        value.startswith(ESCAPE) and value[1:].startswith(FORMULA_START)
-    )
+    return hazardous(value.lstrip(ESCAPE))
 
 
 def neutralise(value):

@@ -9,7 +9,6 @@ Two files, both append-oriented:
 from __future__ import annotations
 
 import csv
-import io
 import logging
 import os
 from collections.abc import Callable, Iterable
@@ -28,9 +27,13 @@ from .domain.dedupe import fingerprint, key
 from .domain.job import Job
 from .domain.ports import PROVISIONAL, STATUSES  # noqa: F401 - STATUSES re-exported
 from .domain.salary import parse_salary
-from .files import read_document, write_document
+from .files import read_document, write_document, write_document_bytes
+from .infra.store.application_csv import ApplicationCSV
+from .infra.store.financials_lock import export_lock
+from .infra.store.publication import durable_replace
 
 logger = logging.getLogger(__name__)
+
 
 def is_final(row: dict) -> bool:
     return row.get('status') not in PROVISIONAL
@@ -90,8 +93,6 @@ def save_jobs(jobs: Iterable[Job], filepath: str) -> int:
     An unreadable listing is moved aside rather than overwritten, and the write
     is atomic, so a crash part way never costs the jobs already stored.
     """
-    from .infra.store.financials_lock import export_lock
-
     with export_lock(filepath):
         return _save_jobs(jobs, filepath)
 
@@ -217,14 +218,12 @@ class ApplicationLog:
 
     def record(self, entries: Iterable[tuple[Job, str, str]]) -> int:
         """entries: iterable of (job, status, note). Returns rows written."""
-        from .infra.store.financials_lock import export_lock
-
         with export_lock(self.path):
             return self._record(entries)
 
     def _record(self, entries):
-        existing = self.rows()
-        rows = [row for row in existing if is_final(row)]
+        layout = ApplicationCSV.read(self.path)
+        rows = [row for row in layout.rows() if is_final(row)]
         seen = {(row.get('source'), row.get('id')) for row in rows}
         boards_of: dict[str, set[str | None]] = {}
         for row in rows:
@@ -241,14 +240,9 @@ class ApplicationLog:
             logger.debug(f'{self.path}: nothing new to record')
             return 0
 
-        from .files import write_document_bytes
-        from .infra.store.publication import durable_replace
-
-        output = io.StringIO(newline='')
-        write_rows(output, [*existing, *fresh], header=True)
-        write_document_bytes(
-            self.path, output.getvalue().encode('utf-8-sig'), replace=durable_replace
-        )
+        for row in fresh:
+            layout.set(None, row)
+        write_document_bytes(self.path, layout.render(), replace=durable_replace)
         logger.info(f'{self.path}: recorded {len(fresh)} application(s)')
         return len(fresh)
 

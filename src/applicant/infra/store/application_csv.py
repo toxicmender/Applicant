@@ -4,9 +4,13 @@ import codecs
 import csv
 import io
 import re
+from collections import Counter
+from pathlib import Path
 from typing import Literal
 
 from ...domain.application_cells import APPLIED_COLUMNS, neutralise, restore
+from ...errors import ExportConflict
+from .publication import read_bytes
 
 _CELL = re.compile(r'"(?:[^"]|"")*"|[^",\r\n]*')
 
@@ -26,6 +30,8 @@ class ApplicationCSV:
         records = iter(_records(source))
         header, quoted, self.terminator = next(records)
         self.header = header
+        if any(count > 1 and name in APPLIED_COLUMNS for name, count in Counter(header).items()):
+            raise ValueError('duplicate application CSV column')
         if not all(header.count(column) == 1 for column in ('status', 'source', 'id', 'note')):
             raise ValueError('application CSV is missing unique required columns')
         if all(flag for value, flag in zip(header, quoted, strict=True) if value.strip()):
@@ -38,15 +44,22 @@ class ApplicationCSV:
             self.cells.append(cells)
         self.terminator = self.terminator or '\r\n'
 
+    @classmethod
+    def read(cls, path: str | Path):
+        target = Path(path)
+        try:
+            return cls(read_bytes(target))
+        except ValueError as error:
+            raise ExportConflict(f'{target}: invalid application CSV: {error}') from error
+
     def rows(self):
-        return [
-            {
-                column: restore(value)
-                for column, value in zip(self.header, row, strict=True)
-                if column.strip()
-            }
-            for row in self.cells
+        counts = Counter(self.header)
+        named = [
+            (index, name)
+            for index, name in enumerate(self.header)
+            if name.strip() and counts[name] == 1
         ]
+        return [{name: restore(row[index]) for index, name in named} for row in self.cells]
 
     def set(self, index, changes):
         if index is None:
