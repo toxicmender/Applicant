@@ -38,7 +38,7 @@ def _fresh(value, current, days):
 
 
 def _metadata(item):
-    return item.get('enrichment_v1', {})
+    return item.get('enrichment_v1') or {}
 
 
 def _envelope(job, metadata, *, vetted):
