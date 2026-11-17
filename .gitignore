@@ -90,6 +90,8 @@ coverage.xml
 /live-requisition.json
 coverage-m4.json
 milestone-4-coverage.json
+/pyright-*.json
+/pyright-*.stderr.txt
 *.cover
 *.py,cover
 .hypothesis/

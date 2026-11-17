@@ -19,7 +19,7 @@
 uv sync --locked --extra pdf
 uv run --frozen ruff check .
 uv run --frozen ruff format --check .
-uv run --frozen pyright
+uv run --frozen python tools/check_types.py
 uv run --frozen pytest tests
 uv run --frozen coverage run -m pytest tests
 uv run --frozen coverage combine
@@ -33,6 +33,23 @@ Tests use `unittest.TestCase` under pytest, with HTTP fixtures and Hypothesis
 properties. Install Chromium to run the saved-page browser tests. CI covers Linux
 on Python 3.10–3.13 and Windows on Python 3.12. Native coverage runs enforce the
 global, Milestone 4, and research gates.
+
+The shared type-check runner checks Linux and Windows against both Python 3.10
+and 3.12, regardless of the development host. It retains a JSON report and stderr
+file for each target and fails if any invocation or report fails. CI runs the
+checker in a locked Python 3.12 environment and also checks types natively on
+Windows. To reproduce one target directly, use one of these commands:
+
+```console
+uv run --frozen pyright --pythonplatform Linux --pythonversion 3.10
+uv run --frozen pyright --pythonplatform Linux --pythonversion 3.12
+uv run --frozen pyright --pythonplatform Windows --pythonversion 3.10
+uv run --frozen pyright --pythonplatform Windows --pythonversion 3.12
+```
+
+Runtime test skips do not establish static platform guards. Keep Windows-only
+APIs inside an explicit `if sys.platform == 'win32':` branch so Linux type checks
+can exclude that branch while Windows checks still validate it.
 
 Run the offline installed-package journeys with:
 
