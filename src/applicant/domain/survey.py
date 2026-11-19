@@ -7,8 +7,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .contracts import Identity
+from .preferences import LANGUAGE_DIMENSION
 from .ranking_math import arithmetic_context
-from .ranking_v2 import CandidateProfileV2
+from .ranking_v2 import CandidateProfileV2, CandidateProfileV3
 
 PROFILE_METADATA = frozenset(
     {
@@ -22,6 +23,7 @@ PROFILE_METADATA = frozenset(
     }
 )
 PREFERENCE_FIELDS = frozenset(CandidateProfileV2.model_fields) - PROFILE_METADATA
+LANGUAGE_PREFERENCE_FIELDS = frozenset(CandidateProfileV3.model_fields) - PROFILE_METADATA
 _VALIDATION_TIME = datetime(2000, 1, 1, tzinfo=timezone.utc)
 
 
@@ -36,7 +38,7 @@ class PreferenceDocument(BaseModel):
 
     @model_validator(mode='after')
     def valid_preferences(self):
-        extra = self.preferences.keys() - PREFERENCE_FIELDS
+        extra = self.preferences.keys() - LANGUAGE_PREFERENCE_FIELDS
         if extra:
             raise ValueError(f'unsupported preference fields: {", ".join(sorted(extra))}')
         self.to_profile(updated_at=_VALIDATION_TIME)
@@ -44,7 +46,16 @@ class PreferenceDocument(BaseModel):
 
     def to_profile(self, *, updated_at: datetime) -> CandidateProfileV2:
         with localcontext(arithmetic_context()):
-            return CandidateProfileV2(
+            weights = self.preferences.get('weights')
+            profile_type = (
+                CandidateProfileV3
+                if (
+                    'languages' in self.preferences
+                    or (isinstance(weights, dict) and LANGUAGE_DIMENSION in weights)
+                )
+                else CandidateProfileV2
+            )
+            return profile_type(
                 **self.preferences,
                 profile_id=self.profile_id,
                 profile_revision=self.expected_revision + 1,

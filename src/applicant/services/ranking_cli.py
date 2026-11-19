@@ -9,7 +9,7 @@ from ..domain.contracts import now
 from ..domain.ranking import JobVersion
 from ..domain.ranking_engine import captured_facts
 from ..domain.ranking_inputs import JobVersionBundle, ProvenanceDocument
-from ..domain.ranking_v2 import RankingRunV3, ScoringConfigurationV2
+from ..domain.ranking_v2 import RankingRunV3, RankingRunV4, ScoringConfigurationV2
 from ..errors import ConfigError, StoreError
 from ..infra.ranking_documents import read_ranking_document
 from ..infra.store.listing_snapshots import select_listing
@@ -34,7 +34,7 @@ def create_ranking_run(
     revision: int | None = None,
     offline: bool = False,
     clock: Callable[[], datetime] = now,
-) -> RankingRunV3:
+) -> RankingRunV3 | RankingRunV4:
     try:
         provenance = ProvenanceDocument.model_validate(read_ranking_document(provenance_path))
         config = (

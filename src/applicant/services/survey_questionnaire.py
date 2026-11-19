@@ -1,12 +1,14 @@
 """Scriptable questionnaire; no database connection is held while asking."""
 
+import json
 from decimal import localcontext
 
 from pydantic import TypeAdapter
 
 from ..domain.canonical import canonical_json
 from ..domain.contracts import Fraction
-from ..domain.preferences import DIMENSIONS
+from ..domain.language import CandidateLanguage
+from ..domain.preferences import DIMENSIONS, LANGUAGE_DIMENSION
 from ..domain.ranking_math import arithmetic_context
 from ..domain.ranking_v2 import CandidateProfileV2
 from ..domain.survey import PreferenceDocument
@@ -95,7 +97,11 @@ def _ask(interaction: Interaction, name: str, label: str, values: dict, notice: 
 
 
 def questionnaire(
-    interaction: Interaction, *, profile_id: str, initial: PreferenceDocument | None = None
+    interaction: Interaction,
+    *,
+    profile_id: str,
+    initial: PreferenceDocument | None = None,
+    edit_languages: bool = False,
 ) -> PreferenceDocument | None:
     """Collect all fields and return confirmed edits, or None on decline/EOF.
 
@@ -118,7 +124,33 @@ def questionnaire(
         revision = initial.expected_revision
     notice = INTRO
     try:
-        for group in GROUPS:
+        groups = GROUPS
+        if edit_languages:
+            while True:
+                answer = interaction.ask(
+                    'Language abilities as a JSON array; Enter keeps the existing list: '
+                ).strip()
+                if not answer:
+                    break
+                try:
+                    declarations = TypeAdapter(tuple[CandidateLanguage, ...]).validate_python(
+                        json.loads(answer)
+                    )
+                    if len({item.language for item in declarations}) != len(declarations):
+                        raise ValueError('duplicate language declaration')
+                    values['languages'] = declarations
+                    break
+                except ValueError as error:
+                    interaction.pause(f'Invalid language abilities: {error}')
+            values['weights'].setdefault(LANGUAGE_DIMENSION, 0)
+            groups = (
+                *GROUPS[:-1],
+                (
+                    *GROUPS[-1],
+                    (f'weights.{LANGUAGE_DIMENSION}', 'Preferred language fit weight (0..1)'),
+                ),
+            )
+        for group in groups:
             while True:
                 for name, label in group:
                     _ask(interaction, name, label, values, notice)

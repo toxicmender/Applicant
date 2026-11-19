@@ -21,6 +21,7 @@ from .dispatch import AddParser, Identifier, Request, actions, bind
 class Edit(Request):
     database: str | None = None
     profile: Identifier = 'default'
+    edit_languages: bool = False
 
 
 class Show(Edit):
@@ -49,6 +50,9 @@ def add_parser(
     command = action('edit', help='create or edit a profile interactively')
     command.add_argument('--profile', default='default')
     command.add_argument('--database')
+    command.add_argument(
+        '--edit-languages', action='store_true', help='edit language abilities and weight'
+    )
     bind(command, Edit, handler)
     command = action('validate', help='validate preferences without opening a database')
     command.add_argument('path', metavar='PATH')
@@ -127,7 +131,12 @@ def run(args: Edit | Show | Export | Validate | Import, settings: Settings) -> i
                 initial = editable_profile(load_profile(database, profile_id))
             except ProfileNotFound:
                 initial = None
-            document = questionnaire(Terminal(), profile_id=profile_id, initial=initial)
+            document = questionnaire(
+                Terminal(),
+                profile_id=profile_id,
+                initial=initial,
+                edit_languages=args.edit_languages,
+            )
             if document is None:
                 print('survey cancelled; no profile saved')
             else:

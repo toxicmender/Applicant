@@ -4,11 +4,18 @@ from datetime import datetime
 from uuid import uuid4
 
 from ..domain.canonical import canonical_json, content_hash, utc
+from ..domain.job import Job
 from ..domain.ranking import Evidence, JobVersion
 from ..domain.ranking_engine import captured_facts, evaluate_jobs
 from ..domain.ranking_facts import EmploymentOptions, FactSource, RankingFacts, WorkRoute
 from ..domain.ranking_salary import parse_compensation
-from ..domain.ranking_v2 import RankingRunV3, ScoringConfigurationV2
+from ..domain.ranking_v2 import (
+    CandidateProfileV3,
+    RankingRunV3,
+    RankingRunV4,
+    ScoringConfigurationV2,
+)
+from ..domain.research import posting_languages
 from ..errors import StoreError
 from ..infra.store.profiles import ProfileRepository
 from ..infra.store.ranking_codecs import FX
@@ -33,6 +40,27 @@ def prepare_job(version: JobVersion, *, evaluated_at: datetime) -> JobVersion:
         excerpt='Captured posting fields.',
     )
     evidence = list(version.evidence)
+    if version.job_data.get('language_clauses') and not any(
+        item.payload.get('kind') == 'research_language_context' for item in evidence
+    ):
+        posting = Job.model_validate(version.job_data)
+        if posting.url:
+            facts = posting_languages(
+                posting, version.job_version_id, version.captured_at, posting.url
+            )
+            evidence.append(
+                Evidence(
+                    source=posting.source,
+                    observed_at=version.captured_at,
+                    extractor_version='posting-language-1',
+                    payload={
+                        'kind': 'research_language_context',
+                        'schema_version': 1,
+                        'observation_id': version.job_version_id,
+                        'assertions': [fact.model_dump(mode='json') for fact in facts],
+                    },
+                )
+            )
     salaries = ()
     routes = ()
     employment = ()
@@ -128,7 +156,7 @@ def rank_jobs(
     supplied_fx: FX | None = None,
     static_fx: FX | None = None,
     provider: FXProvider | None = None,
-) -> RankingRunV3:
+) -> RankingRunV3 | RankingRunV4:
     if store.db.in_transaction:
         raise StoreError('ranking requires a connection without an active transaction')
     at = utc(evaluated_at)
@@ -140,7 +168,17 @@ def rank_jobs(
     choices = {} if selected_tiers is None else dict(selected_tiers)
     if not choices.keys() <= {j.job_id for j in jobs}:
         raise ValueError('salary tier selection is not an input job')
-    header = RankingRunV3(
+    run_type = (
+        RankingRunV4
+        if isinstance(profile, CandidateProfileV3)
+        or any(
+            job.job_data.get('language_clauses')
+            or any(item.payload.get('kind') == 'research_language_context' for item in job.evidence)
+            for job in jobs
+        )
+        else RankingRunV3
+    )
+    header = run_type(
         profile_id=profile_id,
         profile_revision=profile_revision,
         scoring_config_id=config.scoring_config_id,
@@ -182,8 +220,9 @@ def rank_jobs(
         config=saved_config,
         evaluated_at=at,
         selected_tiers=choices,
+        language_fit=run_type is RankingRunV4,
     )
-    run = RankingRunV3.model_validate(
+    run = run_type.model_validate(
         header.model_dump()
         | {
             'scoring_config_id': saved_config.scoring_config_id,
@@ -195,5 +234,5 @@ def rank_jobs(
         }
     )
     saved = complete_run(store, run)
-    assert isinstance(saved, RankingRunV3)
+    assert isinstance(saved, (RankingRunV3, RankingRunV4))
     return saved

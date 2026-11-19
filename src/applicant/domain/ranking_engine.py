@@ -7,6 +7,7 @@ from .compensation import NormalizedCompensation
 from .eligibility import Profile, validated_profile
 from .eligibility_engine import evaluate_eligibility
 from .fx import FXSnapshot
+from .language_fit import evaluate_language
 from .normalization import normalize_compensation
 from .ranking import JobVersion
 from .ranking_facts import CompensationFacts, RankingFacts
@@ -84,6 +85,7 @@ def evaluate_jobs(
     config: ScoringConfigurationV2,
     evaluated_at: datetime,
     selected_tiers: dict[str, str] | None = None,
+    language_fit: bool = False,
 ) -> tuple[JobRankingV2, ...]:
     profile = validated_profile(profile)
     config = ScoringConfigurationV2.model_validate_json(canonical_json(config))
@@ -125,6 +127,35 @@ def evaluate_jobs(
             selected_tier=tiers.get(job.job_id),
         )
         decision = evaluation.decision
+        language_groups = evaluate_language(job, profile) if language_fit else None
+        if language_groups:
+            decision = EligibilityDecision(
+                criteria=(
+                    *decision.criteria,
+                    *(
+                        CriterionResult(
+                            criterion='language:' + group['clause_id'],
+                            status=(
+                                'unknown' if group['status'] == 'conflict' else group['status']
+                            ),
+                            reason_code=group['reason'],
+                            explanation='Language requirement '
+                            + group['clause_id']
+                            + ' '
+                            + group['status'],
+                            evidence_ids=tuple(
+                                dict.fromkeys(
+                                    key
+                                    for member in group['members']
+                                    for key in member['evidence_ids']
+                                )
+                            ),
+                        )
+                        for group in language_groups
+                        if group['strength'] == 'required'
+                    ),
+                )
+            )
         diagnostics = tuple(dict.fromkeys((*notes, *salary_notes, *evaluation.notes)))
         if diagnostics:
             decision = EligibilityDecision(
@@ -149,6 +180,7 @@ def evaluate_jobs(
                 config=config,
                 evaluated_at=at,
                 selected_tier=tiers.get(job.job_id),
+                language_groups=language_groups,
             )
         )
     return tuple(results)
