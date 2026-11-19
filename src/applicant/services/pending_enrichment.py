@@ -55,6 +55,9 @@ def _envelope(job, metadata, *, vetted):
 
 
 def _experience(job, description):
+    from ..domain.language_extraction import extract_language
+
+    job.language_clauses = extract_language(description)
     match = experience_from(description)
     if match is not None:
         job.experience_text, job.experience_min, job.experience_max = match

@@ -9,7 +9,14 @@ from __future__ import annotations
 
 import re
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 EXPERIENCE = re.compile(
     r'(\d+(?:\.\d+)?)\s*(?:-|to|–)\s*(\d+(?:\.\d+)?)\s*\+?\s*(?:yrs?|years?)'
@@ -98,6 +105,7 @@ class Job(BaseModel):
     via: str | None = None  # originating board, for aggregators
     remote: bool | None = None
     easy_apply: bool | None = None
+    language_clauses: tuple[dict, ...] = ()
     # why a job survived a filter it could not be checked against,
     # e.g. 'salary-unknown' - see applicant.domain.flags
     flags: list[str] = Field(default_factory=list)
@@ -137,6 +145,13 @@ class Job(BaseModel):
 
     def to_dict(self) -> dict:
         return self.model_dump()
+
+    @model_serializer(mode='wrap')
+    def serialize_job(self, handler):
+        data = handler(self)
+        if not self.language_clauses:
+            data.pop('language_clauses', None)
+        return data
 
     @classmethod
     def from_dict(cls, item: dict) -> Job:

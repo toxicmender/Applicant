@@ -51,6 +51,7 @@ SECTIONS = (
     'policy',
     'company',
     'technologies',
+    'languages',
     'inherited-context',
 )
 
@@ -98,7 +99,15 @@ def company_report(data, selection, *, created_at):
         ).astimezone(timezone.utc),
         created_at,
     )
-    sections = selection.get('sections', list(SECTIONS))
+    sections = selection.get(
+        'sections',
+        [name for name in SECTIONS if name != 'languages']
+        + (
+            ['languages']
+            if any(item.payload.kind == 'language' for item in data['evidence'])
+            else []
+        ),
+    )
     if set(sections) - set(SECTIONS):
         raise ValueError('unknown report section')
     known_entities = {x.entity_id: x for x in data['companies'] if x.recorded_at < cutoff}
@@ -240,6 +249,7 @@ def company_report(data, selection, *, created_at):
             continue
         section = {
             'technology': 'technologies',
+            'language': 'languages',
             'culture': 'culture',
             'policy': 'policy',
             'compensation': 'compensation',
