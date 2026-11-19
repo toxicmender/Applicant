@@ -34,6 +34,7 @@ FAMILIES = {
 GROUPS = {
     'research': {
         'template',
+        'export-job-versions',
         'import',
         'report',
         'capture-profile',
@@ -116,12 +117,29 @@ class DispatchTest(unittest.TestCase):
         self.assertTrue(args.quiet)
 
     def test_group_handlers_are_bound_at_parser_construction(self):
+        from tempfile import TemporaryDirectory
         from unittest.mock import patch
 
         from applicant.cli import main
 
-        with patch('applicant.cli.run_benchmark', return_value=0) as handler:
-            self.assertEqual(main(['--no-log-file', 'benchmark', 'fetch', '--query', 'unused']), 0)
+        with (
+            TemporaryDirectory() as data_dir,
+            patch('applicant.cli.run_benchmark', return_value=0) as handler,
+        ):
+            self.assertEqual(
+                main(
+                    [
+                        '--data-dir',
+                        data_dir,
+                        '--no-log-file',
+                        'benchmark',
+                        'fetch',
+                        '--query',
+                        'unused',
+                    ]
+                ),
+                0,
+            )
         request, settings = handler.call_args.args
         self.assertEqual(request.query, 'unused')
         self.assertIsInstance(settings, Settings)
