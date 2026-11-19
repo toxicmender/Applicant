@@ -1,6 +1,7 @@
 """Exercise language imports, immutable ranking, and database CLI boundaries."""
 
 import io
+import json
 import os
 import sqlite3
 import subprocess
@@ -15,7 +16,7 @@ from applicant.cli import main
 from applicant.cli.database_preflight import pin_paths
 from applicant.domain.language_extraction import extract_language
 from applicant.domain.language_fit import evaluate_language, preferred_score
-from applicant.domain.ranking_v2 import CandidateProfileV3, RankingRunV4
+from applicant.domain.ranking_v2 import CandidateProfileV3, JobRankingV3, RankingRunV4
 from applicant.errors import StoreError
 from applicant.infra.store.database_paths import PINNED, sqlite_path
 from applicant.infra.store.sqlite import MIGRATIONS, Store
@@ -114,6 +115,113 @@ def test_explicit_language_extraction_only():
     assert qualified['payload']['strength'] == 'not_required'
 
 
+def test_language_strength_and_thresholds_follow_clause_boundaries():
+    assert not extract_language('Python is required, and our documentation is available in German.')
+    assert not extract_language('German documentation is available and Python is required.')
+    text = (
+        'German is a plus (not required).\n'
+        '• Working knowledge of Dutch helpful.\n'
+        '• No prior French required.\n'
+        'We use German internally; English required for the role.'
+    )
+    facts = [item['payload'] for item in extract_language(text)]
+    assert [(fact['language'], fact['strength']) for fact in facts] == [
+        ('de', 'preferred'),
+        ('nl', 'preferred'),
+        ('fr', 'not_required'),
+        ('en', 'required'),
+    ]
+    assert not any(fact['interpretation_review'] for fact in facts)
+    english, french, german = [
+        item['payload']
+        for item in extract_language('English or French required, and German also required.')
+    ]
+    assert english['expression'] == french['expression']
+    assert english['expression']['operator'] == 'any_of'
+    assert german['expression'] is None and german['clause_id'] != english['clause_id']
+    separate = extract_language('Spoken B2 and written C1 German required.')
+    assert {
+        item['payload']['skill']: item['payload']['threshold']['level'] for item in separate
+    } == {
+        'spoken': 'B2',
+        'written': 'C1',
+    }
+
+
+def test_language_alternatives_have_independent_skills_and_thresholds():
+    alternatives = [
+        item['payload']
+        for item in extract_language('Spoken German B2 or written French C1 required.')
+    ]
+    assert [(p['language'], p['skill'], p['threshold']['level']) for p in alternatives] == [
+        ('de', 'spoken', 'B2'),
+        ('fr', 'written', 'C1'),
+    ]
+    assert alternatives[0]['expression']['operator'] == 'any_of'
+    assert not any(p['interpretation_review'] for p in alternatives)
+
+
+def test_hard_exclusion_preserves_language_review_in_cli_and_replay():
+    fixture = test_ranking_cli.RankingCliTest()
+    fixture.setUp()
+    try:
+        jobs = fixture.mixed_jobs()
+        hedge = 'Fluent German preferred, though client-facing roles may require it.'
+        optional = 'German B1 or B2 preferred.'
+        assert extract_language(hedge)[0]['payload']['strength'] == 'required'
+        assert extract_language(optional)[0]['payload']['strength'] == 'preferred'
+        jobs = tuple(
+            job.model_copy(
+                update={
+                    'job_data': job.job_data
+                    | {
+                        'url': f'https://example.com/jobs/{job.job_version_id}',
+                        'language_clauses': extract_language(text),
+                    }
+                }
+            )
+            for job, text in zip(jobs, (optional, hedge, hedge), strict=True)
+        )
+        run = fixture.service(versions_path=fixture.bundle(jobs))
+        assert isinstance(run, RankingRunV4)
+        results = {
+            result.eligibility: result for result in run.results if isinstance(result, JobRankingV3)
+        }
+        assert len(results) == len(run.results)
+        excluded = results['excluded']
+        assert excluded.overall_score is excluded.confidence is excluded.coverage is None
+        assert all(d.status == 'not_evaluated' for d in excluded.dimensions)
+        assert any(c.status == 'fail' for c in excluded.decision.criteria)
+        assert excluded.language_groups[0]['members'][0]['reason'] == 'interpretation_review'
+        assert results['review_required'].language_groups[0]['strength'] == 'required'
+        assert preferred_score(results['eligible'].language_groups)[0] is None
+
+        def cli(*args):
+            with redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()) as err:
+                code = main(['--no-log-file', '--data-dir', str(fixture.root), 'rank', *args])
+            assert code == 0, err.getvalue()
+            return out.getvalue()
+
+        shown = cli('show', run.ranking_run_id)
+        assert 'Eligibility: excluded' in shown and 'Needs review:' in shown
+        groups = json.loads(cli('show', run.ranking_run_id, '--json'))['groups']
+        assert [row['job_id'] for row in groups['excluded']['results']] == [excluded.job_id]
+        assert all(
+            row['job_id'] != excluded.job_id
+            for state in ('eligible', 'review_required')
+            for row in groups[state]['results']
+        )
+        explanation = cli('explain', run.ranking_run_id, excluded.job_id, '--json')
+        assert 'interpretation_review' in explanation
+        assert (
+            next(c.reason_code for c in excluded.decision.criteria if c.status == 'fail')
+            in explanation
+        )
+        assert 'matches' in cli('replay', run.ranking_run_id, '--provenance', 'provenance.json')
+    finally:
+        fixture.doCleanups()
+
+
 def test_sidecars_at_chosen_name_and_late_alternate_name(tmp_path):
     chosen, alias = tmp_path / 'canonical.db', tmp_path / 'alternate.db'
     chosen.touch()
@@ -205,6 +313,8 @@ def test_retargeted_directory_alias(tmp_path):
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows short paths')
 def test_windows_short_directory_has_one_sidecar_location(tmp_path):
+    if os.name != 'nt':
+        return
     import ctypes
 
     long = tmp_path / 'directory with long name'
