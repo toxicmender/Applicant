@@ -4,7 +4,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from ..errors import ConfigError
+from ..errors import ConfigError, StoreError
 from ..infra.store.sqlite import DB_NAME, MIGRATIONS, Store
 from ..settings import Settings
 from .dispatch import AddParser, Request, actions, bind
@@ -43,14 +43,15 @@ def add_parser(add: AddParser, handler: Callable[[Upgrade, Settings], int]) -> N
 
 def run_upgrade(args: Upgrade, settings: Settings) -> int:
     from ..infra.store.database_paths import EXPECTED_FILES, PINNED, file_identity_at, sqlite_path
-    from .database_preflight import inspect, pin_paths
+    from .database_preflight import inspect, migration_state, pin_paths
 
     try:
         original = database_path(settings, args.database)
         aliases = PINNED.set(pin_paths((original,)))
         try:
             database = sqlite_path(original)
-            expectation = EXPECTED_FILES.set({database: file_identity_at(database)})
+            stamp = file_identity_at(database)
+            expectation = EXPECTED_FILES.set({database: stamp})
             try:
                 version = inspect(database, integrity=True)
                 if version is None:
@@ -59,9 +60,15 @@ def run_upgrade(args: Upgrade, settings: Settings) -> int:
                 if version == len(MIGRATIONS):
                     print(f'database already current at schema {version}: {database}')
                     return 0
-                with Store(database):
-                    pass
-                inspect(database, integrity=True)
+                try:
+                    with Store(database, verify_current=True):
+                        pass
+                    inspect(database, integrity=True)
+                except (StoreError, KeyboardInterrupt):
+                    print(
+                        f'{database}: {migration_state(database, stamp, version)}', file=sys.stderr
+                    )
+                    raise
                 print(f'database upgraded to schema {len(MIGRATIONS)}: {database}')
                 return 0
             finally:

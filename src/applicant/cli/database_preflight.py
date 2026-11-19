@@ -7,7 +7,6 @@ import sqlite3
 import sys
 from collections.abc import Callable
 from contextlib import closing
-from functools import lru_cache
 from pathlib import Path
 from typing import TypeVar
 
@@ -21,6 +20,7 @@ from ..infra.store.database_paths import (
     sidecars,
     sqlite_path,
 )
+from ..infra.store.database_schema import expected_schema, incompatible_object, objects
 from ..infra.store.sqlite import DB_NAME, MIGRATIONS, Store
 from ..interaction import Terminal
 from ..settings import Settings
@@ -28,26 +28,6 @@ from .database import database_path
 from .dispatch import Request
 
 R = TypeVar('R', bound=Request)
-
-
-@lru_cache(maxsize=1)
-def schemas():
-    with closing(sqlite3.connect(':memory:')) as db:
-        versions = [{}]
-        for migration in MIGRATIONS:
-            for statement in migration:
-                db.execute(statement)
-            versions.append(objects(db))
-        return versions
-
-
-def objects(db):
-    return {
-        (kind, name): sql
-        for kind, name, sql in db.execute(
-            "SELECT type, name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'"
-        )
-    }
 
 
 def inspect(path: Path, *, integrity: bool = False, verify_step: bool = False) -> int | None:
@@ -62,11 +42,8 @@ def inspect(path: Path, *, integrity: bool = False, verify_step: bool = False) -
             version = db.execute('PRAGMA user_version').fetchone()[0]
             actual = objects(db)
             supported = len(MIGRATIONS)
-            expected = schemas()[version if 0 < version <= supported else 1]
-            incompatible = next(
-                (name for (kind, name), sql in expected.items() if actual.get((kind, name)) != sql),
-                None,
-            )
+            expected = expected_schema(MIGRATIONS[: version if 0 < version <= supported else 1])
+            incompatible = incompatible_object(actual, expected)
             if integrity or version < supported or incompatible:
                 check = db.execute('PRAGMA quick_check').fetchone()[0]
                 if check != 'ok':
@@ -83,7 +60,7 @@ def inspect(path: Path, *, integrity: bool = False, verify_step: bool = False) -
                     f'(supports {supported})'
                 )
             if verify_step and version < supported:
-                new_objects = schemas()[version + 1].keys() - expected.keys()
+                new_objects = expected_schema(MIGRATIONS[: version + 1]).keys() - expected.keys()
                 if new_objects & actual.keys():
                     raise StoreError(
                         f'{path}: schema {version} contains objects from an uncommitted step'
@@ -191,6 +168,19 @@ def verify(path: Path, previous: tuple[int, int] | None) -> None:
         raise StoreError(f'target_changed: {path}')
 
 
+def migration_state(path: Path, stamp: tuple[int, int] | None, previous: int) -> str:
+    try:
+        verify(path, stamp)
+        version = inspect(path, verify_step=True)
+        if version == len(MIGRATIONS):
+            return f'target version committed and verified ({version})'
+        if version is not None and version >= previous:
+            return f'active step did not commit; last verified schema {version}'
+    except (StoreError, KeyboardInterrupt):
+        pass
+    return 'commit state unverified'
+
+
 def pin_paths(paths: tuple[Path, ...]) -> dict[Path, DatabasePin]:
     groups: dict[Path | tuple[int, int], list[Path]] = {}
     names = sorted({Path(os.path.abspath(p)) for p in paths} | {p.resolve() for p in paths})
@@ -295,7 +285,7 @@ def preflight(
             for path in older:
                 outcomes[path] = 'upgrade started'
                 verify(path, observed[path][0])
-                with Store(path):
+                with Store(path, verify_current=True):
                     pass
                 if inspect(path) != supported:
                     raise StoreError(f'{path}: unable to verify upgrade')
@@ -305,17 +295,7 @@ def preflight(
             for path in observed:
                 outcome = outcomes.get(path, 'already current or not requiring migration')
                 if outcome == 'upgrade started':
-                    try:
-                        verify(path, observed[path][0])
-                        version = inspect(path, verify_step=True)
-                        if version == supported:
-                            outcome = f'target version committed and verified ({version})'
-                        elif version is not None and version >= older[path]:
-                            outcome = f'active step did not commit; last verified schema {version}'
-                        else:
-                            outcome = 'commit state unverified'
-                    except (StoreError, KeyboardInterrupt):
-                        outcome = 'commit state unverified'
+                    outcome = migration_state(path, observed[path][0], older[path])
                     outcome = f'{"interrupted" if isinstance(error, KeyboardInterrupt) else "failed"}; {outcome}'
                 print(f'{path}  {outcome}', file=sys.stderr)
             raise

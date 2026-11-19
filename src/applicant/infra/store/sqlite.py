@@ -57,6 +57,7 @@ from .database_paths import (
     sqlite_path,
     verify_identity,
 )
+from .database_schema import expected_schema, incompatible_object, objects
 from .feedback import FEEDBACK_MIGRATION
 from .financials_lock import financials_lock
 from .financials_merge import merge_financial_exports
@@ -213,7 +214,7 @@ def _now() -> str:
 class Store:
     """One applicant.db. Open it with `Store.beside(path)` or `Store(db_path)`."""
 
-    def __init__(self, path: str | os.PathLike[str]):
+    def __init__(self, path: str | os.PathLike[str], *, verify_current: bool = False):
         self.root = Path(path).resolve().parent
         self.path = sqlite_path(path)
         created_identity = None
@@ -259,7 +260,7 @@ class Store:
                     mode = self.db.execute('PRAGMA journal_mode = WAL').fetchone()[0]
                 if mode.lower() != 'wal':
                     raise sqlite3.DatabaseError(f'WAL journal mode unavailable: {mode}')
-                self._migrate(created_identity)
+                self._migrate(created_identity, verify_current=verify_current)
             except BaseException:
                 self.db.close()
                 raise
@@ -377,7 +378,9 @@ class Store:
         except sqlite3.Error as error:
             raise StoreError(f'{self.path}: {error}') from error
 
-    def _migrate(self, created_identity: tuple[int, int] | None = None) -> None:
+    def _migrate(
+        self, created_identity: tuple[int, int] | None = None, *, verify_current: bool = False
+    ) -> None:
         while True:
             # Read the version only after acquiring the writer lock. Another
             # initializer may have upgraded the database while we waited.
@@ -390,6 +393,7 @@ class Store:
                     if sidecar.exists():
                         make_private(sidecar)
                 version = self.db.execute('PRAGMA user_version').fetchone()[0]
+                sqlite_path(self.path)
                 verify_identity(self.path)
                 if created_identity is not None:
                     if (
@@ -406,18 +410,33 @@ class Store:
                         f'database schema {version} is newer than supported {len(MIGRATIONS)}'
                     )
                 if version == len(MIGRATIONS):
+                    if verify_current:
+                        self._verify_schema(version)
                     self.db.commit()
                     return
+                self._verify_schema(version)
                 number = version + 1
                 sqlite_path(self.path)
                 for statement in MIGRATIONS[version]:
                     self.db.execute(statement)
+                self._verify_schema(number)
                 self.db.execute(f'PRAGMA user_version = {number}')
+                self.db.commit()
             except BaseException:
                 self.db.rollback()
                 raise
-            self.db.commit()
             logger.debug(f'{self.path}: schema at version {number}')
+
+    def _verify_schema(self, version: int) -> None:
+        actual = objects(self.db)
+        if version <= 0:
+            mismatch = next((name for _, name in actual), None)
+        else:
+            mismatch = incompatible_object(actual, expected_schema(MIGRATIONS[:version]))
+        if mismatch is not None or version < 0:
+            raise StoreError(
+                f'{self.path}: unrecognized schema {version}; incompatible object {mismatch}'
+            )
 
     # -- which file is which collection -----------------------------------
 
