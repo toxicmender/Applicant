@@ -1,7 +1,7 @@
 """Bounded explicit preference adjustments over frozen dimension scores."""
 
 from decimal import Decimal, localcontext
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
@@ -9,7 +9,7 @@ from .contracts import Contract, Identity, Timestamp
 from .feedback import FeedbackEvent
 from .preferences import DIMENSIONS
 from .ranking_math import arithmetic_context
-from .ranking_v2 import CandidateProfileV2, JobRankingV2
+from .ranking_v2 import CandidateProfileV2, CandidateProfileV3, JobRankingV2
 from .ranking_views import ranked_views
 from .scoring import aggregate_dimensions
 
@@ -23,7 +23,9 @@ class WeightSuggestion(Contract):
     feedback_through: int = Field(ge=0, strict=True)
     supporting_event_ids: tuple[Identity, ...]
     created_at: Timestamp
-    proposed_profile: CandidateProfileV2
+    proposed_profile: Annotated[
+        CandidateProfileV2 | CandidateProfileV3, Field(discriminator='schema_version')
+    ]
     recipient: Identity
     donor: Identity
     transfer: Decimal = Field(gt=0, le=Decimal('.05'), allow_inf_nan=False)
@@ -81,21 +83,23 @@ def propose_weights(
         weights = dict(profile.weights)
         weights[recipient] += transfer
         weights[donor] -= transfer
-        proposed = CandidateProfileV2.model_validate(proposed.model_dump() | {'weights': weights})
-        previews = []
+        proposed = type(proposed).model_validate(proposed.model_dump() | {'weights': weights})
+        previews: list[JobRankingV2] = []
         for result in run.results:
             if result.eligibility == 'excluded':
-                previews.append(result.model_dump())
+                previews.append(result)
                 continue
             summary = aggregate_dimensions(proposed, result.dimensions, config=history.config)
             previews.append(
-                result.model_dump()
-                | {
-                    'dimensions': summary.dimensions,
-                    'overall_score': summary.overall_score,
-                    'confidence': summary.confidence,
-                    'coverage': summary.coverage,
-                }
+                type(result).model_validate(
+                    result.model_dump()
+                    | {
+                        'dimensions': summary.dimensions,
+                        'overall_score': summary.overall_score,
+                        'confidence': summary.confidence,
+                        'coverage': summary.coverage,
+                    }
+                )
             )
     return WeightSuggestion(
         suggestion_id=suggestion_id,
@@ -109,8 +113,6 @@ def propose_weights(
         recipient=recipient,
         donor=donor,
         transfer=transfer,
-        preview=tuple(previews),
-        preview_groups=ranked_views(
-            tuple(JobRankingV2.model_validate(p) for p in previews), config=history.config
-        ).model_dump(),
+        preview=tuple(result.model_dump() for result in previews),
+        preview_groups=ranked_views(tuple(previews), config=history.config).model_dump(),
     )

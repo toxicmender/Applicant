@@ -5,10 +5,15 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from pydantic import ValidationError
+
 from ..domain.canonical import canonical_json
-from ..domain.personalization import propose_weights
+from ..domain.personalization import WeightSuggestion, propose_weights
 from ..domain.ranking import RankingRun
+from ..domain.ranking_v2 import ScoringConfigurationV2
+from ..domain.ranking_views import ranked_views
 from ..domain.survey import PreferenceDocument
+from ..errors import StoreError
 from ..infra.store.feedback import FeedbackRepository
 from ..infra.store.personalization import SuggestionRepository
 from ..infra.store.profiles import ProfileRepository, RevisionConflict
@@ -57,14 +62,43 @@ def suggest_weights(database: Path, run_id: str, *, created_at: datetime) -> dic
 
 def show_suggestion(database: Path, suggestion_id: str):
     with Store.open_readonly(database) as reader, reader.read_snapshot():
-        return SuggestionRepository(reader.db).get(suggestion_id)
+        return verified_suggestion(reader, suggestion_id)
+
+
+def verified_suggestion(store: Store, suggestion_id: str) -> WeightSuggestion:
+    suggestion = SuggestionRepository(store.db).get(suggestion_id)
+    history = load_history(store, suggestion.run_id)
+    if (
+        isinstance(history.run, RankingRun)
+        or not isinstance(history.config, ScoringConfigurationV2)
+        or history.run.profile_id != suggestion.profile_id
+        or history.run.profile_revision != suggestion.base_revision
+        or type(history.profile) is not type(suggestion.proposed_profile)
+    ):
+        raise StoreError('suggestion does not match its archived run and profile')
+    try:
+        results = tuple(
+            type(result).model_validate_json(canonical_json(preview))
+            for result, preview in zip(history.run.results, suggestion.preview, strict=True)
+        )
+        frozen_fields = {'job_id', 'job_version_id', 'decision', 'compensation', 'language_groups'}
+        if any(
+            result.model_dump(include=frozen_fields) != preview.model_dump(include=frozen_fields)
+            for result, preview in zip(history.run.results, results, strict=True)
+        ) or canonical_json(ranked_views(results, config=history.config)) != canonical_json(
+            suggestion.preview_groups
+        ):
+            raise ValueError('preview differs from its archived inputs')
+    except (ValidationError, ValueError) as error:
+        raise StoreError(f'invalid historical suggestion preview: {error}') from error
+    return suggestion
 
 
 def accept_suggestion(database: Path, suggestion_id: str, *, accepted_at: datetime):
     # Validate existence before opening a writer; all concurrency checks happen inside it.
     show_suggestion(database, suggestion_id)
     with Store(database) as writer, write_transaction(writer.db):
-        suggestion = SuggestionRepository(writer.db).get(suggestion_id)
+        suggestion = verified_suggestion(writer, suggestion_id)
         profiles = ProfileRepository(writer.db)
         prior = writer.db.execute(
             'SELECT profile_id,profile_revision FROM suggestion_acceptances WHERE suggestion_id=?',
@@ -76,8 +110,6 @@ def accept_suggestion(database: Path, suggestion_id: str, *, accepted_at: dateti
                 suggestion.profile_id,
                 suggestion.base_revision + 1,
             ):
-                from ..errors import StoreError
-
                 raise StoreError('suggestion acceptance does not match proposed revision')
             return profile
         current = profiles.get(suggestion.profile_id)
