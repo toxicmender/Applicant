@@ -2,8 +2,89 @@
 
 Research is independent of ranking and application submission. New sources are
 explicitly selected; the four existing default search boards remain unchanged.
-Upgrade an existing database with `applicant db upgrade --database applicant.db`.
-Research uses schema 8 and never changes archived ranking payloads.
+Upgrade an existing database with `uv run applicant db upgrade --database applicant.db`.
+Schema 14 adds append-only language assertions. It preserves archived ranking payloads.
+
+## Offline language walkthrough
+
+Run from the repository root. The demo creates a separate database and leaves
+the default applicant database available for your other workflows.
+
+```powershell
+$demo = "output/research-demo"
+New-Item -ItemType Directory -Force $demo | Out-Null
+uv run applicant research template --kind language --output "$demo/language.json"
+uv run applicant research import --database "$demo/applicant.db" --from-file "$demo/language.json" --dry-run
+uv run applicant research import --database "$demo/applicant.db" --from-file "$demo/language.json"
+'{"job_version_ids":["example-job-v1"]}' | Set-Content -Encoding ascii "$demo/selection.json"
+uv run applicant research report --database "$demo/applicant.db" --selection "$demo/selection.json" --section languages
+uv run applicant research export-job-versions --database "$demo/applicant.db" --selection "$demo/selection.json" --output "$demo/research-jobs.json"
+@'
+{"kind":"candidate_preferences","schema_version":1,"profile_id":"default","expected_revision":0,"preferences":{"experience_years":4,"primary_discipline":"Software","languages":[{"language":"English","overall":{"level":{"kind":"level","scale":"cefr","level":"C1"}}}]}}
+'@ | Set-Content -Encoding ascii "$demo/profile.json"
+uv run applicant survey import "$demo/profile.json" --database "$demo/applicant.db"
+$build = git rev-parse HEAD
+$lock = (Get-FileHash -Algorithm SHA256 uv.lock).Hash.ToLowerInvariant()
+@{kind="ranking_provenance";schema_version=1;build_identity=$build;lockfile_digest=$lock} | ConvertTo-Json -Compress | Set-Content -Encoding ascii "$demo/provenance.json"
+$result = uv run applicant rank create --database "$demo/applicant.db" --job-versions "$demo/research-jobs.json" --provenance "$demo/provenance.json" --offline --json | ConvertFrom-Json
+uv run applicant rank show $result.run.ranking_run_id --database "$demo/applicant.db"
+uv run applicant rank replay $result.run.ranking_run_id --database "$demo/applicant.db" --provenance "$demo/provenance.json"
+```
+
+The template supplies a synthetic posting and an English B2 assertion. Both
+import commands report the exact member ID in `resolved_members`. Use the ID in
+a subsequent correction with a fresh assertion ID and a `supersedes` array
+naming the original assertion. To retire an assertion, use `action: retire` and
+the same member ID. A newer posting observation gets a separate job-version ID.
+Export again to use the revised evidence in a new run. Earlier runs retain
+their original evidence and replay against their original provenance.
+
+For a required skill, an explicit shortfall excludes the job. Unstated ability,
+incompatible scales, and strength conflicts display a review finding. Candidate
+overall B2 leaves a spoken B2 requirement unresolved. A preferred conflict is
+counted with zero provisional points. Edit the profile with `survey edit
+--edit-languages` or import a new profile revision to update ability and
+`preferred_language_fit` weight.
+
+For company enrichment, use a completed ranking run and associate selected
+company snapshots with its persisted ranking job-version IDs. Export with
+`company-evidence enrich --from-file FILE --base-run RUN_ID --export derived.json`.
+The bundle preserves unselected siblings and lists enrichment steps from
+oldest to newest. Use `rank create --job-versions derived.json` for a new run.
+
+## Execution flow
+
+```mermaid
+flowchart TD
+    Check["Resolve database targets and check schema"] -->|Compatible or upgraded| Run["Dispatch command"]
+    Check -->|Older, upgrade unavailable or declined| Manual["Print db upgrade command"]
+    Check -->|Newer schema or recovery failure| Stop["Stop with target-specific diagnostic"]
+    Run --> Search["search → filter → optional posting detail reads"]
+    Search --> Listing["Deduplicated listing"]
+    Run --> Import["research template → validate → import"]
+    Run --> Live["feed collect --query"]
+    Import --> Evidence["Versioned research observations and evidence"]
+    Live --> Evidence
+    Live --> Feed["Frozen feed → feed show"]
+    Evidence --> Offline["feed collect --from-imports"]
+    Offline --> Feed
+    Evidence --> Analysis["analytics technologies → analytics show"]
+    Evidence --> Report["research report → optional report render"]
+    Evidence --> Bundle["research export-job-versions"]
+    Listing --> Rank["rank create with profile and provenance"]
+    Bundle --> Rank
+    Rank --> Views["rank show / explain / replay"]
+    Rank -.->|Optional| Company["Associate and capture/import → enrich --base-run"]
+    Company -->|Derived bundle| Rank
+    Listing --> Preview["apply --dry-run"]
+    Views -.->|User selects jobs| Preview
+    Preview --> Apply["Confirmed submission or manual route"]
+    Apply --> Status["status and application log"]
+    Apply -->|Uncertain| Reconcile["Check attempt ID and reconcile"]
+```
+
+`feed collect --query` fetches provider observations. `--from-imports` builds
+a feed from stored observations without refetching providers.
 
 ## Install and inspect sources
 

@@ -145,6 +145,9 @@ See the [complete examples](docs/cli-usage.md#providers-and-sessions).
 
 ### Company and job research
 
+The [research walkthrough](docs/research.md#offline-language-walkthrough) shows
+how to capture role-language requirements and rank a frozen evidence bundle.
+
 Collect company reviews and funding, record compensation and workplace
 evidence, and analyze technologies from a saved job snapshot. Reports retain
 source information and distinguish recruiters from hiring employers.
