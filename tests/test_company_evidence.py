@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 import httpx
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -69,6 +70,82 @@ LOCATORS = {
     'crunchbase': 'https://www.crunchbase.com/organization/acme',
     'tracxn': 'a' * 24,
 }
+
+
+@pytest.mark.parametrize('fault', [None, 'cycle', 'parent', 'prefix', 'acquisition'])
+def test_static_historical_company_replay(tmp_path, capsys, fault):
+    archived = json.loads(
+        (FIXTURES.parent / 'pre-fix-company-replay.json').read_text(encoding='utf-8')
+    )
+    assert archived['producer_commit'].startswith('8d61cc4')
+    rows = archived['rows']
+    child = next(row for row in rows['job_versions'] if 'company_enrichment_lineage' in row[-1])
+    payload = json.loads(child[-1])
+    lineage = next(
+        e for e in payload['evidence'] if e['payload']['kind'] == 'company_enrichment_lineage'
+    )
+    context = next(
+        e for e in payload['evidence'] if e['payload']['kind'] == 'company_evidence_context'
+    )
+    # The old clock was deliberately different from the acquisition time.
+    assert lineage['observed_at'] != context['observed_at']
+    record = lineage['payload']
+    if fault == 'cycle':
+        record['immediate_parent_job_version_id'] = child[0]
+        record['enrichment_steps'][0]['parent_job_version_id'] = child[0]
+    elif fault == 'parent':
+        record['immediate_parent_job_version_id'] = 'different-parent'
+    elif fault == 'prefix':
+        record['enrichment_steps'] *= 2
+    elif fault == 'acquisition':
+        del context['observed_at']
+    if fault:
+        child[-1] = canonical_json(payload)
+        if fault != 'acquisition':
+            parsed = JobVersion.model_validate_json(child[-1])
+            child[2:4] = [parsed.content_hash, parsed.ranking_hash]
+
+    path = tmp_path / 'applicant.db'
+    with Store(path) as store, write_transaction(store.db):
+        for table, records in rows.items():
+            params = ', '.join('?' for _ in records[0])
+            store.db.executemany(f'INSERT INTO {table} VALUES ({params})', records)
+    provenance = tmp_path / 'provenance.json'
+    provenance.write_text(canonical_json(archived['provenance']), encoding='utf-8')
+    run_id = archived['run_id']
+    code = main(
+        [
+            '--no-log-file',
+            '--data-dir',
+            str(tmp_path),
+            'rank',
+            'replay',
+            run_id,
+            '--provenance',
+            str(provenance),
+            '--json',
+        ]
+    )
+    output = capsys.readouterr()
+    if fault:
+        assert code == 1
+        assert {
+            'cycle': 'lineage_cycle',
+            'parent': 'lineage_parent_mismatch',
+            'prefix': 'lineage_prefix_mismatch',
+            'acquisition': 'observed_at',
+        }[fault] in output.err
+        return
+    assert code == 0, output.err
+    report = json.loads(output.out)['verification']
+    assert report['matches']
+    expected = {row[2]: json.loads(row[-1]) for row in rows['job_rankings'] if row[0] == run_id}
+    assert {result['job_version_id']: result for result in report['computed_results']} == expected
+    with Store.open_readonly(path) as store:
+        for expected_job in archived['jobs']:
+            version = JobVersionRepository(store.db).get(expected_job['job_version_id'])
+            assert version.content_hash == expected_job['content_hash']
+            assert version.ranking_hash == expected_job['ranking_hash']
 
 
 def fixture(name):
@@ -719,6 +796,67 @@ class CompanyJourneyTest(unittest.TestCase):
         import_company_evidence(
             self.path, CompanyEvidenceImport(associations=(self.a,), snapshots=(self.s,))
         )
+
+    def test_base_run_enrichment_is_repeatable_and_chains(self):
+        other = association(self.jobs[0], provider='crunchbase')
+        fresh = snapshot(other)
+        changed = snapshot(other, snapshot_id='another-snapshot', observed_at=None)
+        import_company_evidence(
+            self.path,
+            CompanyEvidenceImport(associations=(other,), snapshots=(fresh, changed)),
+        )
+        base = self.created.ranking_run_id
+        first = enrich_company_evidence(
+            self.path,
+            selection(self.s, fresh),
+            base_run=base,
+            clock=lambda: NOW - timedelta(hours=2),
+        )
+        second = enrich_company_evidence(
+            self.path,
+            selection(fresh, self.s),
+            base_run=base,
+            clock=lambda: NOW - timedelta(hours=1),
+        )
+        different = enrich_company_evidence(self.path, selection(self.s, changed), base_run=base)
+        child = first.jobs[0]
+        self.assertEqual(child.job_version_id, second.jobs[0].job_version_id)
+        self.assertEqual(child.content_hash, second.jobs[0].content_hash)
+        self.assertNotEqual(child.job_version_id, different.jobs[0].job_version_id)
+        self.assertEqual(
+            tuple(job.job_version_id for job in first.jobs[1:]), self.created.job_version_ids[1:]
+        )
+        ranked = self.data.service(versions_path=self.data.bundle(first.jobs))
+        with self.assertRaisesRegex(ValueError, 'exact parent'):
+            enrich_company_evidence(self.path, selection(self.s), base_run=ranked.ranking_run_id)
+        linked = association(child, association_id='further')
+        evidence = snapshot(linked, snapshot_id='further-snapshot')
+        import_company_evidence(
+            self.path, CompanyEvidenceImport(associations=(linked,), snapshots=(evidence,))
+        )
+        chained = enrich_company_evidence(
+            self.path,
+            selection(evidence),
+            base_run=ranked.ranking_run_id,
+            clock=lambda: NOW - timedelta(minutes=1),
+        )
+        from applicant.domain.company_lineage import enrichment_steps
+
+        self.assertEqual(
+            [step['parent_job_version_id'] for step in enrichment_steps(chained.jobs[0])],
+            [self.jobs[0].job_version_id, child.job_version_id],
+        )
+        latest = self.data.service(versions_path=self.data.bundle(chained.jobs))
+        with Store.open_readonly(self.path) as store, store.read_snapshot():
+            for run in (ranked, latest):
+                self.assertTrue(
+                    replay_run(
+                        store,
+                        run.ranking_run_id,
+                        build_identity=run.build_identity,
+                        lockfile_digest=run.lockfile_digest,
+                    ).matches
+                )
 
     def test_enrichment_ranking_and_unchanged_historical_replay(self):
         before = read_run(self.path, self.created.ranking_run_id)

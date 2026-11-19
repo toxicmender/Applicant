@@ -14,6 +14,7 @@ from ..domain.company_evidence import (
     CompanyEvidenceImport,
     CompanyEvidenceSnapshot,
 )
+from ..domain.company_lineage import enrichment_steps
 from ..domain.contracts import now
 from ..domain.ranking import Evidence, JobVersion
 from ..domain.ranking_inputs import JobVersionBundle
@@ -325,6 +326,8 @@ def enrich_company_evidence(
             )
     jobs = []
     for parent, selected in grouped.values():
+        if base_run is not None:
+            selected.sort(key=lambda pair: (pair[0].association_id, pair[1].snapshot_id))
         # Multiple provider identities for the same version must be resolved explicitly.
         provider_ids = {}
         for association, _snapshot in selected:
@@ -335,37 +338,11 @@ def enrich_company_evidence(
                 raise ValueError('ambiguous company associations for the same provider/job version')
         evidence = list(parent.evidence)
         if base_run is not None:
-            prior = next(
-                (
-                    item.payload
-                    for item in reversed(evidence)
-                    if item.payload.get('kind') == 'company_enrichment_lineage'
-                ),
-                None,
-            )
-            steps = list(prior['enrichment_steps']) if prior else []
-            ancestors = [step['parent_job_version_id'] for step in steps]
-            if len(set(ancestors)) != len(ancestors) or parent.job_version_id in ancestors:
-                raise ValueError(f'lineage_cycle: {parent.job_version_id}')
-            if prior and (
-                not ancestors or ancestors[-1] != prior['immediate_parent_job_version_id']
-            ):
-                raise ValueError(f'lineage_parent_mismatch: {parent.job_version_id}')
-            if prior:
-                earlier = [
-                    item.payload
-                    for item in evidence
-                    if item.payload.get('kind') == 'company_enrichment_lineage'
-                ]
-                if any(
-                    record['enrichment_steps'] != steps[: index + 1]
-                    for index, record in enumerate(earlier)
-                ) or len(earlier) != len(steps):
-                    raise ValueError(f'lineage_prefix_mismatch: {parent.job_version_id}')
+            steps = enrichment_steps(parent)
             evidence.append(
                 Evidence(
                     source='company-evidence',
-                    observed_at=utc(clock()),
+                    observed_at=max(snapshot.acquired_at for _, snapshot in selected),
                     extractor_version='company-lineage-1',
                     payload={
                         'kind': 'company_enrichment_lineage',
