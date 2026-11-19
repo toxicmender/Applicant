@@ -2,14 +2,30 @@
 
 import os
 from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
 
 from ...errors import StoreError
 
 SIDECARS = ('-wal', '-shm', '-journal')
-PINNED: ContextVar[dict[Path, tuple[Path, tuple[Path, ...]]] | None] = ContextVar(
-    'pinned_sqlite_paths', default=None
-)
+
+
+@dataclass(frozen=True)
+class Alias:
+    path: Path
+    location: Path
+    resolved: Path
+    ancestor: Path
+    ancestor_id: tuple[int, int]
+
+
+@dataclass(frozen=True)
+class DatabasePin:
+    selected: Path
+    aliases: tuple[Alias, ...]
+
+
+PINNED: ContextVar[dict[Path, DatabasePin] | None] = ContextVar('pinned_sqlite_paths', default=None)
 EXPECTED_FILES: ContextVar[dict[Path, tuple[int, int] | None] | None] = ContextVar(
     'expected_sqlite_files', default=None
 )
@@ -53,17 +69,40 @@ def register_created(path: Path, stamp: tuple[int, int]) -> None:
         expected[path] = stamp
 
 
-def has_sidecars(path: Path) -> bool:
+def sidecars(path: Path) -> tuple[Path, ...]:
+    found = []
     for suffix in SIDECARS:
+        candidate = Path(str(path) + suffix)
         try:
-            Path(str(path) + suffix).lstat()
+            candidate.lstat()
         except FileNotFoundError:
             continue
         except OSError as error:
             raise StoreError(f'{path}: cannot inspect SQLite sidecars: {error}') from error
         else:
-            return True
-    return False
+            found.append(candidate)
+    return tuple(found)
+
+
+def sidecar_location(path: Path) -> Path:
+    # Resolve directory aliases without following a symlink at the database name.
+    return path.parent.resolve() / path.name
+
+
+def directory_identity(path: Path) -> tuple[int, int]:
+    info = path.stat()
+    return info.st_dev, info.st_ino
+
+
+def database_alias(path: Path) -> Alias:
+    location = sidecar_location(path)
+    for ancestor in path.parents:
+        try:
+            stamp = directory_identity(ancestor)
+        except FileNotFoundError:
+            continue
+        return Alias(path, location, path.resolve(), ancestor, stamp)
+    raise StoreError(f'{path}: cannot identify an existing parent directory')
 
 
 def sqlite_path(path: str | os.PathLike[str]) -> Path:
@@ -73,10 +112,22 @@ def sqlite_path(path: str | os.PathLike[str]) -> Path:
     pin = pins.get(supplied) or pins.get(path)
     if pin is None:
         return path
-    selected, other_names = pin
-    for alias in other_names:
-        if has_sidecars(alias):
-            raise StoreError(f'{selected}: recovery sidecars appeared at alias {alias}')
-        if file_identity_at(alias) != file_identity_at(selected):
-            raise StoreError(f'target_changed: database alias {alias}')
+    selected = pin.selected
+    stamp = file_identity_at(selected)
+    for alias in pin.aliases:
+        try:
+            valid_parent = directory_identity(alias.ancestor) == alias.ancestor_id
+        except FileNotFoundError:
+            valid_parent = False
+        if (
+            not valid_parent
+            or sidecar_location(alias.path) != alias.location
+            or alias.path.resolve() != alias.resolved
+            or file_identity_at(alias.path) != stamp
+        ):
+            raise StoreError(f'target_changed: database alias {alias.path}')
+        if alias.location != selected and (found := sidecars(alias.location)):
+            raise StoreError(
+                f'{selected}: recovery sidecars appeared at alias ' + ', '.join(map(str, found))
+            )
     return selected

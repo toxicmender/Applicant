@@ -240,6 +240,7 @@ class Store:
                     os.close(descriptor)
             make_private(self.path)
             verify_identity(self.path)
+            sqlite_path(self.path)
             self.db = sqlite3.connect(self.path)
             try:
                 configure_connection(self.db)

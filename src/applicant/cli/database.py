@@ -48,23 +48,25 @@ def run_upgrade(args: Upgrade, settings: Settings) -> int:
     try:
         original = database_path(settings, args.database)
         aliases = PINNED.set(pin_paths((original,)))
-        database = sqlite_path(original)
-        expectation = EXPECTED_FILES.set({database: file_identity_at(database)})
         try:
-            version = inspect(database, integrity=True)
-            if version is None:
-                print(f'database not found: {database}', file=sys.stderr)
-                return 4
-            if version == len(MIGRATIONS):
-                print(f'database already current at schema {version}: {database}')
+            database = sqlite_path(original)
+            expectation = EXPECTED_FILES.set({database: file_identity_at(database)})
+            try:
+                version = inspect(database, integrity=True)
+                if version is None:
+                    print(f'database not found: {database}', file=sys.stderr)
+                    return 4
+                if version == len(MIGRATIONS):
+                    print(f'database already current at schema {version}: {database}')
+                    return 0
+                with Store(database):
+                    pass
+                inspect(database, integrity=True)
+                print(f'database upgraded to schema {len(MIGRATIONS)}: {database}')
                 return 0
-            with Store(database):
-                pass
-            inspect(database, integrity=True)
-            print(f'database upgraded to schema {len(MIGRATIONS)}: {database}')
-            return 0
+            finally:
+                EXPECTED_FILES.reset(expectation)
         finally:
-            EXPECTED_FILES.reset(expectation)
             PINNED.reset(aliases)
     except ConfigError as error:
         print(f'applicant db: {error}', file=sys.stderr)

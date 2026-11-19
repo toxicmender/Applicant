@@ -3,8 +3,10 @@
 import io
 import os
 import sqlite3
+import subprocess
 from contextlib import closing, redirect_stderr, redirect_stdout
 from copy import deepcopy
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -132,6 +134,94 @@ def test_sidecars_at_chosen_name_and_late_alternate_name(tmp_path):
         PINNED.reset(token)
     with pytest.raises(StoreError, match='sidecars at multiple aliases'):
         pin_paths((chosen, alias))
+
+
+def upgrade_cli(path):
+    return main(['--no-log-file', 'db', 'upgrade', '--database', str(path)])
+
+
+def test_file_symlink_sidecars_are_preserved(tmp_path, capsys):
+    target = tmp_path / 'target.db'
+    alias = tmp_path / 'alias.db'
+    with Store(target):
+        pass
+    try:
+        alias.symlink_to(target)
+    except OSError as error:
+        if os.name != 'nt' or getattr(error, 'winerror', None) not in {5, 1314}:
+            raise
+        pytest.skip(f'Windows file symlinks unavailable: {error}')
+    alias_wal = alias.with_name('alias.db-wal')
+    target_shm = target.with_name('target.db-shm')
+    for paths in ((alias_wal,), (alias_wal, target_shm)):
+        before = {}
+        for path in paths:
+            path.write_bytes(b'sidecar recovery data')
+            info = path.stat()
+            before[path] = info.st_dev, info.st_ino, info.st_mtime_ns, path.read_bytes()
+        assert upgrade_cli(alias) == 1
+        error = capsys.readouterr().err
+        assert str(target) in error
+        for path in paths:
+            info = path.stat()
+            assert str(path) in error
+            assert (info.st_dev, info.st_ino, info.st_mtime_ns, path.read_bytes()) == before[path]
+    alias_wal.unlink()
+    target_shm.unlink()
+    with Store(target) as writer:
+        writer.db.execute('PRAGMA wal_autocheckpoint = 0')
+        writer.db.execute('PRAGMA user_version = 15')
+        assert upgrade_cli(alias) == 1
+        assert 'schema 15 requires a newer Applicant' in capsys.readouterr().err
+
+
+def test_retargeted_directory_alias(tmp_path):
+    old, new, alias = (tmp_path / name for name in ('old', 'new', 'alias'))
+    old.mkdir()
+    new.mkdir()
+
+    def link(target):
+        if os.name == 'nt':
+            subprocess.run(['cmd', '/c', 'mklink', '/J', str(alias), str(target)], check=True)
+        else:
+            alias.symlink_to(target, target_is_directory=True)
+
+    link(old)
+    try:
+        supplied = alias / 'target.db'
+        token = PINNED.set(pin_paths((supplied,)))
+        try:
+            alias.rmdir() if os.name == 'nt' else alias.unlink()
+            link(new)
+            with pytest.raises(StoreError, match='target_changed'):
+                Store(supplied)
+            assert not (old / 'target.db').exists()
+            assert not (new / 'target.db').exists()
+        finally:
+            PINNED.reset(token)
+    finally:
+        alias.rmdir() if os.name == 'nt' else alias.unlink()
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows short paths')
+def test_windows_short_directory_has_one_sidecar_location(tmp_path):
+    import ctypes
+
+    long = tmp_path / 'directory with long name'
+    long.mkdir()
+    buffer = ctypes.create_unicode_buffer(32768)
+    size = ctypes.WinDLL('kernel32').GetShortPathNameW(str(long), buffer, len(buffer))
+    if not size or Path(buffer.value) == long:
+        pytest.skip('filesystem has no 8.3 alias')
+    short = Path(buffer.value)
+    supplied = short / 'missing' / 'test.db'
+    token = PINNED.set(pin_paths((supplied,)))
+    try:
+        with Store(supplied) as writer:
+            assert writer.path == long / 'missing' / 'test.db'
+            assert upgrade_cli(supplied) == 0
+    finally:
+        PINNED.reset(token)
 
 
 def test_retirement_never_revives_a_predecessor(tmp_path):

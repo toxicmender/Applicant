@@ -15,8 +15,10 @@ from ..errors import DatabaseBusy, StoreError, sqlite_busy
 from ..infra.store.database_paths import (
     EXPECTED_FILES,
     PINNED,
+    DatabasePin,
+    database_alias,
     file_identity_at,
-    has_sidecars,
+    sidecars,
     sqlite_path,
 )
 from ..infra.store.sqlite import DB_NAME, MIGRATIONS, Store
@@ -189,7 +191,7 @@ def verify(path: Path, previous: tuple[int, int] | None) -> None:
         raise StoreError(f'target_changed: {path}')
 
 
-def pin_paths(paths: tuple[Path, ...]) -> dict[Path, tuple[Path, tuple[Path, ...]]]:
+def pin_paths(paths: tuple[Path, ...]) -> dict[Path, DatabasePin]:
     groups: dict[Path | tuple[int, int], list[Path]] = {}
     names = sorted({Path(os.path.abspath(p)) for p in paths} | {p.resolve() for p in paths})
     for path in names:
@@ -197,20 +199,25 @@ def pin_paths(paths: tuple[Path, ...]) -> dict[Path, tuple[Path, tuple[Path, ...
         groups.setdefault(stamp or path.resolve(), []).append(path)
     pins = {}
     for candidates in groups.values():
-        bearing = [name for name in candidates if has_sidecars(name)]
+        aliases = tuple(database_alias(name) for name in candidates)
+        locations = {alias.location for alias in aliases}
+        bearing = {name: found for name in sorted(locations) if (found := sidecars(name))}
         if len(bearing) > 1:
             raise StoreError(
-                'SQLite recovery sidecars at multiple aliases: ' + ', '.join(map(str, bearing))
+                'SQLite recovery sidecars at multiple aliases: '
+                + ', '.join(str(sidecar) for found in bearing.values() for sidecar in found)
             )
-        chosen = bearing[0] if bearing else candidates[0].resolve()
+        chosen = next(iter(bearing)) if bearing else candidates[0].resolve()
         if chosen.resolve() != chosen:
             raise StoreError(
-                f'SQLite would bypass recovery sidecars at {chosen} via {chosen.resolve()}'
+                'SQLite would bypass recovery sidecars at '
+                + ', '.join(map(str, bearing.get(chosen, ())))
+                + f' via {chosen.resolve()}'
             )
-        others = tuple(name for name in candidates if name != chosen)
-        for name in candidates:
-            pins[name] = chosen, others
-            pins[name.resolve()] = chosen, others
+        pin = DatabasePin(chosen, aliases)
+        for alias in aliases:
+            pins[alias.path] = pin
+            pins[alias.resolved] = pin
     return pins
 
 
@@ -231,7 +238,7 @@ def dispatch(
             value = getattr(request, 'output', None) or settings.files.financials
             if os.path.normcase(value) != os.path.normcase(os.devnull):
                 output = Path(settings.path(value)).resolve()
-        preflight(tuple(sorted({chosen for chosen, _ in pins.values()})), writable, output)
+        preflight(tuple(sorted({pin.selected for pin in pins.values()})), writable, output)
         return handler(request, settings)
     finally:
         EXPECTED_FILES.reset(expected)
