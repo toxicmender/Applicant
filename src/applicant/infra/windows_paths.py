@@ -82,6 +82,8 @@ def _win_error(code=None) -> OSError:
 
 def file_identity(fd: int) -> tuple[int, int]:
     """Identify the file from its open Windows handle, including the full file ID."""
+    if os.name != 'nt':
+        raise RuntimeError('Windows file identity is unavailable')
     from msvcrt import get_osfhandle
 
     class FileIdInfo(ctypes.Structure):
