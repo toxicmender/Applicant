@@ -67,12 +67,16 @@ def has_sidecars(path: Path) -> bool:
 
 
 def sqlite_path(path: str | os.PathLike[str]) -> Path:
-    path = Path(path).resolve()
-    pin = (PINNED.get() or {}).get(path)
+    supplied = Path(os.path.abspath(path))
+    path = supplied.resolve()
+    pins = PINNED.get() or {}
+    pin = pins.get(supplied) or pins.get(path)
     if pin is None:
         return path
     selected, other_names = pin
     for alias in other_names:
         if has_sidecars(alias):
             raise StoreError(f'{selected}: recovery sidecars appeared at alias {alias}')
+        if file_identity_at(alias) != file_identity_at(selected):
+            raise StoreError(f'target_changed: database alias {alias}')
     return selected

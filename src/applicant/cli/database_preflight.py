@@ -209,6 +209,7 @@ def pin_paths(paths: tuple[Path, ...]) -> dict[Path, tuple[Path, tuple[Path, ...
             )
         others = tuple(name for name in candidates if name != chosen)
         for name in candidates:
+            pins[name] = chosen, others
             pins[name.resolve()] = chosen, others
     return pins
 

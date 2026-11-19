@@ -1,6 +1,7 @@
 """Exercise language imports, immutable ranking, and database CLI boundaries."""
 
 import io
+import os
 import sqlite3
 from contextlib import closing, redirect_stderr, redirect_stdout
 from copy import deepcopy
@@ -9,9 +10,12 @@ from unittest.mock import patch
 import pytest
 
 from applicant.cli import main
+from applicant.cli.database_preflight import pin_paths
 from applicant.domain.language_extraction import extract_language
 from applicant.domain.language_fit import evaluate_language, preferred_score
 from applicant.domain.ranking_v2 import CandidateProfileV3, RankingRunV4
+from applicant.errors import StoreError
+from applicant.infra.store.database_paths import PINNED, sqlite_path
 from applicant.infra.store.sqlite import MIGRATIONS, Store
 from applicant.services.research import export_job_versions, import_research, template
 from tests import test_ranking_cli
@@ -102,6 +106,32 @@ def test_explicit_language_extraction_only():
     assert spoken['payload']['threshold']['level'] == 'B2'
     assert {spoken['payload']['skill'], written['payload']['skill']} == {'spoken', 'written'}
     assert extract_language('German not required.')[0]['payload']['strength'] == 'not_required'
+    required, qualified = extract_language('German required; German fluency not required.')
+    assert required['payload']['strength'] == 'required'
+    assert required['payload']['threshold']['kind'] == 'no_minimum'
+    assert qualified['payload']['strength'] == 'not_required'
+
+
+def test_sidecars_at_chosen_name_and_late_alternate_name(tmp_path):
+    chosen, alias = tmp_path / 'canonical.db', tmp_path / 'alternate.db'
+    chosen.touch()
+    os.link(chosen, alias)
+    wal = chosen.with_name(chosen.name + '-wal')
+    wal.touch()
+    chosen.with_name(chosen.name + '-shm').touch()
+    token = PINNED.set(pin_paths((chosen, alias)))
+    try:
+        assert sqlite_path(chosen) == chosen
+        assert sqlite_path(alias) == chosen
+        journal = alias.with_name(alias.name + '-journal')
+        journal.touch()
+        with pytest.raises(StoreError, match='recovery sidecars appeared'):
+            sqlite_path(alias)
+        assert journal.exists() and wal.exists()
+    finally:
+        PINNED.reset(token)
+    with pytest.raises(StoreError, match='sidecars at multiple aliases'):
+        pin_paths((chosen, alias))
 
 
 def test_retirement_never_revives_a_predecessor(tmp_path):

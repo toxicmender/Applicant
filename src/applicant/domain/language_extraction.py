@@ -24,7 +24,7 @@ def extract_language(text: str | None) -> tuple[dict[str, Any], ...]:
         return ()
     plain = unescape(re.sub(r'<[^>]+>', '\n', text))
     results = []
-    for match in re.finditer(r'[^.!?\n]+', plain):
+    for match in re.finditer(r'[^.!?;\n]+', plain):
         clause = ' '.join(match[0].split())
         names = list(LANGUAGE_NAME.finditer(clause))
         qualifiers = list(STRENGTH.finditer(clause))
@@ -33,11 +33,11 @@ def extract_language(text: str | None) -> tuple[dict[str, Any], ...]:
         tokens = {word[0].lower() for word in qualifiers}
         required = bool(tokens & {'required', 'mandatory', 'must'})
         preferred = bool(tokens & {'preferred', 'desirable', 'nice to have'})
-        if required and preferred:
-            continue  # Separate clauses need explicit scope rather than a guessed split.
         strength = 'required' if required else 'preferred' if preferred else 'not_required'
         directional: tuple[Skill, ...] = ('spoken', 'written')
-        skills = [skill for skill in directional if re.search(rf'\b{skill}\b', clause, re.I)]
+        skills: list[Skill] = [
+            skill for skill in directional if re.search(rf'\b{skill}\b', clause, re.I)
+        ]
         if not skills:
             skills.append('overall')
         thresholds = CEFR.findall(clause)
@@ -50,7 +50,7 @@ def extract_language(text: str | None) -> tuple[dict[str, Any], ...]:
         elif re.search(r'\b(?:native.level|ILR\s+\d)\b', clause, re.I):
             threshold = Threshold(kind='raw', level=clause)
         clause_id = content_hash((match.start(), clause))
-        members = [
+        members: list[tuple[str, Skill, str]] = [
             (name[0], skill, f'{clause_id}-{name.start()}-{skill}')
             for name in names
             for skill in skills
@@ -80,7 +80,10 @@ def extract_language(text: str | None) -> tuple[dict[str, Any], ...]:
                 threshold=threshold,
                 expression=expression,
                 interpretation_review=bool(
-                    AMBIGUITY.search(clause) or len(thresholds) > 1 or len(named) > 1
+                    AMBIGUITY.search(clause)
+                    or (required and preferred)
+                    or len(thresholds) > 1
+                    or len(named) > 1
                 ),
             )
             results.append({'excerpt': clause, 'payload': fact.model_dump(mode='json')})

@@ -290,7 +290,8 @@ class Store:
                 version = store.db.execute('PRAGMA user_version').fetchone()[0]
                 if version < len(MIGRATIONS):
                     raise StoreError(
-                        f'database schema {version} requires a writable upgrade to {len(MIGRATIONS)}; run applicant db upgrade --database PATH'
+                        f'database schema {version} requires a writable upgrade to {len(MIGRATIONS)}; '
+                        f'run uv run applicant db upgrade --database "{store.path}"'
                     )
                 if version > len(MIGRATIONS):
                     raise StoreError(
