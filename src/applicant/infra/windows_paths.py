@@ -80,6 +80,22 @@ def _win_error(code=None) -> OSError:
     return ctypes.WinError(code)
 
 
+def file_identity(fd: int) -> tuple[int, int]:
+    """Identify the file from its open Windows handle, including the full file ID."""
+    from msvcrt import get_osfhandle
+
+    class FileIdInfo(ctypes.Structure):
+        _fields_ = [('serial', ctypes.c_ulonglong), ('file_id', ctypes.c_ubyte * 16)]
+
+    result = FileIdInfo()
+    kernel, _ = _apis()
+    if not kernel.GetFileInformationByHandleEx(
+        get_osfhandle(fd), 18, ctypes.byref(result), ctypes.sizeof(result)
+    ):
+        raise _win_error()
+    return result.serial, int.from_bytes(bytes(result.file_id), 'little')
+
+
 def case_sensitive(handle):
     kernel, _ = _apis()
     flags = wintypes.DWORD()

@@ -3,7 +3,8 @@
 import sqlite3
 from pathlib import Path
 
-from ...errors import StoreError
+from ...errors import DatabaseBusy, StoreError, sqlite_busy
+from .database_paths import sqlite_path
 
 
 def configure_connection(db, *, writable=True):
@@ -19,7 +20,8 @@ def checkpoint(path: Path, mode='passive'):
     if mode not in ('passive', 'truncate'):
         raise ValueError('checkpoint mode must be passive or truncate')
     try:
-        db = sqlite3.connect(path.resolve().as_uri() + '?mode=rw', uri=True, timeout=5)
+        path = sqlite_path(path)
+        db = sqlite3.connect(path.as_uri() + '?mode=rw', uri=True, timeout=5)
         try:
             configure_connection(db)
             if db.execute('PRAGMA journal_mode').fetchone()[0].lower() != 'wal':
@@ -46,4 +48,6 @@ def checkpoint(path: Path, mode='passive'):
         finally:
             db.close()
     except sqlite3.OperationalError as error:
-        raise StoreError(f'checkpoint unavailable (database may be busy): {error}') from error
+        if sqlite_busy(error):
+            raise DatabaseBusy(f'checkpoint busy: {path}') from error
+        raise StoreError(f'checkpoint unavailable: {error}') from error

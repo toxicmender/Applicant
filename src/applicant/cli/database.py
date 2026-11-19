@@ -42,15 +42,30 @@ def add_parser(add: AddParser, handler: Callable[[Upgrade, Settings], int]) -> N
 
 
 def run_upgrade(args: Upgrade, settings: Settings) -> int:
+    from ..infra.store.database_paths import EXPECTED_FILES, PINNED, file_identity_at, sqlite_path
+    from .database_preflight import inspect, pin_paths
+
     try:
-        database = database_path(settings, args.database)
-        if not database.is_file():
-            print(f'database not found: {database}', file=sys.stderr)
-            return 4
-        with Store(database):
-            pass
-        print(f'database upgraded to schema {len(MIGRATIONS)}: {database.resolve()}')
-        return 0
+        original = database_path(settings, args.database)
+        aliases = PINNED.set(pin_paths((original,)))
+        database = sqlite_path(original)
+        expectation = EXPECTED_FILES.set({database: file_identity_at(database)})
+        try:
+            version = inspect(database, integrity=True)
+            if version is None:
+                print(f'database not found: {database}', file=sys.stderr)
+                return 4
+            if version == len(MIGRATIONS):
+                print(f'database already current at schema {version}: {database}')
+                return 0
+            with Store(database):
+                pass
+            inspect(database, integrity=True)
+            print(f'database upgraded to schema {len(MIGRATIONS)}: {database}')
+            return 0
+        finally:
+            EXPECTED_FILES.reset(expectation)
+            PINNED.reset(aliases)
     except ConfigError as error:
         print(f'applicant db: {error}', file=sys.stderr)
         return 2

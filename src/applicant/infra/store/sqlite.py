@@ -49,9 +49,18 @@ from ...storage import APPLIED_COLUMNS, PROVISIONAL, plan_rows
 from .application_csv import ApplicationCSV
 from .benchmarks import BENCHMARK_MIGRATION
 from .company_evidence import COMPANY_EVIDENCE_MIGRATION
+from .database_paths import (
+    EXPECTED_FILES,
+    descriptor_identity,
+    file_identity_at,
+    register_created,
+    sqlite_path,
+    verify_identity,
+)
 from .feedback import FEEDBACK_MIGRATION
 from .financials_lock import financials_lock
 from .financials_merge import merge_financial_exports
+from .language import LANGUAGE_MIGRATION
 from .maintenance import configure_connection
 from .personalization import PERSONALIZATION_MIGRATION
 from .publication import digest as _bytes_digest
@@ -186,6 +195,7 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
             content BLOB NOT NULL
         )""",
     ),
+    LANGUAGE_MIGRATION,
 )
 
 
@@ -204,14 +214,32 @@ class Store:
     """One applicant.db. Open it with `Store.beside(path)` or `Store(db_path)`."""
 
     def __init__(self, path: str | os.PathLike[str]):
-        self.path = Path(path)
-        self.root = self.path.resolve().parent
+        self.root = Path(path).resolve().parent
+        self.path = sqlite_path(path)
+        created_identity = None
         try:
+            verify_identity(self.path)
             self.path.parent.mkdir(parents=True, exist_ok=True)
             # created owner-only before SQLite opens it: it holds everything the
             # listing and the application log do (ASVS 14.2)
-            os.close(os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600))
+            try:
+                descriptor = os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                verify_identity(self.path)
+            else:
+                try:
+                    info = os.fstat(descriptor)
+                    if info.st_size != 0:
+                        raise StoreError(f'target_changed: {self.path}')
+                    created_identity = descriptor_identity(descriptor)
+                    expected = EXPECTED_FILES.get()
+                    if expected is not None and expected.get(self.path) is not None:
+                        raise StoreError(f'target_changed: {self.path}')
+                    register_created(self.path, created_identity)
+                finally:
+                    os.close(descriptor)
             make_private(self.path)
+            verify_identity(self.path)
             self.db = sqlite3.connect(self.path)
             try:
                 configure_connection(self.db)
@@ -230,7 +258,7 @@ class Store:
                     mode = self.db.execute('PRAGMA journal_mode = WAL').fetchone()[0]
                 if mode.lower() != 'wal':
                     raise sqlite3.DatabaseError(f'WAL journal mode unavailable: {mode}')
-                self._migrate()
+                self._migrate(created_identity)
             except BaseException:
                 self.db.close()
                 raise
@@ -249,9 +277,10 @@ class Store:
         Missing files raise StoreError rather than creating an empty database.
         """
         store = cls.__new__(cls)
-        store.path = Path(path)
-        store.root = store.path.resolve().parent
+        store.root = Path(path).resolve().parent
+        store.path = sqlite_path(path)
         try:
+            verify_identity(store.path)
             store.db = sqlite3.connect(store.path.resolve().as_uri() + '?mode=ro', uri=True)
             try:
                 configure_connection(store.db, writable=False)
@@ -317,7 +346,7 @@ class Store:
                 with (
                     closing(
                         sqlite3.connect(
-                            database.as_uri() + '?mode=ro',
+                            sqlite_path(database).as_uri() + '?mode=ro',
                             uri=True,
                             timeout=0 if single_attempt() else 5,
                         )
@@ -346,7 +375,7 @@ class Store:
         except sqlite3.Error as error:
             raise StoreError(f'{self.path}: {error}') from error
 
-    def _migrate(self) -> None:
+    def _migrate(self, created_identity: tuple[int, int] | None = None) -> None:
         while True:
             # Read the version only after acquiring the writer lock. Another
             # initializer may have upgraded the database while we waited.
@@ -359,6 +388,17 @@ class Store:
                     if sidecar.exists():
                         make_private(sidecar)
                 version = self.db.execute('PRAGMA user_version').fetchone()[0]
+                verify_identity(self.path)
+                if created_identity is not None:
+                    if (
+                        file_identity_at(self.path) != created_identity
+                        or version
+                        or self.db.execute(
+                            "SELECT 1 FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' LIMIT 1"
+                        ).fetchone()
+                    ):
+                        raise StoreError(f'target_changed: {self.path}')
+                    created_identity = None
                 if version > len(MIGRATIONS):
                     raise sqlite3.DatabaseError(
                         f'database schema {version} is newer than supported {len(MIGRATIONS)}'
@@ -367,6 +407,7 @@ class Store:
                     self.db.commit()
                     return
                 number = version + 1
+                sqlite_path(self.path)
                 for statement in MIGRATIONS[version]:
                     self.db.execute(statement)
                 self.db.execute(f'PRAGMA user_version = {number}')
