@@ -3,6 +3,7 @@
 import json
 
 from ...domain.canonical import canonical_json, content_hash
+from ...domain.language import singleton
 from ...domain.research import (
     EVENT_ADAPTER,
     Company,
@@ -101,7 +102,9 @@ class ResearchRepository:
 
     def import_bundle(self, bundle: ResearchImport | ResearchImportV2):
         bundle = parse_import(json.loads(canonical_json(bundle)))
+        self._check_language_members(bundle)
         count = 0
+        language_edges = []
         for attribute, (table, identity, _) in RECORDS.items():
             seen = set()
             for value in getattr(bundle, attribute):
@@ -120,6 +123,8 @@ class ResearchRepository:
                         'research_evidence': ('entity_id', 'job_version_id'),
                     }[table]
                     columns = {name: getattr(value, name) for name in names}
+                if isinstance(value, ResearchEvidence) and value.payload.kind == 'language':
+                    value = self._resolve_member(value)
                 if not self._put(table, key, value, columns):
                     continue
                 count += 1
@@ -130,7 +135,112 @@ class ResearchRepository:
                     )
                 if isinstance(value, ResearchEvidence):
                     self._facts(value)
+                    if value.payload.kind == 'language':
+                        fact = value.payload
+                        language_edges.extend(
+                            (key, predecessor, value.job_version_id, fact.clause_id, fact.member_id)
+                            for predecessor in fact.supersedes
+                        )
+        self._supersede(language_edges)
         return count
+
+    def _check_language_members(self, bundle):
+        clauses = {}
+        for evidence in bundle.evidence:
+            fact = evidence.payload
+            if fact.kind == 'language':
+                clauses.setdefault((evidence.job_version_id, fact.clause_id), []).append(evidence)
+        for (_, clause), entries in clauses.items():
+            if len(entries) == 1:
+                continue
+            for evidence in entries:
+                fact = evidence.payload
+                if (
+                    fact.member_id is None
+                    and fact.locator is None
+                    and not self.db.execute(
+                        'SELECT 1 FROM job_language_assertions WHERE evidence_id=?',
+                        (evidence.evidence_id,),
+                    ).fetchone()
+                ):
+                    raise ValueError(f'language clause {clause} requires explicit member IDs')
+
+    def _resolve_member(self, evidence):
+        fact = evidence.payload
+        scope = (evidence.job_version_id, fact.clause_id)
+        reserved = singleton(*scope)
+        previous = self.db.execute(
+            'SELECT member_id FROM job_language_assertions WHERE evidence_id=?',
+            (evidence.evidence_id,),
+        ).fetchone()
+        member = fact.member_id
+        if member is None:
+            if fact.locator is not None:
+                member = 'source-' + content_hash((*scope, fact.locator))
+            elif previous:
+                member = previous[0]
+            elif self.db.execute(
+                'SELECT 1 FROM job_language_assertions WHERE job_version_id=? AND clause_id=?',
+                scope,
+            ).fetchone():
+                raise ValueError(f'language clause {fact.clause_id} requires an explicit member ID')
+            else:
+                member = reserved
+        if member.startswith('singleton-') and member != reserved:
+            raise ValueError('singleton member ID does not match its job version and clause')
+        return evidence.model_copy(
+            update={'payload': fact.model_copy(update={'member_id': member})}
+        )
+
+    def _supersede(self, edges):
+        if not edges:
+            return
+        for edge in edges:
+            successor, predecessor, *scope = edge
+            if not self.db.execute(
+                """SELECT 1 FROM job_language_assertions
+                   WHERE evidence_id=? AND job_version_id=? AND clause_id=? AND member_id=?""",
+                (predecessor, *scope),
+            ).fetchone():
+                raise ValueError(
+                    'supersession must reference the same job version, clause and member'
+                )
+            self.db.execute('INSERT INTO language_supersessions VALUES (?,?,?,?,?)', edge)
+            if self.db.execute(
+                """WITH RECURSIVE predecessors(id) AS (
+                       SELECT ? UNION SELECT predecessor_id FROM language_supersessions
+                       JOIN predecessors ON successor_id=id
+                   ) SELECT 1 FROM predecessors WHERE id=?""",
+                (predecessor, successor),
+            ).fetchone():
+                raise ValueError('cyclic language supersession')
+
+    def resolved_members(self, bundle):
+        return [
+            dict(
+                zip(('job_version_id', 'clause_id', 'assertion_id', 'member_id'), row, strict=True)
+            )
+            for evidence in bundle.evidence
+            if evidence.payload.kind == 'language'
+            for row in self.db.execute(
+                """SELECT job_version_id,clause_id,evidence_id,member_id
+                   FROM job_language_assertions WHERE evidence_id=?""",
+                (evidence.evidence_id,),
+            )
+        ]
+
+    def active_languages(self, job_version_id):
+        return tuple(
+            ResearchEvidence.model_validate_json(row[0])
+            for row in self.db.execute(
+                """SELECT e.payload FROM job_language_assertions a
+                   JOIN research_evidence e ON e.id=a.evidence_id
+                   WHERE a.job_version_id=? AND a.action='assert' AND NOT EXISTS (
+                       SELECT 1 FROM language_supersessions WHERE predecessor_id=a.evidence_id
+                   ) ORDER BY a.clause_id,a.member_id,a.evidence_id""",
+                (job_version_id,),
+            )
+        )
 
     def _facts(self, evidence):
         fact = evidence.payload
@@ -173,6 +283,17 @@ class ResearchRepository:
                     fact.basis,
                     str(fact.minimum) if fact.minimum is not None else None,
                     str(fact.maximum) if fact.maximum is not None else None,
+                ),
+            )
+        elif fact.kind == 'language':
+            self.db.execute(
+                'INSERT INTO job_language_assertions VALUES (?,?,?,?,?)',
+                (
+                    evidence.evidence_id,
+                    evidence.job_version_id,
+                    fact.clause_id,
+                    fact.member_id,
+                    fact.action,
                 ),
             )
 

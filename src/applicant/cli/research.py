@@ -22,6 +22,7 @@ from ..errors import ConfigError
 from ..infra.ranking_documents import read_ranking_document
 from ..permissions import make_private
 from ..services.research import (
+    export_job_versions,
     import_research,
     read_research,
     read_snapshot,
@@ -71,6 +72,7 @@ def add_parser(add):
             'template',
             'import',
             'report',
+            'export-job-versions',
             'capture-profile',
             'bridge-company',
             'backfill-companies',
@@ -96,6 +98,7 @@ def add_parser(add):
                         'culture',
                         'policy',
                         'technology',
+                        'language',
                         'job-party',
                         'corporate-event',
                     ),
@@ -109,10 +112,11 @@ def add_parser(add):
             elif op == 'research.bridge-company':
                 p.add_argument('--snapshot', required=True)
                 p.add_argument('--entity-id', required=True)
-            elif op == 'research.report':
+            elif op in ('research.report', 'research.export-job-versions'):
                 p.add_argument('--selection', required=True)
-                p.add_argument('--section')
-                p.add_argument('--summary', action='store_true')
+                if op == 'research.report':
+                    p.add_argument('--section')
+                    p.add_argument('--summary', action='store_true')
             elif op == 'feed.collect':
                 choice = p.add_mutually_exclusive_group(required=True)
                 choice.add_argument('--query')
@@ -195,6 +199,10 @@ def execute(args, settings):
             atomic_text(schema_path, canonical_json(IMPORT_ADAPTER.json_schema()) + '\n')
     elif op == 'research.import':
         result = import_research(database, read(args.from_file), dry_run=args.dry_run)
+    elif op == 'research.export-job-versions':
+        if output is None:
+            raise ConfigError('export-job-versions requires --output')
+        result = export_job_versions(database, read(args.selection)).model_dump(mode='json')
     elif op == 'research.capture-profile':
         from ..services.company_capture import capture_profile
 

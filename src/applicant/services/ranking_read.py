@@ -6,7 +6,7 @@ from typing import Any
 from ..domain.ranking import RankingRun
 from ..domain.ranking_inputs import ProvenanceDocument
 from ..domain.ranking_report import ranking_report
-from ..domain.ranking_v2 import RankingRunV3
+from ..domain.ranking_v2 import RankingRunV3, RankingRunV4
 from ..errors import StoreError
 from ..infra.store.ranking_runs import RankingRunNotFound, RankingRunRepository
 from ..infra.store.sqlite import Store
@@ -97,7 +97,7 @@ def read_run(
         else None,
         'result': None if result is None else result.model_dump(),
         'selected_tier': history.run.selected_tiers.get(job_id)
-        if isinstance(history.run, RankingRunV3)
+        if isinstance(history.run, (RankingRunV3, RankingRunV4))
         else None,
         'job': job.model_dump(),
         'profile': history.profile.model_dump(),

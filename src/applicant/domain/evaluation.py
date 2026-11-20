@@ -5,12 +5,12 @@ from decimal import Decimal, localcontext
 from .canonical import content_hash
 from .feedback import FeedbackEvent
 from .ranking_math import arithmetic_context
-from .ranking_v2 import RankingRunV2, RankingRunV3, ScoringConfigurationV2
+from .ranking_v2 import RankingRunV2, RankingRunV3, RankingRunV4, ScoringConfigurationV2
 from .ranking_views import ranked_views
 
 
 def evaluate_feedback(
-    run: RankingRunV2 | RankingRunV3,
+    run: RankingRunV2 | RankingRunV3 | RankingRunV4,
     config: ScoringConfigurationV2,
     events: tuple[FeedbackEvent, ...],
     *,

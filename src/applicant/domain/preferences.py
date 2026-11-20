@@ -27,6 +27,7 @@ DIMENSIONS = (
     'career_growth',
     'stability',
 )
+LANGUAGE_DIMENSION = 'preferred_language_fit'
 
 
 def default_weights() -> dict[str, Decimal]:
@@ -56,7 +57,7 @@ class ProfileFields(VersionedContract):
 
     @model_validator(mode='after')
     def consistent(self):
-        if set(self.weights) != set(DIMENSIONS):
+        if set(self.weights) != set(self.dimensions()):
             raise ValueError('weights must contain exactly the six supported dimensions')
         if abs(sum(self.weights.values()) - Decimal(1)) >= Decimal('0.000001'):
             raise ValueError('weights must sum to 1 within tolerance')
@@ -67,6 +68,9 @@ class ProfileFields(VersionedContract):
         ):
             raise ValueError('minimum salary exceeds preferred salary')
         return self
+
+    def dimensions(self) -> tuple[str, ...]:
+        return DIMENSIONS
 
 
 class CandidateProfile(ProfileFields, Contract):

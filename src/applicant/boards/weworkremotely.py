@@ -8,6 +8,7 @@ from xml.etree import ElementTree
 
 from ..domain.capability import Capability, Field
 from ..domain.job import Job
+from ..domain.language_extraction import extract_language
 from ..domain.places import within
 from ..errors import Blocked, Unparseable
 from ..infra.http import HttpClient
@@ -81,6 +82,7 @@ class WeWorkRemotely:
                     location=region,
                     remote=True,
                     posted=posted,
+                    language_clauses=extract_language(description),
                     flags=['location_unresolved'] if location and eligible is None else [],
                 )
             )

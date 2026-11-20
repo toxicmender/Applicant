@@ -5,7 +5,7 @@ from hashlib import sha256
 from ..domain.canonical import canonical_json, content_hash
 from ..domain.contracts import now
 from ..domain.providers import provider
-from ..domain.research import ListingObservation, ResearchImport
+from ..domain.research import ListingObservation, ResearchImport, posting_languages
 from ..domain.research_identity import match_jobs
 from ..errors import AuthFailed, Blocked, SourceError, Unparseable
 from ..infra.board_worker import OwnedBoard
@@ -143,7 +143,22 @@ def collect_feed(database, query, *, factory=board_client, clock=now, parent=Non
             if invalid is not None and status != 'infrastructure_failure':
                 status, error = 'adapter_degraded', invalid
             # Database errors are deliberately outside provider failure handling.
-            import_research(database, ResearchImport(observations=tuple(observations)))
+            import_research(
+                database,
+                ResearchImport(
+                    observations=tuple(observations),
+                    evidence=tuple(
+                        fact
+                        for item in observations
+                        for fact in posting_languages(
+                            item.job,
+                            item.job_version_id,
+                            item.acquired_at,
+                            item.source_url,
+                        )
+                    ),
+                ),
+            )
             acquired.extend(observations)
             if status != 'infrastructure_failure':
                 try:

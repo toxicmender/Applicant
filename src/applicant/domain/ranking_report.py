@@ -1,7 +1,7 @@
 """Pure versioned reports for completed engine runs, with display-only limits."""
 
 from .ranking import JobVersion, RankingRun, ScoringConfiguration
-from .ranking_v2 import RankingRunV2, RankingRunV3, ScoringConfigurationV2
+from .ranking_v2 import RankingRunV2, RankingRunV3, RankingRunV4, ScoringConfigurationV2
 from .ranking_views import ranked_views
 
 
@@ -19,7 +19,7 @@ def _company_context(job: JobVersion) -> dict:
 
 
 def ranking_report(
-    run: RankingRun | RankingRunV2 | RankingRunV3,
+    run: RankingRun | RankingRunV2 | RankingRunV3 | RankingRunV4,
     jobs: tuple[JobVersion, ...],
     *,
     config: ScoringConfiguration | ScoringConfigurationV2,

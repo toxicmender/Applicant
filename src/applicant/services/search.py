@@ -332,6 +332,9 @@ class SearchJobs:
             if plan.pending is not None and filters is not None:
                 plan.pending.resolve_current(job, keywords, filters, plan.described[key])
 
+            from ..domain.language_extraction import extract_language
+
+            job.language_clauses = extract_language(plan.described.get(key))
             found = experience_from(plan.described.get(key))
             if found is None:
                 continue

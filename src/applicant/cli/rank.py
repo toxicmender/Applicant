@@ -65,7 +65,7 @@ class Compare(DatabaseRequest):
 
 class Replay(DatabaseRequest):
     run_id: Identifier
-    provenance: str
+    provenance: Identifier
 
 
 def add_parser(
@@ -145,6 +145,11 @@ def _render(report: dict[str, Any], database: Path) -> None:
             print(
                 f'  {result["job_id"]} {shown(result["job"].get("title"))}: fit={fit}, confidence={result["confidence"]}, coverage={result["coverage"]}'
             )
+            if result.get('language_groups') is not None:
+                print(f'    Eligibility: {result["eligibility"]}')
+                for group in result['language_groups']:
+                    if group['status'] in ('unknown', 'conflict'):
+                        print(f'    Needs review: {shown(group["clause_id"])} ({group["reason"]})')
             for criterion in result['decision']['criteria']:
                 if criterion['status'] in ('fail', 'unknown', 'not_applicable'):
                     print(
@@ -200,6 +205,9 @@ def run(args: Create | ListRuns | Show | Explain | Compare | Replay, settings: S
                 )
             except ValueError as error:
                 raise ConfigError(f'invalid provenance: {error}') from error
+            from .database_preflight import preflight
+
+            preflight((database.resolve(),), False)
             report = read_run(database, args.run_id.strip(), provenance=provenance)
         else:
 

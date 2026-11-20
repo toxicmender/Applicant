@@ -50,11 +50,12 @@ class Associate(ImportEvidence):
 class Enrich(DatabaseRequest):
     from_file: str
     export: str
+    base_run: Identifier | None = None
 
     def report(self, database: Path, settings: Settings) -> dict[str, object]:
         data = read_ranking_document(Path(settings.path(self.from_file)), decimal=True)
         return enrich_company_evidence(
-            database, CompanyEnrichment.model_validate(data)
+            database, CompanyEnrichment.model_validate(data), base_run=self.base_run
         ).model_dump()
 
 
@@ -108,6 +109,7 @@ def add_parser(add: AddParser, handler: Callable[[Evidence, Settings], int]) -> 
         bind(command, model, handler)
     command = leaf('enrich', 'export job versions enriched with selected company evidence')
     command.add_argument('--from-file', required=True)
+    command.add_argument('--base-run')
     bind(command, Enrich, handler)
     command = leaf('show', 'read selected company evidence offline')
     command.add_argument('--association', action='append', default=[])

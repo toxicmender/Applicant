@@ -6,6 +6,7 @@ from urllib.parse import urljoin, urlsplit
 
 from ..domain.capability import Capability, Field
 from ..domain.job import Job
+from ..domain.language_extraction import extract_language
 from ..errors import AuthFailed, Blocked, Unparseable
 from ..infra.http import HttpClient
 
@@ -156,6 +157,7 @@ class PublicBoard:
             value = salary['value']
             salary_text = f'{salary.get("currency", "")} {value.get("minValue", value.get("value", ""))}-{value.get("maxValue", value.get("value", ""))} {value.get("unitText", "")}'
         posted = record.get('datePosted')
+        description = record.get('description')
         job = Job(
             source=self.name,
             id=source_id,
@@ -167,6 +169,9 @@ class PublicBoard:
             salary=salary_text,
             remote=True if record.get('jobLocationType') == 'TELECOMMUTE' else None,
             employment_type=str(record['employmentType']) if record.get('employmentType') else None,
+            language_clauses=extract_language(
+                description if isinstance(description, str) else None
+            ),
         )
         # External requisition URLs may establish identity; names alone never do.
         external = urlsplit(posting)

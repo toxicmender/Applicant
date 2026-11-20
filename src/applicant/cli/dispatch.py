@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable
-from functools import partial
 from typing import Annotated, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
@@ -79,6 +78,12 @@ def bind(
                 for item in error.errors(include_input=False, include_context=False)
             )
             raise ConfigError(f'{parser.prog}: {details}') from None
-        return partial(handler, request, settings)
+
+        def execute() -> int:
+            from .database_preflight import dispatch
+
+            return dispatch(args.command, getattr(args, 'action', None), request, settings, handler)
+
+        return execute
 
     parser.set_defaults(handler=handler, prepare=prepare)

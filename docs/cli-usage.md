@@ -657,6 +657,10 @@ or disable it with `--no-log-file`.
 
 ### Usage notes for scripting
 
+See the [research language walkthrough](research.md#offline-language-walkthrough)
+for the import, ranking, and replay commands. An older database causes
+unattended commands to exit `1` with an explicit `db upgrade` command.
+
 Use `--dry-run` where supported to validate or preview a write. `--yes` is for
 application submission and `personalize accept` saves a new preference revision.
 Use dedicated output paths for exports and retain the snapshot or run ID when

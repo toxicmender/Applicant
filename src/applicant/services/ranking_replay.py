@@ -1,9 +1,17 @@
 """Offline evaluation and comparison of exact historical engine inputs."""
 
 from ..domain.canonical import canonical_json
+from ..domain.company_lineage import enrichment_steps
 from ..domain.contracts import Identity
 from ..domain.ranking_engine import evaluate_jobs
-from ..domain.ranking_v2 import EngineContract, JobRankingV2, RankingRunV3, ScoringConfigurationV2
+from ..domain.ranking_v2 import (
+    EngineContract,
+    JobRankingV2,
+    JobRankingV3,
+    RankingRunV3,
+    RankingRunV4,
+    ScoringConfigurationV2,
+)
 from ..errors import StoreError
 from ..infra.store.sqlite import Store
 from .ranking_history import load_history
@@ -21,7 +29,7 @@ class ReplayVerification(EngineContract):
     ranking_run_id: Identity
     matches: bool
     mismatched_job_version_ids: tuple[Identity, ...]
-    computed_results: tuple[JobRankingV2, ...]
+    computed_results: tuple[JobRankingV2 | JobRankingV3, ...]
 
 
 def replay_run(
@@ -29,12 +37,19 @@ def replay_run(
 ) -> ReplayVerification:
     history = load_history(store, run_id)
     run = history.run
-    if not isinstance(run, RankingRunV3) or not isinstance(history.config, ScoringConfigurationV2):
+    if not isinstance(run, (RankingRunV3, RankingRunV4)) or not isinstance(
+        history.config, ScoringConfigurationV2
+    ):
         raise UnsupportedAlgorithm(
             'unsupported_algorithm: run is not a frozen-inputs-v1 engine run'
         )
     if run.build_identity != build_identity or run.lockfile_digest != lockfile_digest:
         raise ReplayEnvironmentMismatch('replay build/lock identity differs from the original run')
+    try:
+        for job in history.jobs:
+            enrichment_steps(job)
+    except ValueError as error:
+        raise StoreError(f'invalid archived company lineage: {error}') from error
     computed = evaluate_jobs(
         history.profile,
         history.jobs,
@@ -42,6 +57,7 @@ def replay_run(
         config=history.config,
         evaluated_at=run.calculated_at,
         selected_tiers=run.selected_tiers,
+        language_fit=isinstance(run, RankingRunV4),
     )
     mismatches = tuple(
         original.job_version_id

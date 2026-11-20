@@ -8,7 +8,8 @@ from .compensation import NormalizedCompensation
 from .contracts import Fraction
 from .dimension_scoring import score_dimensions
 from .eligibility import Profile, validated_profile
-from .preferences import DIMENSIONS
+from .language_fit import preferred_score
+from .preferences import DIMENSIONS, LANGUAGE_DIMENSION
 from .ranking_facts import RankingFacts
 from .ranking_math import arithmetic_context
 from .ranking_v2 import (
@@ -16,6 +17,7 @@ from .ranking_v2 import (
     EligibilityDecision,
     EngineContract,
     JobRankingV2,
+    JobRankingV3,
     Score,
     ScoringConfigurationV2,
 )
@@ -35,14 +37,22 @@ def aggregate_dimensions(
     profile = validated_profile(profile)
     config = ScoringConfigurationV2.model_validate_json(canonical_json(config))
     dimensions = tuple(DimensionResult.model_validate_json(canonical_json(d)) for d in dimensions)
-    if len(dimensions) != 6 or {d.dimension for d in dimensions} != set(DIMENSIONS):
+    names = tuple(profile.weights)
+    if (
+        LANGUAGE_DIMENSION not in names
+        and any(d.dimension == LANGUAGE_DIMENSION for d in dimensions)
+    ) or LANGUAGE_DIMENSION in names:
+        names = (*DIMENSIONS, LANGUAGE_DIMENSION)
+    else:
+        names = DIMENSIONS
+    if len(dimensions) != len(names) or {d.dimension for d in dimensions} != set(names):
         raise ValueError('aggregation requires each dimension exactly once')
     by_name = {d.dimension: d for d in dimensions}
     with localcontext(arithmetic_context()) as context:
         values = []
-        for name in DIMENSIONS:
+        for name in names:
             value = by_name[name]
-            if profile.weights[name] == 0:
+            if profile.weights.get(name, Decimal(0)) == 0:
                 value = DimensionResult(
                     dimension=name, status='disabled', reason_codes=('zero_weight',)
                 )
@@ -109,6 +119,7 @@ def score_job(
     config: ScoringConfigurationV2,
     evaluated_at: datetime,
     selected_tier: str | None = None,
+    language_groups: tuple[dict, ...] | None = None,
 ) -> JobRankingV2:
     decision = EligibilityDecision.model_validate_json(canonical_json(decision))
     config = ScoringConfigurationV2.model_validate_json(canonical_json(config))
@@ -119,16 +130,22 @@ def score_job(
             and compensation.scoring_config_id != config.scoring_config_id
         ):
             raise ValueError('normalization references a different scoring configuration')
+    result_type = JobRankingV2 if language_groups is None else JobRankingV3
+    extra = {} if language_groups is None else {'language_groups': language_groups}
+    names = DIMENSIONS if language_groups is None else (*DIMENSIONS, LANGUAGE_DIMENSION)
     if decision.status == 'excluded':
-        return JobRankingV2(
-            job_id=job_id,
-            job_version_id=job_version_id,
-            decision=decision,
-            compensation=compensation,
-            dimensions=tuple(
-                DimensionResult(dimension=d, status='not_evaluated', reason_codes=('excluded',))
-                for d in DIMENSIONS
-            ),
+        return result_type.model_validate(
+            dict(
+                job_id=job_id,
+                job_version_id=job_version_id,
+                decision=decision,
+                compensation=compensation,
+                dimensions=tuple(
+                    DimensionResult(dimension=d, status='not_evaluated', reason_codes=('excluded',))
+                    for d in names
+                ),
+                **extra,
+            )
         )
     dimensions = score_dimensions(
         profile,
@@ -138,14 +155,28 @@ def score_job(
         evaluated_at=evaluated_at,
         selected_tier=selected_tier,
     )
+    if language_groups is not None:
+        score, quality = preferred_score(language_groups)
+        dimensions = (
+            *dimensions,
+            DimensionResult(
+                dimension=LANGUAGE_DIMENSION,
+                status='known' if score is not None else 'unknown',
+                score=score,
+                quality=quality,
+            ),
+        )
     summary = aggregate_dimensions(profile, dimensions, config=config)
-    return JobRankingV2(
-        job_id=job_id,
-        job_version_id=job_version_id,
-        decision=decision,
-        dimensions=summary.dimensions,
-        compensation=compensation,
-        overall_score=summary.overall_score,
-        confidence=summary.confidence,
-        coverage=summary.coverage,
+    return result_type.model_validate(
+        dict(
+            job_id=job_id,
+            job_version_id=job_version_id,
+            decision=decision,
+            dimensions=summary.dimensions,
+            compensation=compensation,
+            overall_score=summary.overall_score,
+            confidence=summary.confidence,
+            coverage=summary.coverage,
+            **extra,
+        )
     )

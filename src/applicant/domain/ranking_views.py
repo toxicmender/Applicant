@@ -4,20 +4,20 @@ from decimal import Decimal, localcontext
 
 from .canonical import canonical_json
 from .ranking_math import arithmetic_context
-from .ranking_v2 import EngineContract, JobRankingV2, ScoringConfigurationV2
+from .ranking_v2 import EngineContract, JobRankingV2, JobRankingV3, ScoringConfigurationV2
 
 
 class RankedViews(EngineContract):
-    eligible: tuple[JobRankingV2, ...]
-    review_required: tuple[JobRankingV2, ...]
-    excluded: tuple[JobRankingV2, ...]
+    eligible: tuple[JobRankingV2 | JobRankingV3, ...]
+    review_required: tuple[JobRankingV2 | JobRankingV3, ...]
+    excluded: tuple[JobRankingV2 | JobRankingV3, ...]
 
 
 def ranked_views(
     results: tuple[JobRankingV2, ...], *, config: ScoringConfigurationV2
 ) -> RankedViews:
     config = ScoringConfigurationV2.model_validate_json(canonical_json(config))
-    results = tuple(JobRankingV2.model_validate_json(canonical_json(r)) for r in results)
+    results = tuple(type(r).model_validate_json(canonical_json(r)) for r in results)
     if len({r.job_id for r in results}) != len(results):
         raise ValueError('duplicate job identity in ranked views')
     groups = {'eligible': [], 'review_required': [], 'excluded': []}

@@ -6,7 +6,10 @@ from typing import Any
 
 from ..domain.canonical import content_hash
 from ..domain.contracts import now
-from ..domain.research import parse_import
+from ..domain.language import singleton
+from ..domain.ranking import Evidence, JobVersion
+from ..domain.ranking_inputs import JobVersionBundle
+from ..domain.research import ListingObservation, parse_import
 from ..infra.store.research import RECORDS, ResearchRepository
 from ..infra.store.sqlite import Store
 
@@ -30,15 +33,80 @@ def import_research(database, bundle, *, dry_run=False):
             db.execute('PRAGMA foreign_keys = ON')
             db.execute('PRAGMA recursive_triggers = ON')
             db.execute('BEGIN')
-            count = ResearchRepository(db).import_bundle(bundle)
+            repo = ResearchRepository(db)
+            count = repo.import_bundle(bundle)
+            members = repo.resolved_members(bundle)
             db.rollback()
         finally:
             db.close()
     else:
         with Store(database) as store, store.db:
             store.db.execute('BEGIN IMMEDIATE')
-            count = ResearchRepository(store.db).import_bundle(bundle)
-    return {'kind': 'research_import_result', 'inserted': count, 'dry_run': dry_run}
+            repo = ResearchRepository(store.db)
+            count = repo.import_bundle(bundle)
+            members = repo.resolved_members(bundle)
+    return {
+        'kind': 'research_import_result',
+        'inserted': count,
+        'dry_run': dry_run,
+        **({'resolved_members': members} if members else {}),
+    }
+
+
+def export_job_versions(database, selection):
+    if (
+        not isinstance(selection, dict)
+        or set(selection) != {'job_version_ids'}
+        or not isinstance(selection['job_version_ids'], list)
+        or not selection['job_version_ids']
+        or any(not isinstance(key, str) or not key for key in selection['job_version_ids'])
+    ):
+        raise ValueError('selection requires a nonempty job_version_ids array')
+    jobs = []
+    with Store.open_readonly(database) as store, store.read_snapshot():
+        repo = ResearchRepository(store.db)
+        for observation_id in selection['job_version_ids']:
+            row = store.db.execute(
+                'SELECT payload FROM research_job_versions WHERE id=?', (observation_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f'unknown research job version {observation_id}')
+            observation = ListingObservation.model_validate_json(row[0])
+            assertion_evidence = repo.active_languages(observation_id)
+            stamp = max(
+                (item.acquired_at for item in assertion_evidence), default=observation.acquired_at
+            )
+            stamp = max(stamp, observation.acquired_at)
+            payload = {
+                'kind': 'research_language_context',
+                'schema_version': 1,
+                'observation_id': observation_id,
+                'assertions': [item.model_dump(mode='json') for item in assertion_evidence],
+            }
+            source = Evidence(
+                source=observation.job.source,
+                observed_at=stamp,
+                extractor_version='research-language-1',
+                payload=payload,
+            )
+            job = JobVersion.capture(
+                observation.job,
+                parser_version='research-1',
+                evidence=(source,),
+            )
+            jobs.append(
+                job.model_copy(
+                    update={
+                        'captured_at': stamp,
+                        'job_version_id': content_hash(
+                            {'observation': observation_id, 'job': job.content_hash}
+                        ),
+                    }
+                )
+            )
+    if len({job.job_id for job in jobs}) != len(jobs):
+        raise ValueError('select exactly one research version per job')
+    return JobVersionBundle(kind='ranking_job_versions', schema_version=1, jobs=tuple(jobs))
 
 
 def read_research(database):
@@ -132,6 +200,15 @@ def template(kind):
                 'description': 'Replace with a scoped and dated policy',
             },
             'technology': {'kind': 'technology', 'technology': 'Python', 'requirement': 'required'},
+            'language': {
+                'kind': 'language',
+                'clause_id': 'example-english',
+                'member_id': singleton('example-job-v1', 'example-english'),
+                'language': 'English',
+                'skill': 'overall',
+                'strength': 'required',
+                'threshold': {'kind': 'level', 'scale': 'cefr', 'level': 'B2'},
+            },
         }
         if kind not in payloads:
             raise ValueError('unknown template kind')

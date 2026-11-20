@@ -111,8 +111,14 @@ class StorageFull(StoreError):
 def sqlite_busy(error):
     import sqlite3
 
-    return isinstance(error, sqlite3.OperationalError) and (
-        getattr(error, 'sqlite_errorcode', 0) & 255 in (5, 6) or 'locked' in str(error).lower()
+    if not isinstance(error, sqlite3.OperationalError):
+        return False
+    code = getattr(error, 'sqlite_errorcode', None)
+    if isinstance(code, int):
+        return code & 255 in (5, 6)
+    message = str(error).lower()
+    return message in {'database is locked', 'database is busy'} or message.startswith(
+        ('database table is locked', 'database schema is locked')
     )
 
 

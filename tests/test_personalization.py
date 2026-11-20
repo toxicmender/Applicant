@@ -1,6 +1,7 @@
 """Bounded weight previews and atomic, idempotent acceptance."""
 
 import unittest
+from datetime import timedelta
 from decimal import Decimal
 from unittest import mock
 
@@ -8,6 +9,7 @@ from applicant.domain.canonical import canonical_json
 from applicant.domain.feedback import FeedbackDocument, FeedbackInput
 from applicant.domain.personalization import WeightSuggestion
 from applicant.domain.ranking import RankingRun
+from applicant.domain.ranking_v2 import CandidateProfileV3
 from applicant.errors import StoreError
 from applicant.infra.store.personalization import SuggestionRepository
 from applicant.infra.store.profiles import ProfileRepository, RevisionConflict
@@ -115,6 +117,108 @@ class PersonalizationTest(unittest.TestCase):
                 SuggestionRepository(store.db).put(
                     show_suggestion(self.path, fresh['suggestion_id'])
                 )
+
+    def test_language_profile_preview_and_repeated_acceptance(self):
+        with Store(self.path) as store:
+            prior = ProfileRepository(store.db).get('default')
+            weights = dict(prior.weights)
+            weights['remote_compatibility'] -= Decimal('.01')
+            weights['preferred_language_fit'] = Decimal('.01')
+            profile = CandidateProfileV3.model_validate(
+                prior.model_dump()
+                | {
+                    'schema_version': 3,
+                    'profile_revision': 3,
+                    'weights': weights,
+                    'languages': [{'language': 'German', 'none': True}],
+                }
+            )
+            save_profile(store, profile, expected_revision=2)
+        self.created = self.data.data.service(versions_path=self.data.data.bundle(self.data.jobs))
+        self.feedback()
+        proposal = suggest_weights(self.path, self.created.ranking_run_id, created_at=NOW)
+        key = proposal['suggestion']['suggestion_id']
+        suggestion = show_suggestion(self.path, key)
+        assert isinstance(suggestion.proposed_profile, CandidateProfileV3)
+        self.assertEqual(suggestion.proposed_profile.schema_version, 3)
+        self.assertEqual(suggestion.proposed_profile.languages, profile.languages)
+        self.assertEqual(
+            suggestion.proposed_profile.weights['preferred_language_fit'], Decimal('.01')
+        )
+        self.assertTrue(all(result['schema_version'] == 3 for result in suggestion.preview))
+        saved = accept_suggestion(self.path, key, accepted_at=NOW)
+        later = NOW + timedelta(days=1)
+        with Store(self.path) as store:
+            save_profile(
+                store,
+                saved.model_copy(update={'profile_revision': 5, 'updated_at': later}),
+                expected_revision=4,
+            )
+        self.assertEqual(accept_suggestion(self.path, key, accepted_at=later), saved)
+        with Store.open_readonly(self.path) as store:
+            self.assertEqual(
+                store.db.execute('SELECT count(*) FROM suggestion_acceptances').fetchone(), (1,)
+            )
+            self.assertEqual(ProfileRepository(store.db).get('default').profile_revision, 5)
+
+    def replace_suggestion_payload(self, payload):
+        key = payload['suggestion_id']
+        with Store(self.path) as store, store.db:
+            trigger = 'immutable_weight_suggestions_update'
+            (definition,) = store.db.execute(
+                'SELECT sql FROM sqlite_schema WHERE name=?', (trigger,)
+            ).fetchone()
+            store.db.execute(f'DROP TRIGGER {trigger}')
+            store.db.execute(
+                'UPDATE weight_suggestions SET payload=? WHERE suggestion_id=?',
+                (canonical_json(payload), key),
+            )
+            store.db.execute(definition)
+
+    def test_corrupt_suggestion_schema_takes_precedence_over_stale_feedback(self):
+        self.feedback()
+        payload = suggest_weights(self.path, self.created.ranking_run_id, created_at=NOW)[
+            'suggestion'
+        ]
+        self.feedback(1)
+        payload['proposed_profile']['schema_version'] = 99
+        key = payload['suggestion_id']
+        self.replace_suggestion_payload(payload)
+        with self.assertRaisesRegex(StoreError, 'invalid historical WeightSuggestion'):
+            accept_suggestion(self.path, key, accepted_at=NOW)
+        with Store.open_readonly(self.path) as store:
+            self.assertEqual(
+                store.db.execute('SELECT count(*) FROM suggestion_acceptances').fetchone(), (0,)
+            )
+            self.assertEqual(ProfileRepository(store.db).get('default').profile_revision, 2)
+
+    def test_supported_but_incompatible_archived_suggestion(self):
+        self.feedback()
+        payload = suggest_weights(self.path, self.created.ranking_run_id, created_at=NOW)[
+            'suggestion'
+        ]
+        key = payload['suggestion_id']
+        for changes, diagnosis in (
+            ({'preview': payload['preview'][:-1]}, 'historical suggestion preview'),
+            (
+                {
+                    'preview': (
+                        payload['preview'][0] | {'job_id': 'another-job'},
+                        *payload['preview'][1:],
+                    )
+                },
+                'preview differs',
+            ),
+            ({'preview_groups': {}}, 'preview differs'),
+            (
+                {'proposed_profile': payload['proposed_profile'] | {'schema_version': 3}},
+                'archived run and profile',
+            ),
+        ):
+            with self.subTest(fields=tuple(changes)):
+                self.replace_suggestion_payload(payload | changes)
+                with self.assertRaisesRegex(StoreError, diagnosis):
+                    accept_suggestion(self.path, key, accepted_at=NOW)
 
     def test_profile_race_cannot_persist_a_stale_suggestion(self):
         self.feedback()

@@ -14,6 +14,7 @@ from ..domain.company_evidence import (
     CompanyEvidenceImport,
     CompanyEvidenceSnapshot,
 )
+from ..domain.company_lineage import enrichment_steps
 from ..domain.contracts import now
 from ..domain.ranking import Evidence, JobVersion
 from ..domain.ranking_inputs import JobVersionBundle
@@ -25,6 +26,7 @@ from ..infra.owned_worker import WorkerFailure
 from ..infra.store.company_evidence import CompanyEvidenceRepository
 from ..infra.store.job_versions import JobVersionRepository
 from ..infra.store.ranking_common import validated, write_transaction
+from ..infra.store.ranking_runs import RankingRunRepository
 from ..infra.store.sqlite import Store
 from ..reviews.models import CompanyRating, Review
 from ..settings import Settings
@@ -294,23 +296,38 @@ def show_company_evidence(
 
 
 def enrich_company_evidence(
-    database: Path, document: CompanyEnrichment, *, clock: Callable[[], datetime] = now
+    database: Path,
+    document: CompanyEnrichment,
+    *,
+    base_run: str | None = None,
+    clock: Callable[[], datetime] = now,
 ) -> JobVersionBundle:
     document = validated(document)
     with Store.open_readonly(database) as store, store.read_snapshot():
         repo = CompanyEvidenceRepository(store.db)
+        versions = JobVersionRepository(store.db)
+        parents = ()
+        if base_run is not None:
+            run = RankingRunRepository(store.db).get(base_run)
+            parents = tuple(versions.get(key) for key in run.job_version_ids)
         grouped = {}
         for selection in document.selections:
             association = repo.association(selection.association_id)
             snapshot = repo.snapshot(selection.snapshot_id)
             _matches(association, snapshot)
             validate_payload(snapshot)
-            parent = JobVersionRepository(store.db).get(association.job_version_id)
+            parent = versions.get(association.job_version_id)
+            if base_run is not None and parent.job_version_id not in run.job_version_ids:
+                raise ValueError(
+                    'company association must reference an exact parent in the base run'
+                )
             grouped.setdefault(parent.job_version_id, (parent, []))[1].append(
                 (association, snapshot)
             )
     jobs = []
     for parent, selected in grouped.values():
+        if base_run is not None:
+            selected.sort(key=lambda pair: (pair[0].association_id, pair[1].snapshot_id))
         # Multiple provider identities for the same version must be resolved explicitly.
         provider_ids = {}
         for association, _snapshot in selected:
@@ -320,6 +337,33 @@ def enrich_company_evidence(
             if previous != association.provider_company_id:
                 raise ValueError('ambiguous company associations for the same provider/job version')
         evidence = list(parent.evidence)
+        if base_run is not None:
+            steps = enrichment_steps(parent)
+            evidence.append(
+                Evidence(
+                    source='company-evidence',
+                    observed_at=max(snapshot.acquired_at for _, snapshot in selected),
+                    extractor_version='company-lineage-1',
+                    payload={
+                        'kind': 'company_enrichment_lineage',
+                        'schema_version': 1,
+                        'immediate_parent_job_version_id': parent.job_version_id,
+                        'enrichment_steps': [
+                            *steps,
+                            {
+                                'parent_job_version_id': parent.job_version_id,
+                                'snapshots': [
+                                    {
+                                        'snapshot_id': snapshot.snapshot_id,
+                                        'snapshot_hash': snapshot.snapshot_hash,
+                                    }
+                                    for _, snapshot in selected
+                                ],
+                            },
+                        ],
+                    },
+                )
+            )
         for association, snapshot in selected:
             acquired = snapshot.acquired_at
             evidence.append(
@@ -368,6 +412,9 @@ def enrich_company_evidence(
                 }
             )
         )
+    if base_run is not None:
+        children = {job.job_id: job for job in jobs}
+        jobs = [children.get(parent.job_id, parent) for parent in parents]
     if len({j.job_id for j in jobs}) != len(jobs):
         raise ValueError('enrichment selects multiple parent versions of the same job')
     return JobVersionBundle(kind='ranking_job_versions', schema_version=1, jobs=tuple(jobs))

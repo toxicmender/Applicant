@@ -11,6 +11,7 @@ from .canonical import content_hash
 from .company_evidence import CompanyResponse
 from .contracts import CurrencyCode, Identity, Money, Timestamp
 from .job import Job
+from .language import LanguageAssertion
 
 
 class Record(BaseModel):
@@ -243,7 +244,10 @@ class Technology(Record):
     negated: bool = False
 
 
-Payload = Annotated[Compensation | Culture | Workplace | Technology, Field(discriminator='kind')]
+Payload = Annotated[
+    Compensation | Culture | Workplace | Technology | LanguageAssertion,
+    Field(discriminator='kind'),
+]
 
 
 class ResearchEvidence(Record):
@@ -275,6 +279,8 @@ class ResearchEvidence(Record):
             raise ValueError('job evidence requires an exact job version')
         if self.payload.kind == 'technology' and not self.job_version_id:
             raise ValueError('technology facts require an exact job version')
+        if self.payload.kind == 'language' and (self.scope != 'job' or not self.job_version_id):
+            raise ValueError('language facts require an exact job version and job scope')
         return self
 
 
@@ -320,3 +326,21 @@ def parse_import(value):
         else ResearchImport
     )
     return model.model_validate(value)
+
+
+def posting_languages(job: Job, job_version_id: str, acquired_at, source_url: str):
+    return tuple(
+        ResearchEvidence(
+            evidence_id=content_hash((job_version_id, clause)),
+            job_version_id=job_version_id,
+            provider=job.source,
+            source_url=source_url,
+            acquired_at=acquired_at,
+            scope='job',
+            assertion='employer',
+            excerpt=clause['excerpt'],
+            extractor_version='posting-language-1',
+            payload=LanguageAssertion.model_validate(clause['payload']),
+        )
+        for clause in job.language_clauses
+    )

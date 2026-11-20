@@ -13,7 +13,8 @@ from .canonical import content_hash
 from .compensation import NormalizedCompensation
 from .contracts import Fraction, Identity, Positive, Strategy, Timestamp, VersionedContract, now
 from .fx import FXFields
-from .preferences import DIMENSIONS, CandidateProfile, ProfileFields
+from .language import CandidateLanguage
+from .preferences import DIMENSIONS, LANGUAGE_DIMENSION, CandidateProfile, ProfileFields
 from .ranking import ScoringConfiguration
 from .ranking_facts import CountryCode, WorkMode
 
@@ -217,11 +218,11 @@ class DimensionResult(EngineContract):
 
     @model_validator(mode='after')
     def known_score(self):
-        if self.dimension not in DIMENSIONS:
+        if self.dimension not in (*DIMENSIONS, LANGUAGE_DIMENSION):
             raise ValueError('unsupported dimension')
         if (self.status == 'known') != (self.score is not None):
             raise ValueError('only known dimensions have scores')
-        if self.status == 'known' and self.quality == 0:
+        if self.status == 'known' and self.quality == 0 and self.dimension != LANGUAGE_DIMENSION:
             raise ValueError('known score requires positive evidence quality')
         if self.status != 'known' and (self.quality != 0 or self.weighted_contribution is not None):
             raise ValueError('unscored dimensions cannot claim support or contribution')
@@ -246,9 +247,9 @@ class JobRankingV2(EngineContract):
 
     @model_validator(mode='after')
     def result(self):
-        if len(self.dimensions) != len(DIMENSIONS) or {d.dimension for d in self.dimensions} != set(
-            DIMENSIONS
-        ):
+        if len(self.dimensions) != len(self.dimension_names()) or {
+            d.dimension for d in self.dimensions
+        } != set(self.dimension_names()):
             raise ValueError('result requires each of the six dimensions exactly once')
         if self.eligibility == 'excluded':
             if any(v is not None for v in (self.overall_score, self.confidence, self.coverage)):
@@ -266,6 +267,42 @@ class JobRankingV2(EngineContract):
             if any(d.status == 'not_evaluated' for d in self.dimensions):
                 raise ValueError('only excluded jobs may skip scoring')
         return self
+
+    def dimension_names(self) -> tuple[str, ...]:
+        return DIMENSIONS
+
+
+class CandidateProfileV3(CandidateProfileV2):
+    schema_version: Literal[3] = 3
+    languages: tuple[CandidateLanguage, ...] = ()
+
+    @model_validator(mode='before')
+    @classmethod
+    def add_language_weight(cls, data):
+        from .preferences import default_weights
+
+        if isinstance(data, dict):
+            weights = data.get('weights', default_weights())
+            if isinstance(weights, dict):
+                return {**data, 'weights': {LANGUAGE_DIMENSION: Decimal(0), **weights}}
+        return data
+
+    @model_validator(mode='after')
+    def unique_languages(self):
+        if len({entry.language for entry in self.languages}) != len(self.languages):
+            raise ValueError('duplicate candidate language')
+        return self
+
+    def dimensions(self) -> tuple[str, ...]:
+        return (*DIMENSIONS, LANGUAGE_DIMENSION)
+
+
+class JobRankingV3(JobRankingV2):
+    schema_version: Literal[3] = 3
+    language_groups: tuple[dict, ...] = ()
+
+    def dimension_names(self) -> tuple[str, ...]:
+        return (*DIMENSIONS, LANGUAGE_DIMENSION)
 
 
 class RankingRunFields(VersionedContract):
@@ -314,6 +351,19 @@ class RankingRunV3(RankingRunFields):
     schema_version: Literal[3] = 3
     selected_tiers: dict[Identity, Identity] = Field(default_factory=dict)
     engine_policy: Literal['frozen-inputs-v1'] = 'frozen-inputs-v1'
+
+    @model_validator(mode='after')
+    def selections(self):
+        if not self.selected_tiers.keys() <= {result.job_id for result in self.results}:
+            raise ValueError('salary tier selection is not a run input')
+        return self
+
+
+class RankingRunV4(RankingRunFields):
+    schema_version: Literal[4] = 4
+    selected_tiers: dict[Identity, Identity] = Field(default_factory=dict)
+    engine_policy: Literal['language-fit-v1'] = 'language-fit-v1'
+    results: tuple[JobRankingV3, ...] = ()
 
     @model_validator(mode='after')
     def selections(self):
