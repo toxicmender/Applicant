@@ -87,7 +87,7 @@ class _WindowsSecurity:
         protection = 0x80000000 if control.value & 0x1000 else 0x20000000
         self.check(self.api.SetFileSecurityW(str(path), 4 | protection, descriptor))
 
-    def protect(self, path: str | Path):
+    def protect(self, path: str | Path, *, directory: bool = False):
         from ctypes import wintypes
 
         original = self.read(path)
@@ -100,7 +100,8 @@ class _WindowsSecurity:
         sid = ctypes.c_void_p()
         self.check(self.api.ConvertSidToStringSidW(owner, ctypes.byref(sid)))
         try:
-            sddl = f'D:P(A;;FA;;;{ctypes.wstring_at(sid)})'
+            inheritance = 'OICI' if directory else ''
+            sddl = f'D:P(A;{inheritance};FA;;;{ctypes.wstring_at(sid)})'
         finally:
             self.kernel.LocalFree(sid)
         descriptor = ctypes.c_void_p()
@@ -126,6 +127,15 @@ def make_private(path: str | Path) -> None:
         _windows().protect(path)
     else:
         os.chmod(path, 0o600)
+
+
+def make_private_directory(path: Path) -> None:
+    """Restrict a dedicated application-owned directory before creating children."""
+    path.mkdir(mode=0o700, exist_ok=True)
+    if os.name == 'nt':
+        _windows().protect(path, directory=True)
+    else:
+        path.chmod(0o700)
 
 
 def copy_permissions(source: str | Path, target: str | Path) -> None:
