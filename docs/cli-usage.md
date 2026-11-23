@@ -655,6 +655,66 @@ or disable it with `--no-log-file`.
 | 8 | Database or export busy, or publication pending |
 | 130 | Interrupted |
 
+### Managed provider sessions
+
+Run `applicant setup provider <provider>` in a terminal and complete sign-in
+in the opened browser. Press Enter after the provider finishes redirecting.
+For another account or a confirmed expired session, add `--reauth`.
+`applicant setup status --provider <provider>` reads local status, and
+`--check` attempts to restore the session. Add `--show` to retry a verification
+challenge in a visible browser. Glassdoor accepts `--region auto` (default),
+`--region co.in`, and `--region com`. Regional review URLs require a session
+for the same region when one is saved.
+
+`applicant setup import-session --provider <provider> --from-file state.json --verify`
+imports a Playwright export and leaves the source file in place. Keep that
+external file private or remove it after importing. Applicant encrypts its own
+credentials using a per-profile key in the operating system key store. Where
+that service is unavailable, `session_storage = "plaintext"` in
+`applicant.toml` explicitly enables owner-only plaintext storage for new
+sessions. Switching back to encryption migrates managed plaintext on the next
+credential-bearing operation. Keep the OS key with any profile you move.
+
+New managed profiles live in `.applicant/sessions/<provider>/` under the data
+directory. Existing configured locations for LinkedIn, Glassdoor, Crunchbase,
+and Tracxn are supported. `applicant setup clear --provider <provider>`
+removes the Applicant credential and its encryption key. Existing Chromium
+user-data files remain on disk. Clear is local and does not sign out a
+provider account on the website.
+
+| Setup exit | Meaning |
+| --- | --- |
+| 0 | Setup, check, import, or clear succeeded |
+| 1 | Integrity, cleanup, or nonretryable persistence failure |
+| 2 | Invalid input, unsupported region, or required key store unavailable |
+| 3 | Missing or confirmed expired session |
+| 5 | Verification page or account controls could not be recognized |
+| 7 | Browser or transport unavailable |
+| 8 | Profile busy or DB reconciliation pending |
+| 11 | Challenge during session verification. Retry the check with `--show`. |
+| 130 | Interrupted |
+
+Indeed, Naukri, and Google Jobs can use managed state for collection.
+AmbitionBox and Glassdoor can use it for review lookups. When a provider
+confirms sign-out during an authenticated operation, a supported public retry
+uses a fresh client and restarts at page one. Google Careers is the Google
+account verification page. The job collector uses the Google Jobs tab.
+Levels.fyi supports account setup. Compensation imports remain file-based.
+
+| Provider | Offline account checks | Live session restoration | Live adapter use |
+| --- | --- | --- | --- |
+| Indeed | Covered | Unverified | Unverified |
+| Naukri | Covered | Unverified | Unverified |
+| Google Jobs | Careers account covered | Unverified | Unverified |
+| Glassdoor | India Community and US profile policies | Unverified | Unverified |
+| AmbitionBox | Covered | Unverified | Unverified |
+| Levels.fyi | Covered | Unverified | Not applicable |
+| We Work Remotely | Signed-in Job Seeker dashboard evidence pending | Unverified | Public RSS only |
+
+We Work Remotely account setup requires a verified dashboard route and
+member-only control. The same evidence is pending for Glassdoor regions
+outside India and the US.
+
 ### Usage notes for scripting
 
 See the [research language walkthrough](research.md#offline-language-walkthrough)
