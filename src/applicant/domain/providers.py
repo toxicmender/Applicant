@@ -1,6 +1,23 @@
 """Provider catalog: capabilities describe implemented operations, not aspirations."""
 
 from dataclasses import asdict, dataclass, replace
+from urllib.parse import urlsplit
+
+
+@dataclass(frozen=True)
+class VerificationTarget:
+    url: str
+    markers: tuple[str, ...]
+    signed_out: tuple[str, ...] = ()
+    region: str | None = None
+
+
+@dataclass(frozen=True)
+class SessionPolicy:
+    login: str
+    targets: tuple[VerificationTarget, ...]
+    storage_domains: tuple[str, ...]
+    public_access: bool = False
 
 
 @dataclass(frozen=True)
@@ -16,6 +33,21 @@ class Provider:
     check_url: str | None = None
     auth_selector: str | None = None
     validation: str = 'reference_only'
+    authentication: SessionPolicy | None = None
+
+    @property
+    def session(self) -> SessionPolicy | None:
+        if self.authentication:
+            return self.authentication
+        if not self.login_url or not self.check_url or not self.auth_selector:
+            return None
+        hostname = urlsplit(self.url).hostname
+        assert hostname
+        return SessionPolicy(
+            self.login_url,
+            (VerificationTarget(self.check_url, (self.auth_selector,)),),
+            (hostname.removeprefix('www.'),),
+        )
 
     def document(self):
         return asdict(self)
@@ -153,6 +185,138 @@ PROVIDERS = {
         Provider('recrew', 'Recrew', 'https://www.recrew.ai', ('company', 'compensation')),
     )
 }
+INDEED_HOSTS = (
+    'www',
+    'in',
+    'uk',
+    'ca',
+    'au',
+    'de',
+    'fr',
+    'sg',
+    'ie',
+    'nz',
+    'za',
+    'ae',
+    'nl',
+    'se',
+    'ch',
+)
+
+
+def _add_session(name, policy):
+    target = policy.targets[0]
+    PROVIDERS[name] = replace(
+        PROVIDERS[name],
+        authentication=policy,
+        login_url=policy.login,
+        check_url=target.url,
+        auth_selector=target.markers[0],
+    )
+
+
+_add_session(
+    'glassdoor',
+    SessionPolicy(
+        'https://www.glassdoor.co.in/Community/index.htm',
+        (
+            VerificationTarget(
+                'https://www.glassdoor.co.in/Community/index.htm',
+                (
+                    '[data-testid="identity-module"] button[data-testid="identity-toggle-trigger"]',
+                    '[data-testid="left-rail-my-bowls"]',
+                ),
+                region='co.in',
+            ),
+            VerificationTarget(
+                'https://www.glassdoor.com/member/profile/index.htm',
+                ('[data-test="user-profile-menu"], a[href*="logout"]',),
+                region='com',
+            ),
+        ),
+        ('glassdoor.co.in', 'glassdoor.com'),
+        True,
+    ),
+)
+_add_session(
+    'indeed',
+    SessionPolicy(
+        'https://in.indeed.com/',
+        tuple(
+            VerificationTarget(
+                f'https://{host}.indeed.com/',
+                ('button#AccountMenu', 'a[data-gnav-element-name="Inbox"]'),
+                ('a[data-gnav-element-name="SignIn"]',),
+            )
+            for host in ('in', *(host for host in INDEED_HOSTS if host != 'in'))
+        ),
+        ('indeed.com',),
+        True,
+    ),
+)
+_add_session(
+    'naukri',
+    SessionPolicy(
+        'https://www.naukri.com/nlogin/login',
+        (
+            VerificationTarget(
+                'https://www.naukri.com/mnjuser/profile',
+                ('button[aria-label="Open profile menu"]',),
+                ('#login_Layer',),
+            ),
+        ),
+        ('naukri.com',),
+        True,
+    ),
+)
+_GOOGLE_ACCOUNT = 'a[href^="https://accounts.google.com/SignOutOptions"]'
+_GOOGLE_SIGN_IN = 'a[href^="https://accounts.google.com/ServiceLogin"]'
+_add_session(
+    'googlejobs',
+    SessionPolicy(
+        'https://www.google.com/about/careers/applications/jobs/results',
+        tuple(
+            VerificationTarget(
+                f'https://{host}/about/careers/applications/jobs/results',
+                (_GOOGLE_ACCOUNT,),
+                (_GOOGLE_SIGN_IN,),
+            )
+            for host in ('www.google.com', 'www.google.co.in')
+        ),
+        ('google.com', 'google.co.in'),
+        True,
+    ),
+)
+_add_session(
+    'ambitionbox',
+    SessionPolicy(
+        'https://www.ambitionbox.com/',
+        (
+            VerificationTarget(
+                'https://www.ambitionbox.com/',
+                ('button[data-testid="userProfile"]', 'button[data-testid="inboxBell"]'),
+            ),
+        ),
+        ('ambitionbox.com',),
+        True,
+    ),
+)
+_add_session(
+    'levels',
+    SessionPolicy(
+        'https://www.levels.fyi/community',
+        (
+            VerificationTarget(
+                'https://www.levels.fyi/community',
+                (
+                    '.site-nav__account[data-signed-in="true"] .site-nav__user button[aria-label="Profile"]',
+                ),
+                ('.site-nav__account[data-signed-in="false"] .site-nav__auth a[href="/login"]',),
+            ),
+        ),
+        ('levels.fyi',),
+    ),
+)
 DEFAULT_BOARDS = ('linkedin', 'indeed', 'naukri', 'googlejobs')
 
 # These adapters accept only public structured data. Fixture support does not

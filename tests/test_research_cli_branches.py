@@ -34,16 +34,15 @@ class ResearchCLIBranchesTest(unittest.TestCase):
             )
             setup.assert_not_called()
         for database in (None, 'chosen.db'):
-            with (
-                patch(
-                    'applicant.cli.setup.recover_authentication',
-                    return_value={'status': 'database_busy', 'retryable': True},
-                ),
-                redirect_stdout(io.StringIO()) as output,
-            ):
+            with redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(
                     output_result(
-                        {'provider': 'linkedin', 'status': 'verified'}, Settings(), database
+                        {
+                            'provider': 'linkedin',
+                            'status': 'verified',
+                            'health_recovery': {'status': 'database_busy', 'retryable': True},
+                        },
+                        database,
                     ),
                     8,
                 )

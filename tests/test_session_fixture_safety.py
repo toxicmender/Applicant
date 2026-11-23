@@ -8,31 +8,33 @@ import pytest
 
 class FixtureMarkup(HTMLParser):
     tags = frozenset({'a', 'aside', 'button', 'div', 'nav', 'section', 'span', 'ul'})
-    attrs = frozenset({
-        'aria-label',
-        'class',
-        'data-gnav-element-name',
-        'data-signed-in',
-        'data-testid',
-        'hidden',
-        'href',
-        'id',
-    })
-    links = frozenset({'https://accounts.google.com/SignOutOptions'})
+    values = (
+        ('aria-label', frozenset({'Account', 'Open profile menu', 'Profile'})),
+        ('class', frozenset({'site-nav__account', 'site-nav__user', 'site-nav__auth'})),
+        ('data-gnav-element-name', frozenset({'Inbox', 'SignIn'})),
+        ('data-signed-in', frozenset({'true', 'false'})),
+        (
+            'data-testid',
+            frozenset(
+                {
+                    'identity-module',
+                    'identity-toggle-trigger',
+                    'left-rail-my-bowls',
+                    'userProfile',
+                    'inboxBell',
+                }
+            ),
+        ),
+        ('hidden', frozenset({None, ''})),
+        ('href', frozenset({'https://accounts.google.com/SignOutOptions', '/login'})),
+        ('id', frozenset({'AccountMenu', 'login_Layer'})),
+    )
 
     def handle_starttag(self, tag, attrs):
         assert tag in self.tags, tag
+        allowed = dict(self.values)
         for key, value in attrs:
-            assert key in self.attrs, key
-            if key == 'href':
-                assert value in self.links, key
-            elif key == 'hidden':
-                assert value in (None, ''), key
-            else:
-                assert value and value.isascii(), key
-                assert len(value) < 80 and all(c.isalnum() or c in ' -_' for c in value), key
-                if key == 'aria-label':
-                    assert value in {'Account', 'Open profile menu', 'Profile'}, key
+            assert key in allowed and value in allowed[key], key
 
     def handle_data(self, data):
         assert not data.strip(), 'fixture elements must be empty'
@@ -50,6 +52,7 @@ def check_markup(markup):
     [
         '<script></script>',
         '<input type="hidden" value="token">',
+        '<div id="sessionid12345"></div>',
         '<div nonce="secret"></div>',
         '<div data-json="secret"></div>',
         '<div aria-label="Person"></div>',

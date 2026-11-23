@@ -29,7 +29,7 @@ from ..infra.browser import STATE_FILE, BrowserSession, looks_blocked
 from ..infra.browser_diagnostics import event, safe_origin, stage
 from ..infra.owned_worker import CleanupUnconfirmed, WorkerFailure, WorkerInteraction, run_worker
 from ..infra.profile_lock import profile_lock
-from ..infra.ranking_documents import read_ranking_document
+from ..infra.session_store import read_session_file
 from ..interaction import Terminal
 from .render import shown
 
@@ -373,7 +373,10 @@ class InteractiveTracxn:
                 if not state_file.is_file():
                     self.stopped = True
                     raise SessionEnded(f'needs_setup: No saved Tracxn session. Run: {self.reauth}')
-                state = read_ranking_document(state_file)
+                state = read_session_file(state_file, expected_provider='tracxn')
+                if state is None:
+                    self.stopped = True
+                    raise SessionEnded(f'needs_setup: No saved Tracxn session. Run: {self.reauth}')
                 outcome, message = run_worker(
                     _lookup_worker,
                     (state, company, max_rounds, self.client.timeout, self.reauth, self.captured),

@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import json
 import stat
+from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from ..errors import ApplicantError, ConfigError
+from ..errors import ApplicantError, ConfigError, ProfileBusy
 from ..files import document_bytes, write_document_bytes
 from ..permissions import make_private_directory
+from .advisory_lock import advisory_lock
 from .owned_worker import CleanupUnconfirmed, WorkerFailure, run_worker
 from .path_identity import physical_path
 from .profile_lock import profile_lock
@@ -92,11 +94,29 @@ class SessionStore:
         self.keyring = session_keyring if keyring is None else keyring
         self.dedicated = dedicated
 
+    @contextmanager
     def lock(self):
         if self.dedicated:
             self.path.parent.parent.mkdir(parents=True, exist_ok=True)
             make_private_directory(self.path.parent)
-        return profile_lock(self.path.with_suffix('.lock'))
+        with profile_lock(self.path.with_suffix('.lock')):
+            for target in (self.path, self.path.with_suffix('.session-id.json')):
+                for pending in target.parent.glob(f'.{target.name}.*.tmp'):
+                    try:
+                        info = pending.lstat()
+                    except FileNotFoundError:
+                        continue
+                    if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                        pending.unlink(missing_ok=True)
+            yield
+
+    def execution_gate(self):
+        return advisory_lock(
+            self.path.with_suffix('.session-gate.lock'),
+            lambda: ProfileBusy('provider session is busy; retry after its current request'),
+            retry_delays=(0.1,) * 10,
+            retain_on_cleanup_failure=True,
+        )
 
     def snapshot(self):
         document = _read(self.path)
@@ -149,9 +169,16 @@ class SessionStore:
             profile_id = profile_id or identity['profile_id']
         if profile_id is None:
             profile_id = uuid4().hex
-            write_document_bytes(identity_path, document_bytes({
-                'provider': self.provider, 'profile_id': profile_id,
-            }), private=True)
+            write_document_bytes(
+                identity_path,
+                document_bytes(
+                    {
+                        'provider': self.provider,
+                        'profile_id': profile_id,
+                    }
+                ),
+                private=True,
+            )
         return {
             'format': FORMAT,
             'provider': self.provider,
@@ -251,7 +278,9 @@ class SessionStore:
                 if previous.get('status') == 'cleared'
                 else self._new_record(previous, 'cleared', pending='clear')
             )
-            if 'ciphertext' in previous or not previous and self.path.with_suffix('.session-id.json').is_file():
+            if 'ciphertext' in previous or (
+                not previous and self.path.with_suffix('.session-id.json').is_file()
+            ):
                 record['delete_key'] = self.mode == 'encrypted' or 'ciphertext' in previous
             self._write(record)
             self._remove_old_metadata()

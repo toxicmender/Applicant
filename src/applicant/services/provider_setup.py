@@ -3,19 +3,22 @@
 import math
 from collections.abc import Callable
 from pathlib import Path
+from time import monotonic
 from typing import Any
 from urllib.parse import urlsplit
 
 from ..domain.canonical import content_hash
 from ..domain.contracts import now
 from ..domain.providers import provider
-from ..errors import AuthFailed, ConfigError
-from ..files import write_document
+from ..errors import AuthFailed, ConfigError, ProfileBusy
 from ..infra.browser import BrowserSession, looks_blocked
 from ..infra.browser_diagnostics import event, safe_origin, stage
-from ..infra.profile_lock import profile_lock
+from ..infra.owned_worker import CleanupUnconfirmed, WorkerFailure
+from ..infra.path_identity import physical_path
 from ..infra.ranking_documents import read_ranking_document
+from ..infra.session_store import FORMAT, SessionStore
 from ..interaction import Terminal
+from ..settings import Settings
 
 COOKIE_WARNING = (
     'Warning: Cookie-only import lacks local storage state; providers relying on '
@@ -44,27 +47,52 @@ def recovery_database(settings, database):
     )
 
 
-def recover_verified(settings, name, database, result):
+def reconcile_session(settings, store, database, result):
     from .provider_health import recover_authentication
 
     path = recovery_database(settings, database)
-    result['health_recovery'] = (
-        {'status': 'skipped_file_only'} if path is None else recover_authentication(path, name)
-    )
-    return result
+
+    def action(pending):
+        if path is None:
+            return {'status': 'skipped_file_only'}
+        policy = provider(store.provider).session
+        if pending == 'expire' and policy is not None and policy.public_access:
+            return {'status': 'credential_needs_setup'}
+        return recover_authentication(path, store.provider, action=pending)
+
+    current, outcome = store.reconcile(action)
+    if current.get('status') == 'cleared' and result['status'] != 'cleared':
+        return {'provider': store.provider, 'status': 'needs_setup', 'health_recovery': outcome}
+    return {**result, 'health_recovery': outcome}
 
 
 def session_path(settings, name):
     item = provider(name)
-    if not item.login_url:
+    if not item.session:
         raise ConfigError(f'{item.id}: session setup is not supported')
     if item.id == 'linkedin':
         return Path(settings.path(settings.files.cookies))
-    return Path(settings.path(getattr(settings.files, PROFILES[item.id]))) / 'storage_state.json'
+    if item.id in PROFILES:
+        return (
+            Path(settings.path(getattr(settings.files, PROFILES[item.id]))) / 'storage_state.json'
+        )
+    return Path(settings.path(f'.applicant/sessions/{item.id}/storage_state.json'))
 
 
-def _provider_root(name: str) -> str:
-    return (urlsplit(provider(name).url).hostname or '').removeprefix('www.')
+def _session_policy(name):
+    policy = provider(name).session
+    if policy is None:
+        raise ConfigError(f'{name}: session setup is not supported')
+    return policy
+
+
+def _provider_domains(name: str) -> tuple[str, ...]:
+    item = provider(name)
+    return item.session.storage_domains if item.session else ()
+
+
+def _allowed_domain(host: str | None, domains: tuple[str, ...]) -> bool:
+    return any(_provider_host(host, root) for root in domains)
 
 
 def _provider_host(host: str | None, root: str) -> bool:
@@ -77,11 +105,11 @@ def _provider_host(host: str | None, root: str) -> bool:
 def _scope_captured_state(value, name: str):
     # A browser context also sees cookies and local storage from identity
     # providers and embedded services. Retain only this provider's state.
-    root = _provider_root(name)
+    domains = _provider_domains(name)
     cookies, origins = value['cookies'], value['origins']
-    scoped_cookies = [cookie for cookie in cookies if _provider_host(cookie['domain'], root)]
+    scoped_cookies = [cookie for cookie in cookies if _allowed_domain(cookie['domain'], domains)]
     scoped_origins = [
-        entry for entry in origins if _provider_host(urlsplit(entry['origin']).hostname, root)
+        entry for entry in origins if _allowed_domain(urlsplit(entry['origin']).hostname, domains)
     ]
     event(
         'storage_export',
@@ -93,7 +121,7 @@ def _scope_captured_state(value, name: str):
 
 
 def validate_state(value, name, format='playwright'):
-    root = _provider_root(name)
+    domains = _provider_domains(name)
 
     warnings = []
     if format == 'cookies':
@@ -125,7 +153,7 @@ def validate_state(value, name, format='playwright'):
             or not cookie['path'].startswith('/')
         ):
             raise ConfigError('cookie has invalid fields')
-        if not _provider_host(cookie['domain'], root):
+        if not _allowed_domain(cookie['domain'], domains):
             raise ConfigError('cookie domain is outside the provider allowlist')
         expires = cookie.get('expires', -1)
         if (
@@ -153,7 +181,7 @@ def validate_state(value, name, format='playwright'):
         url = urlsplit(origin['origin'])
         if (
             url.scheme != 'https'
-            or not _provider_host(url.hostname, root)
+            or not _allowed_domain(url.hostname, domains)
             or url.username
             or url.password
             or url.path
@@ -198,7 +226,7 @@ def verify_state(name, state, *, interactive=False, factory: Callable[..., Any] 
 def _verification_worker(connection, arguments):
     from ..infra.owned_worker import WorkerInteraction
 
-    name, state, interactive = arguments
+    name, state, interactive, *options = arguments
     current = None
 
     class Session(BrowserSession):
@@ -217,6 +245,15 @@ def _verification_worker(connection, arguments):
         current.wait_for_timeout(50)
 
     interaction = WorkerInteraction(connection, check, AuthFailed('login cancelled'))
+    if options:
+        return _verify_detailed(
+            name,
+            state,
+            factory=Session,
+            pause=interaction.pause,
+            interactive=interactive,
+            **options[0],
+        )
     return _verify_inline(
         name, state, interactive=interactive, factory=Session, pause=interaction.pause
     )
@@ -292,6 +329,215 @@ def _verify_inline(
             return _scope_captured_state(session.context.storage_state(), item.id)
 
 
+def _same_route(actual, expected):
+    url, target = urlsplit(actual), urlsplit(expected)
+    return (
+        url.scheme == 'https'
+        and url.netloc == target.netloc
+        and url.path.rstrip('/') == target.path.rstrip('/')
+    )
+
+
+def _visible(page, selector):
+    return page.locator(f':is({selector}):visible').first.is_visible()
+
+
+def _is_signed_out(name, url):
+    policy = provider(name).session
+    assert policy
+    parsed = urlsplit(url)
+    if parsed.scheme != 'https' or not _allowed_domain(parsed.hostname, policy.storage_domains):
+        return False
+    return bool(
+        set(parsed.path.lower().split('/'))
+        & {
+            'login',
+            'nlogin',
+            'authwall',
+            'signin',
+            'sign-in',
+            'login_input.htm',
+            'servicelogin',
+            'sign_in',
+        }
+    )
+
+
+def _verify_detailed(
+    name,
+    state,
+    *,
+    interactive=False,
+    show=False,
+    region=None,
+    capture=None,
+    factory: Callable[..., Any] = BrowserSession,
+    pause=None,
+):
+    policy = provider(name).session
+    if policy is None:
+        raise ConfigError('provider has no authentication adapter')
+    targets = [t for t in policy.targets if not region or t.region == region]
+    if not targets:
+        raise ConfigError(f'{name}: unsupported verification region')
+    with factory(
+        headless=not (interactive or show), storage_state=state, capture_settings=capture
+    ) as session:
+        page = session.start()
+        if interactive:
+            login = policy.login
+            if name == 'glassdoor' and region == 'com':
+                login = 'https://www.glassdoor.com/profile/login_input.htm'
+            page.goto(login, wait_until='domcontentloaded')
+            (pause or Terminal().pause)(
+                'Complete login/MFA in the browser, then press Enter to verify: '
+            )
+        current = next((t for t in targets if _same_route(page.url, t.url)), None)
+        if current is None and interactive and name == 'tracxn':
+            from playwright.sync_api import TimeoutError as PlaywrightTimeout
+
+            try:
+                page.wait_for_url(
+                    lambda url: _same_route(url, targets[0].url),
+                    wait_until='commit',
+                    timeout=TRACXN_AUTH_WAIT_MS,
+                )
+            except PlaywrightTimeout:
+                return {'status': 'inconclusive', 'reason': 'unexpected_page'}
+            current = targets[0]
+        if current is not None:
+            return _inspect_verification(name, session, page, targets)
+        attempts = targets[:1]
+        if name == 'glassdoor' and state and not region:
+            domains = {c['domain'].lstrip('.') for c in state['cookies']}
+            domains.update(urlsplit(o['origin']).hostname or '' for o in state['origins'])
+            hinted = [
+                target
+                for target in targets
+                if any(_provider_host(domain, f'glassdoor.{target.region}') for domain in domains)
+            ]
+            preferred = hinted[0].region if len(hinted) == 1 else 'com'
+            attempts = sorted(targets, key=lambda target: target.region != preferred)
+        inconclusive = None
+        for target in attempts:
+            page.goto(target.url, wait_until='domcontentloaded')
+            outcome = _inspect_verification(name, session, page, targets)
+            if outcome['status'] == 'verified' or outcome.get('reason') == 'challenge':
+                return outcome
+            if outcome['status'] == 'inconclusive':
+                inconclusive = outcome
+        return inconclusive or {'status': 'needs_setup', 'reason': 'signed_out'}
+
+
+def _inspect_verification(name, session, page, targets):
+    deadline = monotonic() + 10
+    while True:
+        if looks_blocked(page):
+            return {'status': 'inconclusive', 'reason': 'challenge'}
+        if _is_signed_out(name, page.url):
+            return {'status': 'needs_setup', 'reason': 'signed_out'}
+        current = next((t for t in targets if _same_route(page.url, t.url)), None)
+        if current:
+            if all(_visible(page, s) for s in current.markers) and _same_route(
+                page.url, current.url
+            ):
+                settings = page.evaluate("""() => ({
+                    user_agent: navigator.userAgent, locale: navigator.language,
+                    timezone_id: Intl.DateTimeFormat().resolvedOptions().timeZone
+                })""")
+                settings.update(
+                    channel=session.channel,
+                    viewport=page.viewport_size,
+                    version=getattr(session.context.browser, 'version', None),
+                )
+                return {
+                    'status': 'verified',
+                    'state': _scope_captured_state(session.context.storage_state(), name),
+                    'capture': settings,
+                    'region': current.region,
+                    'origin': safe_origin(page.url),
+                }
+            if any(_visible(page, s) for s in current.signed_out):
+                return {'status': 'needs_setup', 'reason': 'signed_out'}
+        if monotonic() >= deadline:
+            return {
+                'status': 'inconclusive',
+                'reason': 'marker_missing' if current else 'unexpected_page',
+            }
+        page.wait_for_timeout(100)
+
+
+def _check_browser(name, state, *, interactive=False, show=False, region=None, capture=None):
+    from ..infra.owned_worker import run_worker
+
+    try:
+        return run_worker(
+            _verification_worker,
+            (name, state, interactive, {'show': show, 'region': region, 'capture': capture}),
+            interactive=interactive,
+            prompt=Terminal().ask_interruptibly if interactive else None,
+            provider=name,
+        )
+    except CleanupUnconfirmed:
+        raise
+    except WorkerFailure:
+        return {'status': 'inconclusive', 'reason': 'browser_unavailable'}
+
+
+def _run_verifier(verifier, name, state, *, interactive=False, restore=False, **options):
+    if verifier is not verify_state:
+        value = verifier(name, state, interactive=True) if interactive else verifier(name, state)
+        return (
+            {'status': 'verified', 'state': value}
+            if value is not None
+            else {'status': 'needs_setup'}
+        )
+    checked = _check_browser(name, state, interactive=interactive, **options)
+    if restore and checked['status'] == 'verified':
+        captured, _ = validate_state(checked['state'], name)
+        checked = _check_browser(
+            name,
+            captured,
+            show=interactive or options.get('show', False),
+            region=checked.get('region'),
+            capture=checked.get('capture'),
+        )
+    return checked
+
+
+def _result(name, checked):
+    result = {'provider': name, 'status': checked['status']}
+    if reason := checked.get('reason'):
+        result['reason'] = reason
+    if checked['status'] == 'inconclusive':
+        result['command'] = f'applicant setup status --provider {name} --check --show'
+    return result
+
+
+def _metadata(checked):
+    return {k: checked[k] for k in ('region', 'capture', 'origin') if k in checked} | {
+        'checked_at': now().isoformat(),
+    }
+
+
+def provider_session(settings: Settings, name: str):
+    try:
+        item = provider(name)
+    except ValueError as error:
+        raise ConfigError(str(error)) from None
+    return SessionStore(
+        session_path(settings, item.id),
+        item.id,
+        mode=settings.session_storage,
+        dedicated=item.id not in (*PROFILES, 'linkedin'),
+    )
+
+
+def _check_install(installed):
+    if installed is None:
+        raise ProfileBusy('provider session changed during verification; retry')
+
+
 def import_session(
     settings,
     name,
@@ -305,94 +551,161 @@ def import_session(
     database=None,
 ):
     recovery_database(settings, database)
-    target = session_path(settings, name)
-    if Path(source).stat().st_size > 2_000_000:
+    store = provider_session(settings, name)
+    name = store.provider
+    source = Path(source)
+    if physical_path(source) == store.path:
+        raise ConfigError('import source is the managed session file')
+    if source.stat().st_size > 2_000_000:
         raise ConfigError('session file exceeds 2 MB')
-    state, warnings = validate_state(read_ranking_document(Path(source)), name, format)
-    result = {'provider': provider(name).id, 'status': 'unverified', 'warnings': warnings}
+    state, warnings = validate_state(read_ranking_document(source), name, format)
+    result = {'provider': name, 'status': 'unverified', 'warnings': warnings}
     if dry_run:
         return {**result, 'dry_run': True}
-    with profile_lock(target.with_suffix('.lock')):
-        if target.exists() and not replace:
-            raise ConfigError('session already exists; pass --replace')
-        if verify:
-            verified = verifier(name, state)
-            if verified is None:
-                return {
-                    **result,
-                    'status': 'needs_setup',
-                    'command': f'applicant setup provider {name}',
-                }
-            state, _ = validate_state(verified, name)
-            result['status'] = 'verified'
-        write_document(target, state)
-        write_document(
-            target.with_suffix('.status.json'),
-            {**result, 'state_hash': content_hash(state), 'checked_at': now().isoformat()},
+    previous = store.snapshot()
+    if previous and previous.get('status') != 'cleared' and not replace:
+        raise ConfigError('session already exists; pass --replace')
+    if verify:
+        checked = _run_verifier(verifier, name, state, restore=True)
+        if checked['status'] != 'verified':
+            return {**result, **_result(name, checked)}
+        state, _ = validate_state(checked['state'], name)
+        result['status'] = 'verified'
+    _check_install(
+        store.install(
+            previous,
+            state,
+            result['status'],
+            metadata=_metadata(checked) if verify else None,
+            pending='recover' if verify else None,
         )
-        if verify:
-            recover_verified(settings, name, database, result)
-    return result
+    )
+    return reconcile_session(settings, store, database, result) if verify else result
 
 
-def setup_provider(settings, name, *, reauth=False, verifier=verify_state, database=None):
+def setup_provider(
+    settings, name, *, reauth=False, verifier=verify_state, database=None, region=None
+):
     import sys
 
     recovery_database(settings, database)
-
+    store = provider_session(settings, name)
+    name = store.provider
+    if region in (None, 'auto'):
+        region = None
+    elif not any(t.region == region for t in _session_policy(name).targets):
+        raise ConfigError(f'{name}: unsupported verification region')
     if not sys.stdin.isatty():
         return {
             'provider': name,
             'status': 'needs_setup',
             'command': f'applicant setup import-session --provider {name} --from-file state.json --verify',
         }
-    target = session_path(settings, name)
-    with profile_lock(target.with_suffix('.lock')):
-        if target.exists() and not reauth:
-            raise ConfigError('session exists; use status --check or provider --reauth')
-        state = verifier(name, None, interactive=True)
-        if state is None:
-            return {'provider': name, 'status': 'needs_setup'}
-        state, warnings = validate_state(state, name)
-        write_document(target, state)
-        result = {
-            'provider': name,
-            'status': 'verified',
-            'warnings': warnings,
-            'checked_at': now().isoformat(),
-        }
-        write_document(
-            target.with_suffix('.status.json'), {**result, 'state_hash': content_hash(state)}
-        )
-        return recover_verified(settings, name, database, result)
+    previous = store.snapshot()
+    if previous and previous.get('status') != 'cleared' and not reauth:
+        raise ConfigError('session exists; use status --check or provider --reauth')
+    checked = _run_verifier(verifier, name, None, interactive=True, restore=True, region=region)
+    if checked['status'] != 'verified':
+        return _result(name, checked)
+    state, warnings = validate_state(checked['state'], name)
+    result = {
+        'provider': name,
+        'status': 'verified',
+        'warnings': warnings,
+        'checked_at': now().isoformat(),
+    }
+    _check_install(
+        store.install(previous, state, 'verified', metadata=_metadata(checked), pending='recover')
+    )
+    return reconcile_session(settings, store, database, result)
 
 
-def session_status(settings, name, *, check=False, verifier=verify_state, database=None):
+def session_status(
+    settings, name, *, check=False, verifier=verify_state, database=None, show=False
+):
     recovery_database(settings, database)
-    target = session_path(settings, name)
-    if not target.exists():
-        return {'provider': name, 'status': 'needs_setup'}
-    with profile_lock(target.with_suffix('.lock')):
-        state, _ = validate_state(read_ranking_document(target), name)
-        status = 'unverified'
-        metadata = target.with_suffix('.status.json')
-        if metadata.exists():
-            saved = read_ranking_document(metadata)
-            if saved.get('state_hash') == content_hash(state):
-                status = saved.get('status', 'unverified')
-        if check:
-            status = 'verified' if verifier(name, state) is not None else 'needs_setup'
-            write_document(
-                metadata,
-                {
-                    'state_hash': content_hash(state),
-                    'status': status,
-                    'checked_at': now().isoformat(),
-                },
-            )
-        result = {'provider': name, 'status': status, 'network_checked': check}
+    store = provider_session(settings, name)
+    name = store.provider
+    previous = store.snapshot()
+    if not previous or previous.get('status') == 'cleared':
+        result = {'provider': name, 'status': 'needs_setup'}
         return (
-            recover_verified(settings, name, database, result)
-            if check and status == 'verified'
+            reconcile_session(settings, store, database, result)
+            if check and previous.get('pending')
             else result
         )
+    status = previous.get('status', 'unverified')
+    if previous.get('format') != FORMAT:
+        metadata = store.path.with_suffix('.status.json')
+        if metadata.exists():
+            saved = read_ranking_document(metadata)
+            if saved.get('state_hash') == content_hash(previous):
+                status = saved.get('status', 'unverified')
+    if check:
+        if previous.get('pending'):
+            return reconcile_session(
+                settings,
+                store,
+                database,
+                {'provider': name, 'status': status, 'network_checked': False},
+            )
+        with store.execution_gate():
+            previous, state = store.active_snapshot()
+            if state is None:
+                return {'provider': name, 'status': 'needs_setup'}
+            state, _ = validate_state(state, name)
+            checked = _run_verifier(
+                verifier,
+                name,
+                state,
+                region=previous.get('region'),
+                capture=previous.get('capture'),
+                show=show,
+            )
+            status = checked['status']
+            if status == 'inconclusive':
+                return {
+                    **_result(name, checked),
+                    'network_checked': True,
+                    'last_verified_at': previous.get('checked_at'),
+                }
+            stamp = now().isoformat()
+            if previous.get('format') != FORMAT:
+                saved = store.install(
+                    previous,
+                    state,
+                    status,
+                    metadata={'checked_at': stamp},
+                    pending='recover' if status == 'verified' else 'expire',
+                )
+            else:
+                rotated = {}
+                if status == 'verified':
+                    rotated['state'], _ = validate_state(checked['state'], name)
+                saved = store.update(
+                    previous,
+                    status=status,
+                    pending='recover' if status == 'verified' else 'expire',
+                    **(_metadata(checked) if status == 'verified' else {}),
+                    **rotated,
+                )
+            _check_install(saved)
+    result = {'provider': name, 'status': status, 'network_checked': check}
+    return reconcile_session(settings, store, database, result) if check else result
+
+
+def clear_session(settings, name, *, database=None):
+    recovery_database(settings, database)
+    store = provider_session(settings, name)
+    store.clear()
+    return reconcile_session(
+        settings,
+        store,
+        database,
+        {
+            'provider': store.provider,
+            'status': 'cleared',
+            'scope': 'local_credentials',
+            'legacy_browser_data': 'preserved',
+        },
+    )

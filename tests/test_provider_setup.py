@@ -28,7 +28,7 @@ class SessionTest(unittest.TestCase):
         from unittest.mock import patch
 
         with tempfile.TemporaryDirectory() as folder:
-            settings = Settings(data_dir=Path(folder))
+            settings = Settings(session_storage='plaintext', data_dir=Path(folder))
             verifier = Mock(return_value={'cookies': [COOKIE], 'origins': []})
             with patch('sys.stdin.isatty', return_value=False):
                 self.assertEqual(
@@ -120,7 +120,7 @@ class SessionTest(unittest.TestCase):
 
     def test_cookie_warning_dry_run_and_failed_replace(self):
         with tempfile.TemporaryDirectory() as folder:
-            settings = Settings(data_dir=Path(folder))
+            settings = Settings(session_storage='plaintext', data_dir=Path(folder))
             source = Path(folder) / 'input.json'
             source.write_text(json.dumps([COOKIE]), encoding='utf-8')
             result = import_session(settings, 'linkedin', source, format='cookies', dry_run=True)

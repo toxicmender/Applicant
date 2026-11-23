@@ -26,7 +26,8 @@ from ..permissions import make_private
 from .browser_diagnostics import event, network_code, safe_origin, stage
 from .http import USER_AGENT
 from .profile_lock import profile_lock
-from .ranking_documents import read_ranking_document
+from .session_access import active_access
+from .session_store import read_session_file
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle only matters to type checkers
     from playwright.sync_api import BrowserContext, Page, Playwright
@@ -101,12 +102,19 @@ class BrowserSession:
         channels: Sequence[str | None] = CHANNELS,
         storage_state: Any = None,
         require_saved_state: bool = False,
+        capture_settings: dict[str, Any] | None = None,
     ):
         self.profile_dir = profile_dir
         self.headless = headless
         self.timeout = timeout
-        self.channels = tuple(channels)
-        self.storage_state = browser_state.get() if storage_state is None else storage_state
+        self.capture_settings = capture_settings or {}
+        self.channels = (
+            (self.capture_settings['channel'],)
+            if 'channel' in self.capture_settings
+            else tuple(channels)
+        )
+        self.channel: str | None = None
+        self.storage_state: Any = browser_state.get() if storage_state is None else storage_state
         self.require_saved_state = require_saved_state
         self._playwright: Playwright | None = None
         self._closer: Any = None
@@ -143,7 +151,7 @@ class BrowserSession:
                 self._profile_lock = profile_lock(state.with_suffix('.lock'))
                 self._profile_lock.__enter__()
                 if state.is_file() and self.storage_state is None:
-                    self.storage_state = read_ranking_document(state)
+                    self.storage_state = read_session_file(state) or {'cookies': [], 'origins': []}
             if self.require_saved_state and self.storage_state is None:
                 raise AuthFailed('no saved browser session')
             with stage('playwright_startup'):
@@ -168,6 +176,9 @@ class BrowserSession:
             'locale': 'en-US',
             'viewport': {'width': 1366, 'height': 900},
         }
+        for key in ('user_agent', 'locale', 'viewport', 'timezone_id'):
+            if key in self.capture_settings:
+                context_options[key] = self.capture_settings[key]
         failures = []
 
         for channel in self.channels:
@@ -194,6 +205,7 @@ class BrowserSession:
                 self._close_quietly('_closer')
                 failures.append(f'{label}: {type(error).__name__}')
                 continue
+            self.channel = channel
             return context
 
         with stage('browser_launch'):
@@ -262,8 +274,33 @@ def browser(
     channels: Sequence[str | None] = CHANNELS,
 ) -> Iterator[Page]:
     """A Playwright page for the length of a `with` block."""
-    with BrowserSession(profile_dir, headless, timeout, channels) as session:
-        yield session.start()
+    access = active_access.get()
+    if access is None:
+        with BrowserSession(profile_dir, headless, timeout, channels) as session:
+            yield session.start()
+        return
+    token = browser_cleanup.set(None)
+    try:
+        with (
+            access.exchange(),
+            BrowserSession(
+                headless=headless,
+                timeout=timeout,
+                channels=channels,
+                storage_state=access.state,
+                capture_settings=access.record.get('capture'),
+            ) as session,
+        ):
+            page = session.start()
+            yield page
+            if looks_blocked(page):
+                from ..errors import Blocked
+
+                raise Blocked('provider returned an account challenge')
+            access.check_page(page)
+            access.publish(session.context.storage_state())
+    finally:
+        browser_cleanup.reset(token)
 
 
 def check_company_session(page: Page, provider: str) -> None:

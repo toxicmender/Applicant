@@ -124,9 +124,11 @@ class VerificationWorkerTest(unittest.TestCase):
             patch('sys.stdin.isatty', return_value=True),
             self.assertLogs('applicant.browser', 'DEBUG') as logs,
         ):
-            settings = Settings(data_dir=Path(folder), store='files')
+            settings = Settings(session_storage='plaintext', data_dir=Path(folder), store='files')
             result = setup_provider(settings, 'tracxn', verifier=verify)
-            saved = json.loads(session_path(settings, 'tracxn').read_text(encoding='utf-8'))
+            saved = json.loads(session_path(settings, 'tracxn').read_text(encoding='utf-8'))[
+                'state'
+            ]
         expected, _ = validate_state({**TRACXN_STATE, 'cookies': [own_cookie]}, 'tracxn')
         self.assertEqual(saved, expected)
         self.assertEqual(result['status'], 'verified')
@@ -164,7 +166,7 @@ class VerificationWorkerTest(unittest.TestCase):
             source, database = root / 'incoming.json', root / 'existing.db'
             source.write_text(json.dumps(STATE), encoding='utf-8')
             database.touch()
-            settings = Settings(data_dir=root)
+            settings = Settings(session_storage='plaintext', data_dir=root)
             with patch(
                 'applicant.services.provider_health.sqlite3.connect',
                 side_effect=sqlite3.OperationalError('database is locked'),
