@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 
 from playwright.sync_api import Error
 
+from applicant.errors import ProfileBusy
 from applicant.infra.browser_diagnostics import QUEUE_SIZE, event, stage
 from applicant.infra.owned_worker import WorkerFailure, _ControlPipe, run_worker
 
@@ -25,6 +26,10 @@ def echo(connection, arguments):
 def hanging(connection, arguments):
     connection.send(('closing', None))
     connection.recv()
+
+
+def profile_busy(connection, arguments):
+    raise ProfileBusy('private detail')
 
 
 def failing(connection, arguments):
@@ -412,3 +417,8 @@ class OwnedWorkerBoundaryTest(unittest.TestCase):
         self.assertLessEqual(process.join.call_args.args[0], 5)
         transport.return_value.close.assert_called_once_with()
         child.close.assert_called_once_with()
+
+
+def test_owned_worker_reports_profile_contention_without_private_details():
+    with unittest.TestCase().assertRaisesRegex(ProfileBusy, 'retry the operation'):
+        run_worker(profile_busy, None)

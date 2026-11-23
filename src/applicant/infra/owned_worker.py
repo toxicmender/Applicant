@@ -15,7 +15,7 @@ from queue import Empty, Queue
 from threading import Thread
 from typing import Any
 
-from ..errors import SourceError
+from ..errors import ProfileBusy, SourceError
 from .browser_diagnostics import QUEUE_SIZE, WorkerDiagnostics, active_diagnostics, failure_details
 from .interrupts import defer_interrupt
 
@@ -349,12 +349,18 @@ def run_worker(
                         logger.debug(
                             'browser worker error provider=%s pid=%s %s', provider, pid, result
                         )
-                        failure = WorkerFailure(
-                            'browser worker failed: {exception_class} during {operation}'.format(
-                                **result
+                        if (
+                            result['exception_module'] == ProfileBusy.__module__
+                            and result['exception_class'] == ProfileBusy.__name__
+                        ):
+                            failure = ProfileBusy('provider session is busy; retry the operation')
+                        else:
+                            failure = WorkerFailure(
+                                'browser worker failed: {exception_class} during {operation}'.format(
+                                    **result
+                                )
+                                + (f' ({result["network_code"]})' if result['network_code'] else '')
                             )
-                            + (f' ({result["network_code"]})' if result['network_code'] else '')
-                        )
                     break
             elif not process.is_alive():
                 raise WorkerFailure('browser worker exited without a result')
