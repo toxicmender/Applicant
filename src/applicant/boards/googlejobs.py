@@ -20,6 +20,7 @@ from ..domain.dates import relative_to_iso
 from ..domain.job import Job
 from ..errors import Blocked
 from ..infra.browser import browser, looks_blocked
+from ..infra.session_access import active_access
 from . import CAPABILITIES
 
 logger = logging.getLogger(__name__)
@@ -55,7 +56,11 @@ class GoogleJobs:
         if location:
             query += ' in {}'.format(location)
 
-        url = '{}?{}'.format(BASE, urlencode({'q': query, 'udm': '8', 'hl': self.hl}))
+        access = active_access.get()
+        base = BASE
+        if access is not None and access.record.get('origin') == 'https://www.google.co.in':
+            base = 'https://www.google.co.in/search'
+        url = '{}?{}'.format(base, urlencode({'q': query, 'udm': '8', 'hl': self.hl}))
 
         with browser(headless=self.headless, timeout=self.timeout) as page:
             page.goto(url, wait_until='domcontentloaded')
@@ -65,6 +70,8 @@ class GoogleJobs:
                     'strict about automation - retry later or from another network.'
                 )
 
+            if access is not None:
+                access.check_page(page)
             try:
                 page.wait_for_selector(CARD, timeout=20000)
             except Exception:  # noqa: BLE001 - wait_for_selector times out with its own error type

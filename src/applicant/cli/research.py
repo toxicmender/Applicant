@@ -236,7 +236,7 @@ def execute(args, settings):
         result = (
             feed_from_imports(database)
             if args.from_imports
-            else collect_feed(database, read(args.query))
+            else collect_feed(database, read(args.query), settings=settings)
         )
         failures = (
             any(x['status'] != 'success' for x in result['outcomes']) and not args.from_imports
@@ -255,7 +255,7 @@ def execute(args, settings):
         result = (
             feed_from_imports(database)
             if previous['query']['providers'] == ['import']
-            else collect_feed(database, previous['query'], parent=args.feed)
+            else collect_feed(database, previous['query'], parent=args.feed, settings=settings)
         )
         code = int(not result['job_version_ids'])
     elif op in ('feed.show', 'analytics.show'):

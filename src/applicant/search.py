@@ -27,6 +27,7 @@ from .log import get
 from .services.apply import ApplyToJobs, Confirm, EasyApply, Entry
 from .services.events import Emit, Event, SourceFailed, ignore
 from .services.search import SOURCES, Board, SearchJobs, close_quietly
+from .settings import Settings
 
 if TYPE_CHECKING:
     from .boards.linkedin_apply import LinkedIn
@@ -60,6 +61,7 @@ class Jobs:
         self.session = session
         self.attempts = attempts
         self.owned_search = False
+        self.session_settings: Settings | None = None
 
     def linkedin(self) -> LinkedIn:
         """The signed in LinkedIn client, made only when something is submitted.
@@ -108,7 +110,7 @@ class Jobs:
         if self.owned_search and name in ('linkedin', 'indeed', 'naukri', 'googlejobs'):
             from .infra.board_worker import OwnedBoard
 
-            return OwnedBoard(name, headless=self.headless)
+            return OwnedBoard(name, headless=self.headless, settings=self.session_settings)
         if name == 'linkedin':
             if self._linkedin is not None:
                 return self._linkedin  # a client handed in: searched with, kept open

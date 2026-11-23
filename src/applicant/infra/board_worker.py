@@ -15,9 +15,34 @@ from ..errors import (
 )
 from .owned_worker import run_worker
 from .provider_registry import board_class, board_client
+from .session_access import SessionExpired, run_with_session
+
+_SESSION_BOARDS = {'indeed', 'naukri', 'googlejobs'}
 
 
 def _collect(connection, request):
+    if len(request) <= 5:
+        return _collect_once(connection, request)
+    from ..services.provider_setup import provider_session
+    from ..settings import Settings
+
+    *arguments, configured = request
+    name = arguments[0]
+    try:
+        result, access = run_with_session(
+            provider_session(Settings.model_validate(configured), name),
+            lambda: _collect_once(None, arguments),
+            public=True,
+        )
+        result['access'] = access
+        if result.get('jobs'):
+            connection.send(('progress', result))
+        return result
+    finally:
+        connection.send(('closing', None))
+
+
+def _collect_once(connection, request):
     name, method, args, kwargs = request[:4]
     headless = request[4] if len(request) == 5 else True
     client = None
@@ -28,6 +53,8 @@ def _collect(connection, request):
         if method == 'describe':
             return {'description': client.describe(Job.model_validate(args[0]))}
         jobs = getattr(client, method)(*args, **kwargs)
+    except SessionExpired:
+        raise
     except SourceError as error:
         jobs = getattr(client, 'partial_jobs', [])
         failure = {'type': type(error).__name__, 'retry_at': getattr(error, 'retry_at', None)}
@@ -40,34 +67,58 @@ def _collect(connection, request):
                 'source_urls': getattr(client, 'source_urls', {}),
                 'requisition_metadata': getattr(client, 'requisition_metadata', {}),
             }
-            if jobs:
+            if jobs and connection is not None:
                 connection.send(('progress', result))
         finally:
-            connection.send(('closing', None))
+            if connection is not None:
+                connection.send(('closing', None))
             if client is not None:
                 client.close()
     return result
 
 
 class OwnedBoard:
-    def __init__(self, name, check=None, *, headless=True):
+    def __init__(self, name, check=None, *, headless=True, settings=None):
         self.name, self.check = name, check
         self.headless = headless
+        self.settings = settings
+        self.access = {}
         self.raw, self.source_urls, self.requisition_metadata = {}, {}, {}
         self.partial_jobs = []
 
     def _call(self, method, *args, **kwargs):
         self.partial_jobs = []
+        request = (self.name, method, args, kwargs)
+        if self.settings is not None and self.name in _SESSION_BOARDS:
+            request = (
+                *request,
+                self.headless,
+                self.settings.model_dump(
+                    include={
+                        'data_dir',
+                        'files',
+                        'store',
+                        'session_storage',
+                    }
+                ),
+            )
+        elif not self.headless:
+            request = (*request, False)
         result = run_worker(
             _collect,
-            (self.name, method, args, kwargs)
-            if self.headless
-            else (self.name, method, args, kwargs, False),
+            request,
             timeout=None,
             check=self.check,
             progress=self._receive if method != 'describe' else None,
             provider=self.name,
         )
+        self.access = result.get('access', {})
+        if self.access.get('reason') == 'session_expired':
+            from ..log import get
+
+            get(__name__).warning(
+                '%s: retry used public access. %s', self.name, self.access['command']
+            )
         if method == 'describe' and 'description' in result:
             return result['description']
         jobs = self._receive(result)
@@ -136,7 +187,7 @@ def recommendations(
 ) -> list[Job]:
     from ..services.provider_setup import _scope_captured_state
     from .profile_lock import profile_lock
-    from .ranking_documents import read_ranking_document
+    from .session_store import read_session_file
 
     results: list[Job] = []
 
@@ -147,7 +198,7 @@ def recommendations(
         with profile_lock(session_path.with_suffix('.lock')):
             if not session_path.is_file():
                 raise AuthFailed('LinkedIn needs setup')
-            state = read_ranking_document(session_path)
+            state = read_session_file(session_path, expected_provider='linkedin')
             if not isinstance(state, dict) or not isinstance(state.get('cookies'), list):
                 raise AuthFailed('LinkedIn needs setup')
             state = _scope_captured_state({'origins': [], **state}, 'linkedin')
