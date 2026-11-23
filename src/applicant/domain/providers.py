@@ -215,6 +215,8 @@ def _add_session(name, policy):
     )
 
 
+GLASSDOOR_REGIONS = ('com', 'co.in')
+
 _add_session(
     'glassdoor',
     SessionPolicy(
@@ -235,7 +237,7 @@ _add_session(
                 region='com',
             ),
         ),
-        ('glassdoor.co.in', 'glassdoor.com'),
+        tuple(f'glassdoor.{region}' for region in GLASSDOOR_REGIONS),
         True,
     ),
 )

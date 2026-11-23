@@ -5,6 +5,7 @@ import re
 from contextlib import suppress
 from urllib.parse import urlsplit
 
+from ..domain.providers import GLASSDOOR_REGIONS
 from ..errors import Blocked, ConfigError, SourceError, Unparseable
 from ..infra.browser import BrowserSession, browser, looks_blocked
 from ..infra.session_access import active_access
@@ -32,10 +33,11 @@ def reviews_url(company, page=1, *, region=None):
     base = BASE
     explicit = urlsplit(company).hostname if company.startswith('https://') else None
     if explicit:
-        requested = {'glassdoor.com': 'com', 'glassdoor.co.in': 'co.in'}.get(
-            explicit.removeprefix('www.')
-        )
-        if requested is None:
+        requested = explicit.removeprefix('www.').removeprefix('glassdoor.')
+        if (
+            explicit.removeprefix('www.') != f'glassdoor.{requested}'
+            or requested not in GLASSDOOR_REGIONS
+        ):
             raise ConfigError('Glassdoor review host is outside the supported regions')
         if region and requested != region:
             raise ConfigError(

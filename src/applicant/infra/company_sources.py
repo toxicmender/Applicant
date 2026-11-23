@@ -38,24 +38,13 @@ class CompanyRecorder:
 
 
 def company_client(association, recorder, *, settings):
-    from ..services.provider_setup import provider_session
-
     provider = association.provider
+    # Portable review evidence must come from an anonymous request. The
+    # recorder preserves response bytes, including any embedded page state.
     if provider == 'ambitionbox':
-        client = AmbitionBoxClient(capture=recorder)
-        store = provider_session(settings, provider)
-        if store.path.is_file():
-            client.session_store = store
-        return client
+        return AmbitionBoxClient(capture=recorder)
     if provider == 'glassdoor':
-        glassdoor = GlassdoorClient(
-            profile_dir=settings.path(settings.files.glassdoor_profile), capture=recorder
-        )
-        store = provider_session(settings, provider)
-        if store.path.is_file():
-            glassdoor.owned = True
-            glassdoor.session_store = store
-        return glassdoor
+        return GlassdoorClient(profile_dir=None, capture=recorder)
     if provider == 'crunchbase':
         return CrunchbaseClient(
             api_key=settings.secret('crunchbase_key'),
