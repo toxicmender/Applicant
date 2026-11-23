@@ -8,6 +8,8 @@ import httpx
 
 from ..errors import NotFound, SourceError, Unparseable
 from ..infra.http import HEADERS, HttpClient
+from ..infra.session_access import active_access
+from ..infra.session_store import SessionStore
 from .models import CompanyRating, Review
 
 logger = logging.getLogger(__name__)
@@ -49,6 +51,8 @@ class AmbitionBoxClient:
 
     def __init__(self, timeout=30.0, delay=1.0, retries=3, client=None, capture=None):
         self.capture = capture
+        self.session_store: SessionStore | None = None
+        self.access = {}
         # `delay` is both the gap between pages and the base of the retry
         # backoff, as it always was; HttpClient now does both
         self.http = HttpClient(
@@ -74,7 +78,23 @@ class AmbitionBoxClient:
         self.close()
 
     def _get(self, url, **kwargs) -> httpx.Response:
-        response = self.http.get(url, **kwargs)
+        access = active_access.get()
+        response = (
+            self.http.get(url, **kwargs)
+            if access is None
+            else access.http(
+                self.client,
+                lambda: self.http.get(url, **kwargs),
+                accepted=lambda r: (
+                    r.status_code == 200
+                    and bool(
+                        NEXT_DATA.search(r.text)
+                        or r.headers.get('content-type', '').startswith('application/json')
+                    )
+                ),
+                confirms_expiry=True,
+            )
+        )
         if self.capture is not None:
             self.capture(str(response.url), response.content, 'http_response')
         return response
@@ -85,6 +105,12 @@ class AmbitionBoxClient:
         failing through every retry arrives as `Unreachable`, a rate limit that
         outlasts them as `Blocked` - both SourceErrors."""
         try:
+            if self.session_store is not None:
+                from ..infra.company_worker import fetch_company
+
+                return fetch_company(
+                    'ambitionbox', self, company, max_reviews, capture=self.capture
+                )
             rating = self._fetch(company, max_reviews)
         except httpx.HTTPStatusError as error:
             raise SourceError(

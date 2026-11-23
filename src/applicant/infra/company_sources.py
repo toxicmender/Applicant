@@ -38,13 +38,24 @@ class CompanyRecorder:
 
 
 def company_client(association, recorder, *, settings):
+    from ..services.provider_setup import provider_session
+
     provider = association.provider
     if provider == 'ambitionbox':
-        return AmbitionBoxClient(capture=recorder)
+        client = AmbitionBoxClient(capture=recorder)
+        store = provider_session(settings, provider)
+        if store.path.is_file():
+            client.session_store = store
+        return client
     if provider == 'glassdoor':
-        return GlassdoorClient(
+        glassdoor = GlassdoorClient(
             profile_dir=settings.path(settings.files.glassdoor_profile), capture=recorder
         )
+        store = provider_session(settings, provider)
+        if store.path.is_file():
+            glassdoor.owned = True
+            glassdoor.session_store = store
+        return glassdoor
     if provider == 'crunchbase':
         return CrunchbaseClient(
             api_key=settings.secret('crunchbase_key'),

@@ -7,7 +7,8 @@ from ..errors import AuthFailed, Blocked, NotFound, SourceError, Unparseable
 from .browser import STATE_FILE, browser_cleanup, browser_state
 from .owned_worker import WorkerFailure, run_worker
 from .profile_lock import profile_lock
-from .ranking_documents import read_ranking_document
+from .session_access import SessionExpired, run_with_session
+from .session_store import SessionStore, read_session_file
 
 _UNSET = object()
 
@@ -19,8 +20,28 @@ class CompanyFetchInterrupted(KeyboardInterrupt):
 
 
 def _fetch(connection, arguments):
+    if len(arguments) == 7:
+        return _fetch_once(connection, arguments)
+    *request, configuration = arguments
+    path, provider, mode, dedicated = configuration
+    store = SessionStore(path, provider, mode=mode, dedicated=dedicated)
+    try:
+        result, access = run_with_session(
+            store,
+            lambda: _fetch_once(None, request),
+            public=True,
+        )
+        if progress := result.pop('result', None):
+            connection.send(('progress', progress))
+        return {**result, 'access': access}
+    finally:
+        connection.send(('closing', None))
+
+
+def _fetch_once(connection, arguments):
     from ..financials.crunchbase import CrunchbaseClient
     from ..financials.tracxn import TracxnClient
+    from ..reviews.ambitionbox import AmbitionBoxClient
     from ..reviews.glassdoor import GlassdoorClient
     from .company_sources import CompanyRecorder
 
@@ -33,6 +54,8 @@ def _fetch(connection, arguments):
         adapter = TracxnClient(api_key='', **options)
     elif provider == 'glassdoor':
         adapter = GlassdoorClient(**options)
+    elif provider == 'ambitionbox':
+        adapter = AmbitionBoxClient(capture=recorder)
     else:
         raise ValueError('unsupported owned company adapter')
     token = browser_state.set(state)
@@ -44,13 +67,18 @@ def _fetch(connection, arguments):
                 try:
                     result = client.fetch(company, limit)
                     responses = () if recorder is None else recorder.completed()
+                except SessionExpired:
+                    raise
                 except SourceError as error:
                     return {'error': type(error).__name__}
+                if connection is None:
+                    return {'error': None, 'result': (result, responses)}
                 connection.send(('progress', (result, responses)))
                 return {'error': None}
             finally:
                 browser_cleanup.reset(cleanup_token)
-                connection.send(('closing', None))
+                if connection is not None:
+                    connection.send(('closing', None))
     finally:
         browser_state.reset(token)
 
@@ -59,14 +87,14 @@ def _fetch(connection, arguments):
 def company_session(provider, client):
     from ..services.provider_setup import _scope_captured_state
 
-    path = Path(client.profile_dir).resolve() / STATE_FILE if client.profile_dir else None
+    path = (
+        Path(client.profile_dir).resolve() / STATE_FILE
+        if getattr(client, 'profile_dir', None)
+        else None
+    )
     with profile_lock(path.with_suffix('.lock')) if path is not None else nullcontext():
-        state = (
-            _scope_captured_state(read_ranking_document(path), provider)
-            if path is not None and path.is_file()
-            else None
-        )
-        yield state
+        state = read_session_file(path, expected_provider=provider) if path is not None else None
+        yield _scope_captured_state(state, provider) if state is not None else None
 
 
 def fetch_company(provider, client, company, limit, *, state=_UNSET, check=None, capture=None):
@@ -79,20 +107,37 @@ def fetch_company(provider, client, company, limit, *, state=_UNSET, check=None,
                 capture(response.source_url, response.body, response.representation)
         completed.append(value)
 
-    access = company_session(provider, client) if state is _UNSET else nullcontext(state)
+    managed = getattr(client, 'session_store', None)
+    use_managed = managed is not None and managed.path.is_file()
+    if provider == 'glassdoor' and use_managed and managed is not None:
+        from ..reviews.glassdoor import reviews_url
+
+        record = managed.snapshot()
+        region = record.get('region') if record.get('status') != 'cleared' else None
+        company = reviews_url(company, region=region)[0]
+    access = (
+        nullcontext(None)
+        if use_managed
+        else company_session(provider, client)
+        if state is _UNSET
+        else nullcontext(state)
+    )
     try:
         with access as session:
+            request = (
+                provider,
+                session,
+                company,
+                limit,
+                getattr(client, 'headless', True),
+                getattr(client, 'timeout', 45_000),
+                capture is not None,
+            )
+            if use_managed and managed is not None:
+                request = (*request, (managed.path, provider, managed.mode, managed.dedicated))
             outcome = run_worker(
                 _fetch,
-                (
-                    provider,
-                    session,
-                    company,
-                    limit,
-                    client.headless,
-                    client.timeout,
-                    capture is not None,
-                ),
+                request,
                 progress=received,
                 provider=provider,
                 check=check,
@@ -106,6 +151,14 @@ def fetch_company(provider, client, company, limit, *, state=_UNSET, check=None,
         if not completed:
             raise
         return completed[-1]
+    if managed is not None:
+        client.access = outcome.get('access', {'access_mode': 'public'})
+        if client.access.get('reason') == 'session_expired':
+            from ..log import get
+
+            get(__name__).warning(
+                '%s: retry used public access. %s', provider, client.access['command']
+            )
     if outcome['error']:
         by_name = {error.__name__: error for error in (AuthFailed, Blocked, NotFound, Unparseable)}
         kind = by_name.get(outcome['error'], SourceError)
