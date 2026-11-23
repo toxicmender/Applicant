@@ -37,7 +37,7 @@ class FixtureMarkup(HTMLParser):
             assert key in allowed and value in allowed[key], key
 
     def handle_data(self, data):
-        assert not data.strip(), 'fixture elements must be empty'
+        assert data.strip() in {'', 'Account', 'Inbox', 'My Bowls', 'Log in'}, 'unexpected text'
 
     def handle_comment(self, data):
         raise AssertionError('fixture comments are not allowed')

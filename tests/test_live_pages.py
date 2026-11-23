@@ -17,7 +17,10 @@ Skipped without a browser (see RealBrowserTest); CI's browser job installs one.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import unittest
+from pathlib import Path
 
 import httpx
 
@@ -25,7 +28,10 @@ from applicant.boards.googlejobs import GoogleJobs
 from applicant.boards.indeed import Indeed
 from applicant.boards.linkedin_apply import LinkedIn
 from applicant.boards.naukri import Naukri
+from applicant.domain.providers import provider
 from applicant.errors import Blocked, NotFound
+from applicant.infra.browser import BrowserSession
+from applicant.services.provider_setup import _verify_detailed
 from applicant.financials import CrunchbaseClient, TracxnClient
 from applicant.reviews import GlassdoorClient
 from tests.fakes import RealBrowserTest
@@ -211,3 +217,95 @@ class LinkedInLiveTest(RealBrowserTest):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+AUTH_FIXTURES = Path(__file__).parent / 'fixtures' / 'provider_auth'
+
+
+class ProviderVerificationBrowserTest(RealBrowserTest):
+    def test_signed_in_fixtures_and_hidden_guest_controls(self):
+        for name in ('indeed', 'naukri', 'googlejobs', 'glassdoor', 'ambitionbox', 'levels'):
+            with self.subTest(provider=name):
+                policy = provider(name).session
+                assert policy is not None
+                markup = (AUTH_FIXTURES / f'{name}.html').read_text(encoding='utf-8')
+
+                def start(session):
+                    page = BrowserSession.start(session)
+                    page.route(
+                        '**/*', lambda route: route.fulfill(content_type='text/html', body=markup)
+                    )
+                    return page
+
+                class FixtureSession(BrowserSession):
+                    def start(self):
+                        return start(self)
+
+                assert _verify_detailed(name, None, factory=FixtureSession)['status'] == 'verified'
+                if name == 'levels':
+                    markup = (AUTH_FIXTURES / 'levels-signed-out.html').read_text(encoding='utf-8')
+                    assert (
+                        _verify_detailed(name, None, factory=FixtureSession)['status']
+                        == 'needs_setup'
+                    )
+
+    def test_cli_verification_outcomes_in_a_fresh_process(self):
+        from applicant.services.provider_setup import provider_session
+        from applicant.settings import Settings
+
+        store = provider_session(
+            Settings(data_dir=self.folder, session_storage='plaintext', store='files'), 'indeed'
+        )
+        store.install(
+            {},
+            {
+                'cookies': [
+                    {
+                        'name': 'account',
+                        'value': 'synthetic',
+                        'domain': '.indeed.com',
+                        'path': '/',
+                        'expires': -1,
+                        'secure': True,
+                        'httpOnly': False,
+                        'sameSite': 'Lax',
+                    }
+                ],
+                'origins': [],
+            },
+            'verified',
+            metadata={'checked_at': '2026-11-01T00:00:00+00:00'},
+        )
+        config = self.folder / 'config.toml'
+        config.write_text('session_storage = "plaintext"\nstore = "files"\n', encoding='utf-8')
+        original = store.path.read_bytes()
+        for page, code, status, reason in (
+            ('challenge', 11, 'inconclusive', 'challenge'),
+            ('unknown', 5, 'inconclusive', 'marker_missing'),
+            ('signout', 3, 'needs_setup', None),
+            ('acquisition', 3, None, None),
+        ):
+            with self.subTest(page=page):
+                command = subprocess.run(
+                    [
+                        sys.executable,
+                        '-m',
+                        'tests.provider_browser_cli',
+                        page,
+                        '--config',
+                        str(config),
+                        '--data-dir',
+                        str(self.folder),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=55,
+                    check=False,
+                )
+                assert command.returncode == code, (command.stdout, command.stderr)
+                if status:
+                    result = json.loads(command.stdout)
+                    assert result['status'] == status
+                    assert result.get('reason') == reason
+                if page in {'challenge', 'unknown'}:
+                    assert store.path.read_bytes() == original

@@ -320,7 +320,9 @@ def test_worker_checks_the_browser_while_waiting_for_user_login(closed):
             with pytest.raises(AuthFailed, match='browser closed'):
                 run()
         else:
-            assert run()['status'] == 'verified'
+            result = run()
+            assert result is not None
+            assert result['status'] == 'verified'
             page.wait_for_timeout.assert_called_once_with(50)
     connection.send.assert_any_call(('closing', None))
 
