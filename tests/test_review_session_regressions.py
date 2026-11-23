@@ -61,11 +61,13 @@ def test_ambitionbox_page_two_expiry_restarts_from_public_page_one(
 
     def attempt():
         staged = []
-        with httpx.Client(transport=httpx.MockTransport(response), follow_redirects=True) as http:
-            with AmbitionBoxClient(
+        with (
+            httpx.Client(transport=httpx.MockTransport(response), follow_redirects=True) as http,
+            AmbitionBoxClient(
                 client=http, delay=0, capture=lambda *row: staged.append(row)
-            ) as adapter:
-                return adapter.fetch('synthetic', 2), staged
+            ) as adapter,
+        ):
+            return adapter.fetch('synthetic', 2), staged
 
     client = AmbitionBoxClient()
     client.session_store = store

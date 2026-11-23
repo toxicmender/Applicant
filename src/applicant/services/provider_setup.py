@@ -371,6 +371,7 @@ def _verify_detailed(
     show=False,
     region=None,
     capture=None,
+    origin=None,
     factory: Callable[..., Any] = BrowserSession,
     pause=None,
 ):
@@ -408,6 +409,18 @@ def _verify_detailed(
         if current is not None:
             return _inspect_verification(name, session, page, targets)
         attempts = targets[:1]
+        unconfirmed_region = False
+        if name == 'indeed' and state:
+            preferred = [target for target in targets if safe_origin(target.url) == origin]
+            hosts = {
+                cookie['domain']
+                for cookie in state['cookies']
+                if not cookie['domain'].startswith('.')
+            }
+            hosts.update(urlsplit(item['origin']).hostname for item in state['origins'])
+            hinted = [target for target in targets if urlsplit(target.url).hostname in hosts]
+            attempts = preferred or hinted or attempts
+            unconfirmed_region = not (preferred or hinted)
         if name == 'glassdoor' and state and not region:
             domains = {c['domain'].lstrip('.') for c in state['cookies']}
             domains.update(urlsplit(o['origin']).hostname or '' for o in state['origins'])
@@ -424,8 +437,16 @@ def _verify_detailed(
             outcome = _inspect_verification(name, session, page, targets)
             if outcome['status'] == 'verified' or outcome.get('reason') == 'challenge':
                 return outcome
+            if name == 'indeed' and outcome['status'] == 'needs_setup':
+                final_origin = safe_origin(page.url)
+                if final_origin != safe_origin(target.url) and any(
+                    safe_origin(candidate.url) == final_origin for candidate in targets
+                ):
+                    outcome = {'status': 'inconclusive', 'reason': 'unexpected_page'}
             if outcome['status'] == 'inconclusive':
                 inconclusive = outcome
+        if unconfirmed_region and inconclusive is None:
+            return {'status': 'inconclusive', 'reason': 'unexpected_page'}
         return inconclusive or {'status': 'needs_setup', 'reason': 'signed_out'}
 
 
@@ -467,13 +488,20 @@ def _inspect_verification(name, session, page, targets):
         page.wait_for_timeout(100)
 
 
-def _check_browser(name, state, *, interactive=False, show=False, region=None, capture=None):
+def _check_browser(
+    name, state, *, interactive=False, show=False, region=None, capture=None, origin=None
+):
     from ..infra.owned_worker import run_worker
 
     try:
         return run_worker(
             _verification_worker,
-            (name, state, interactive, {'show': show, 'region': region, 'capture': capture}),
+            (
+                name,
+                state,
+                interactive,
+                {'show': show, 'region': region, 'capture': capture, 'origin': origin},
+            ),
             interactive=interactive,
             prompt=Terminal().ask_interruptibly if interactive else None,
             provider=name,
@@ -501,6 +529,7 @@ def _run_verifier(verifier, name, state, *, interactive=False, restore=False, **
             show=interactive or options.get('show', False),
             region=checked.get('region'),
             capture=checked.get('capture'),
+            origin=checked.get('origin'),
         )
     return checked
 
@@ -663,7 +692,7 @@ def session_status(
             )
         with store.execution_gate():
             previous, state = store.active_snapshot()
-            if state is None:
+            if state is None or not (state.get('cookies') or state.get('origins')):
                 return {'provider': name, 'status': 'needs_setup'}
             state, _ = validate_state(state, name)
             checked = _run_verifier(
@@ -672,6 +701,7 @@ def session_status(
                 state,
                 region=previous.get('region'),
                 capture=previous.get('capture'),
+                origin=previous.get('origin'),
                 show=show,
             )
             status = checked['status']

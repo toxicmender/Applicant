@@ -116,10 +116,16 @@ class SessionAccess:
         scoped = _scope_captured_state(state, self.store.provider)
         scoped['cookies'] = [c for c in scoped['cookies'] if c['name'] not in _CHALLENGE_COOKIES]
         previous = self.state
-        if scoped == previous or not (scoped['cookies'] or scoped['origins']):
+        if scoped == previous:
             return
-        normalized, _ = validate_state(scoped, self.store.provider)
-        updated = self.store.update(self.record, state=normalized)
+        if scoped['cookies'] or scoped['origins']:
+            normalized, _ = validate_state(scoped, self.store.provider)
+            updated = self.store.update(self.record, state=normalized)
+        else:
+            normalized = scoped
+            updated = self.store.update(
+                self.record, state=normalized, status='needs_setup', pending='expire'
+            )
         if updated is None:
             raise ProfileBusy('provider session changed before credential rotation was saved')
         self.record, self.state = updated, normalized

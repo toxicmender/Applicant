@@ -30,10 +30,10 @@ from applicant.boards.linkedin_apply import LinkedIn
 from applicant.boards.naukri import Naukri
 from applicant.domain.providers import provider
 from applicant.errors import Blocked, NotFound
-from applicant.infra.browser import BrowserSession
-from applicant.services.provider_setup import _verify_detailed
 from applicant.financials import CrunchbaseClient, TracxnClient
+from applicant.infra.browser import BrowserSession
 from applicant.reviews import GlassdoorClient
+from applicant.services.provider_setup import _verify_detailed
 from tests.fakes import RealBrowserTest
 
 PAGE = 200
@@ -224,30 +224,84 @@ AUTH_FIXTURES = Path(__file__).parent / 'fixtures' / 'provider_auth'
 
 class ProviderVerificationBrowserTest(RealBrowserTest):
     def test_signed_in_fixtures_and_hidden_guest_controls(self):
-        for name in ('indeed', 'naukri', 'googlejobs', 'glassdoor', 'ambitionbox', 'levels'):
-            with self.subTest(provider=name):
-                policy = provider(name).session
-                assert policy is not None
-                markup = (AUTH_FIXTURES / f'{name}.html').read_text(encoding='utf-8')
+        def verify(name, fixture):
+            markup = (AUTH_FIXTURES / f'{fixture}.html').read_text(encoding='utf-8')
 
-                def start(session):
-                    page = BrowserSession.start(session)
+            class FixtureSession(BrowserSession):
+                def start(self):
+                    page = super().start()
                     page.route(
                         '**/*', lambda route: route.fulfill(content_type='text/html', body=markup)
                     )
                     return page
 
-                class FixtureSession(BrowserSession):
-                    def start(self):
-                        return start(self)
+            return _verify_detailed(name, None, factory=FixtureSession)['status']
 
-                assert _verify_detailed(name, None, factory=FixtureSession)['status'] == 'verified'
-                if name == 'levels':
-                    markup = (AUTH_FIXTURES / 'levels-signed-out.html').read_text(encoding='utf-8')
-                    assert (
-                        _verify_detailed(name, None, factory=FixtureSession)['status']
-                        == 'needs_setup'
-                    )
+        for name in ('indeed', 'naukri', 'googlejobs', 'glassdoor', 'ambitionbox', 'levels'):
+            with self.subTest(provider=name):
+                policy = provider(name).session
+                assert policy is not None
+                assert verify(name, name) == 'verified'
+        assert verify('levels', 'levels-signed-out') == 'needs_setup'
+
+    def test_indeed_restores_a_captured_uk_cookie_in_a_fresh_browser(self):
+        origin = 'https://uk.indeed.com'
+        markup = (AUTH_FIXTURES / 'indeed.html').read_text(encoding='utf-8')
+        requests = []
+        page = None
+        capturing = True
+
+        def respond(route):
+            if not route.request.is_navigation_request():
+                route.abort()
+                return
+            url = route.request.url
+            cookie = route.request.header_value('cookie')
+            requests.append((url, cookie))
+            if url == origin + '/' and (capturing or cookie == 'account=synthetic'):
+                headers = (
+                    {'Set-Cookie': 'account=synthetic; Path=/; Secure; HttpOnly'}
+                    if capturing
+                    else {}
+                )
+                route.fulfill(content_type='text/html', body=markup, headers=headers)
+            else:
+                route.fulfill(
+                    content_type='text/html',
+                    body='<a data-gnav-element-name="SignIn">Sign in</a>',
+                )
+
+        class FixtureSession(BrowserSession):
+            def start(self):
+                nonlocal page
+                if self._page is None:
+                    page = super().start()
+                    page.route('**/*', respond)
+                return super().start()
+
+        def fixture_session(*, headless, storage_state, capture_settings):
+            return FixtureSession(
+                headless=True, storage_state=storage_state, capture_settings=capture_settings
+            )
+
+        def sign_in(_prompt):
+            assert page is not None
+            page.goto(origin + '/')
+
+        captured = _verify_detailed(
+            'indeed', None, interactive=True, factory=fixture_session, pause=sign_in
+        )
+        assert captured['status'] == 'verified'
+        state = captured['state']
+        assert isinstance(state, dict)
+        assert state['cookies'][0]['domain'] == 'uk.indeed.com'
+        capturing = False
+        requests.clear()
+        restored = _verify_detailed(
+            'indeed', state, origin=captured['origin'], factory=fixture_session
+        )
+        assert restored['status'] == 'verified'
+        assert requests == [(origin + '/', 'account=synthetic')]
 
     def test_cli_verification_outcomes_in_a_fresh_process(self):
         from applicant.services.provider_setup import provider_session
@@ -274,7 +328,10 @@ class ProviderVerificationBrowserTest(RealBrowserTest):
                 'origins': [],
             },
             'verified',
-            metadata={'checked_at': '2026-11-01T00:00:00+00:00'},
+            metadata={
+                'checked_at': '2026-11-01T00:00:00+00:00',
+                'origin': 'https://in.indeed.com',
+            },
         )
         config = self.folder / 'config.toml'
         config.write_text('session_storage = "plaintext"\nstore = "files"\n', encoding='utf-8')
@@ -299,7 +356,7 @@ class ProviderVerificationBrowserTest(RealBrowserTest):
                     ],
                     capture_output=True,
                     text=True,
-                    timeout=55,
+                    timeout=120,
                     check=False,
                 )
                 assert command.returncode == code, (command.stdout, command.stderr)

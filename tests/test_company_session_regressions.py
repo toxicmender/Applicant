@@ -149,13 +149,14 @@ def test_ambitionbox_evidence_export_never_uses_a_managed_account(tmp_path, publ
             )
         return httpx.Response(404 if public_fails else 200, content=public)
 
-    with httpx.Client(transport=httpx.MockTransport(response)) as http, mock.patch(
-        'applicant.infra.company_sources.AmbitionBoxClient',
-        side_effect=lambda **options: AmbitionBoxClient(client=http, delay=0, **options),
+    with (
+        httpx.Client(transport=httpx.MockTransport(response)) as http,
+        mock.patch(
+            'applicant.infra.company_sources.AmbitionBoxClient',
+            side_effect=lambda **options: AmbitionBoxClient(client=http, delay=0, **options),
+        ),
     ):
-        report = capture_company_evidence(
-            db, ('ambitionbox',), settings=config, clock=lambda: NOW
-        )
+        report = capture_company_evidence(db, ('ambitionbox',), settings=config, clock=lambda: NOW)
     assert requests == [None]
     assert report['success'] is not public_fails, report
     if public_fails:

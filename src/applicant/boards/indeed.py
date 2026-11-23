@@ -203,6 +203,7 @@ class Indeed:
                     access.state,
                     show=not self.headless,
                     capture=access.record.get('capture'),
+                    origin=access.record.get('origin'),
                 )
                 if checked['status'] == 'needs_setup':
                     raise SessionExpired('indeed: account session expired')
