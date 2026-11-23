@@ -315,6 +315,47 @@ class OwnedWorkerTest(unittest.TestCase):
                 sentinel.join(60)
             sentinel.close()
 
+    def test_keyring_timeout_terminates_owned_descendant(self):
+        from applicant.errors import ConfigError
+        from applicant.infra.session_store import session_keyring
+
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1', 0))
+            listener.listen()
+            listener.settimeout(10)
+            descendants = []
+
+            def ready(_):
+                descendant, _ = listener.accept()
+                descendants.append(descendant)
+                descendant.settimeout(10)
+                with descendant.makefile('rb') as stream:
+                    self.assertEqual(stream.read(5), b'ready')
+
+            def worker(_function, _arguments, *, timeout):
+                self.assertEqual(timeout, 3)
+                return run_worker(
+                    held_tree,
+                    listener.getsockname(),
+                    timeout=timeout,
+                    grace=1.0,
+                    interactive=True,
+                    pause=ready,
+                )
+
+            try:
+                with (
+                    patch('applicant.infra.session_store.run_worker', side_effect=worker),
+                    self.assertRaisesRegex(ConfigError, 'key_store_unavailable'),
+                ):
+                    session_keyring('get', 'indeed/test-profile')
+                self.assertEqual(len(descendants), 1)
+                with suppress(ConnectionResetError):
+                    self.assertEqual(descendants[0].recv(1), b'')
+            finally:
+                for descendant in descendants:
+                    descendant.close()
+
 
 class OwnedWorkerBoundaryTest(unittest.TestCase):
     def test_control_pipe_waiting_for_partial_message_keeps_supervisor_responsive(self):
