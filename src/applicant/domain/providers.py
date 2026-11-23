@@ -226,6 +226,7 @@ _add_session(
                     '[data-testid="identity-module"] button[data-testid="identity-toggle-trigger"]',
                     '[data-testid="left-rail-my-bowls"]',
                 ),
+                ('button:text-is("Sign in"), a:text-is("Sign in")',),
                 region='co.in',
             ),
             VerificationTarget(
@@ -295,6 +296,7 @@ _add_session(
             VerificationTarget(
                 'https://www.ambitionbox.com/',
                 ('button[data-testid="userProfile"]', 'button[data-testid="inboxBell"]'),
+                ('button:text-is("Login")',),
             ),
         ),
         ('ambitionbox.com',),

@@ -73,3 +73,32 @@ def test_session_cli_distinguishes_verification_outcomes(status, code):
 
     assert output_result({'provider': 'naukri', **status}) == code
     assert exit_code_for(Blocked('challenge')) == 3
+
+
+@pytest.mark.parametrize(
+    'name', ['indeed', 'naukri', 'googlejobs', 'glassdoor', 'ambitionbox', 'levels']
+)
+def test_visible_signed_out_controls_establish_expiry(name):
+    policy = provider(name).session
+    assert policy is not None
+    target = policy.targets[0]
+    assert target.signed_out
+    factory = MagicMock()
+    session = factory.return_value.__enter__.return_value
+    page = session.start.return_value
+    page.url = target.url
+    page.title.return_value = 'Account'
+
+    def locator(selector):
+        control = MagicMock()
+        control.count.return_value = 0
+        control.first.is_visible.return_value = selector in {
+            f':is({s}):visible' for s in target.signed_out
+        }
+        return control
+
+    page.locator.side_effect = locator
+    assert _verify_detailed(name, None, factory=factory) == {
+        'status': 'needs_setup',
+        'reason': 'signed_out',
+    }
