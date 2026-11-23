@@ -41,3 +41,33 @@ class SessionStoreTest(unittest.TestCase):
             store.clear()
             self.assertIsNone(store.install(earlier, STATE, 'verified'))
             self.assertIsNone(store.credentials(store.snapshot()))
+
+    def test_pending_database_survives_reopen(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'storage_state.json'
+            store = SessionStore(path, 'indeed', mode='plaintext')
+            store.install(
+                store.snapshot(),
+                STATE,
+                'verified',
+                pending='recover',
+                metadata={'pending_database': 'selected.db'},
+            )
+
+            def busy(action, database):
+                self.assertEqual((action, database), ('recover', 'selected.db'))
+                return {'status': 'database_busy', 'retryable': True}
+
+            store.reconcile(busy)
+            reopened = SessionStore(path, 'indeed', mode='plaintext')
+            self.assertEqual(reopened.snapshot()['pending_database'], 'selected.db')
+            reopened.clear(database='other.db')
+            observed = []
+
+            def recovered(action, database):
+                observed.append((action, database))
+                return {'status': 'recovered'}
+
+            reopened.reconcile(recovered)
+            self.assertEqual(observed, [('clear', 'other.db')])
+            self.assertIsNone(reopened.snapshot()['pending'])

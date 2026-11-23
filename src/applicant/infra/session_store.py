@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import stat
 from contextlib import contextmanager
 from pathlib import Path
@@ -102,6 +103,9 @@ class SessionStore:
         with profile_lock(self.path.with_suffix('.lock')):
             for target in (self.path, self.path.with_suffix('.session-id.json')):
                 for pending in target.parent.glob(f'.{target.name}.*.tmp'):
+                    suffix = pending.name.removeprefix(f'.{target.name}.')
+                    if not re.fullmatch(r'[a-z0-9_]{8}\.tmp', suffix):
+                        continue
                     try:
                         info = pending.lstat()
                     except FileNotFoundError:
@@ -228,6 +232,10 @@ class SessionStore:
             if state is None or self.mode != 'encrypted' or 'ciphertext' in previous:
                 return previous, state
             if previous.get('format') != FORMAT:
+                from ..services.provider_setup import _scope_captured_state, validate_state
+
+                scoped = _scope_captured_state({'origins': [], **state}, self.provider)
+                state, _ = validate_state(scoped, self.provider)
                 record = self._new_record(previous, 'unverified')
             else:
                 record = {**previous, 'revision': previous['revision'] + 1}
@@ -246,7 +254,7 @@ class SessionStore:
             pending = record.get('pending')
             if not pending:
                 return record, {'status': 'unchanged'}
-            result = action(pending)
+            result = action(pending, record.get('pending_database'))
             if result['status'] not in (
                 'database_busy',
                 'database_error',
@@ -254,6 +262,7 @@ class SessionStore:
                 'leased',
             ):
                 record = {**record, 'pending': None, 'revision': record['revision'] + 1}
+                record.pop('pending_database', None)
                 self._write(record)
             return record, result
 
@@ -270,7 +279,7 @@ class SessionStore:
             self._write(record)
             return record
 
-    def clear(self):
+    def clear(self, *, database=None):
         with self.lock():
             previous = self.snapshot()
             record = (
@@ -282,6 +291,8 @@ class SessionStore:
                 not previous and self.path.with_suffix('.session-id.json').is_file()
             ):
                 record['delete_key'] = self.mode == 'encrypted' or 'ciphertext' in previous
+            if record.get('pending') and database is not None:
+                record.setdefault('pending_database', database)
             self._write(record)
             self._remove_old_metadata()
             if record.pop('delete_key', False):

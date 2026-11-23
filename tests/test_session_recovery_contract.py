@@ -51,7 +51,7 @@ class SessionRecoveryContractTest(unittest.TestCase):
                 clear_session(settings, 'glassdoor')
             calls = []
 
-            def reconcile(action):
+            def reconcile(action, _database):
                 calls.append(action)
                 return {'status': 'recovered'}
 

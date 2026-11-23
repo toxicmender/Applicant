@@ -52,13 +52,13 @@ def reconcile_session(settings, store, database, result):
 
     path = recovery_database(settings, database)
 
-    def action(pending):
+    def action(pending, saved_database):
         if path is None:
             return {'status': 'skipped_file_only'}
         policy = provider(store.provider).session
         if pending == 'expire' and policy is not None and policy.public_access:
             return {'status': 'credential_needs_setup'}
-        return recover_authentication(path, store.provider, action=pending)
+        return recover_authentication(saved_database or path, store.provider, action=pending)
 
     current, outcome = store.reconcile(action)
     if current.get('status') == 'cleared' and result['status'] != 'cleared':
@@ -550,7 +550,7 @@ def import_session(
     verifier=verify_state,
     database=None,
 ):
-    recovery_database(settings, database)
+    db = recovery_database(settings, database)
     store = provider_session(settings, name)
     name = store.provider
     source = Path(source)
@@ -576,7 +576,10 @@ def import_session(
             previous,
             state,
             result['status'],
-            metadata=_metadata(checked) if verify else None,
+            metadata={
+                **(_metadata(checked) if verify else {}),
+                **({'pending_database': str(db.resolve())} if db is not None and verify else {}),
+            },
             pending='recover' if verify else None,
         )
     )
@@ -588,7 +591,7 @@ def setup_provider(
 ):
     import sys
 
-    recovery_database(settings, database)
+    db = recovery_database(settings, database)
     store = provider_session(settings, name)
     name = store.provider
     if region in (None, 'auto'):
@@ -615,7 +618,16 @@ def setup_provider(
         'checked_at': now().isoformat(),
     }
     _check_install(
-        store.install(previous, state, 'verified', metadata=_metadata(checked), pending='recover')
+        store.install(
+            previous,
+            state,
+            'verified',
+            metadata={
+                **_metadata(checked),
+                **({'pending_database': str(db.resolve())} if db is not None else {}),
+            },
+            pending='recover',
+        )
     )
     return reconcile_session(settings, store, database, result)
 
@@ -623,7 +635,7 @@ def setup_provider(
 def session_status(
     settings, name, *, check=False, verifier=verify_state, database=None, show=False
 ):
-    recovery_database(settings, database)
+    db = recovery_database(settings, database)
     store = provider_session(settings, name)
     name = store.provider
     previous = store.snapshot()
@@ -675,7 +687,10 @@ def session_status(
                     previous,
                     state,
                     status,
-                    metadata={'checked_at': stamp},
+                    metadata={
+                        'checked_at': stamp,
+                        **({'pending_database': str(db.resolve())} if db is not None else {}),
+                    },
                     pending='recover' if status == 'verified' else 'expire',
                 )
             else:
@@ -688,6 +703,7 @@ def session_status(
                     pending='recover' if status == 'verified' else 'expire',
                     **(_metadata(checked) if status == 'verified' else {}),
                     **rotated,
+                    **({'pending_database': str(db.resolve())} if db is not None else {}),
                 )
             _check_install(saved)
     result = {'provider': name, 'status': status, 'network_checked': check}
@@ -695,9 +711,9 @@ def session_status(
 
 
 def clear_session(settings, name, *, database=None):
-    recovery_database(settings, database)
+    db = recovery_database(settings, database)
     store = provider_session(settings, name)
-    store.clear()
+    store.clear(database=str(db.resolve()) if db is not None else None)
     return reconcile_session(
         settings,
         store,
