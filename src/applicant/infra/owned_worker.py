@@ -247,6 +247,7 @@ def run_worker(
     check=None,
     progress=None,
     timeout: float | None = 60,
+    timeout_after_start: bool = False,
     grace: float = 5,
     monotonic=time.monotonic,
     provider: str = 'unknown',
@@ -270,7 +271,7 @@ def run_worker(
     child.close()
     job = None
     pipe = None
-    deadline = None if timeout is None else monotonic() + timeout
+    deadline = None if timeout is None or timeout_after_start else monotonic() + timeout
     group_ready = False
     emitted = dropped = discarded = None
     received = 0
@@ -288,6 +289,8 @@ def run_worker(
         group_ready = os.name != 'nt'
         if os.name == 'nt':
             job = WindowsJob(pid)
+        if timeout_after_start and timeout is not None:
+            deadline = monotonic() + timeout
         pipe.send(arguments)
         while True:
             received += _drain_diagnostics(diagnostics)

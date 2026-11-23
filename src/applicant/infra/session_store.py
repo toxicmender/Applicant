@@ -54,7 +54,9 @@ def _keyring_worker(connection, arguments):
 
 def session_keyring(action, account, value=None):
     try:
-        return run_worker(_keyring_worker, (action, account, value), timeout=3)
+        return run_worker(
+            _keyring_worker, (action, account, value), timeout=3, timeout_after_start=True
+        )
     except CleanupUnconfirmed:
         raise
     except WorkerFailure:
