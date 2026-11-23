@@ -8,7 +8,7 @@ import httpx
 
 from ..errors import NotFound, SourceError, Unparseable
 from ..infra.http import HEADERS, HttpClient
-from ..infra.session_access import active_access
+from ..infra.session_access import SessionExpired, active_access
 from ..infra.session_store import SessionStore
 from .models import CompanyRating, Review
 
@@ -165,6 +165,8 @@ class AmbitionBoxClient:
         while len(rating.reviews) < wanted and page <= total_pages and build_id:
             try:
                 page_props, build_id = self._fetch_page(slug, build_id, page)
+            except SessionExpired:
+                raise
             # a later page failing costs only the reviews still to come: the
             # rating and the reviews already read are kept
             except (SourceError, httpx.HTTPError, ValueError) as error:

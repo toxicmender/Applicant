@@ -172,7 +172,12 @@ def run_with_session(store, operation, *, public):
     access = SessionAccess(store, record, state)
     token = active_access.set(access)
     try:
-        return operation(), {'access_mode': 'authenticated'}
+        result = operation()
+        return result, {
+            'access_mode': 'authenticated',
+            'profile_id': record.get('profile_id'),
+            'generation': record.get('generation'),
+        }
     except SessionExpired:
         updated = store.update(access.record, status='needs_setup', pending='expire')
         if updated is None:
