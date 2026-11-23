@@ -683,12 +683,15 @@ def session_status(
                 }
             stamp = now().isoformat()
             if previous.get('format') != FORMAT:
+                rotated = (
+                    validate_state(checked['state'], name)[0] if status == 'verified' else state
+                )
                 saved = store.install(
                     previous,
-                    state,
+                    rotated,
                     status,
                     metadata={
-                        'checked_at': stamp,
+                        **(_metadata(checked) if status == 'verified' else {'checked_at': stamp}),
                         **({'pending_database': str(db.resolve())} if db is not None else {}),
                     },
                     pending='recover' if status == 'verified' else 'expire',

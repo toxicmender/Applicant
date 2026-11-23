@@ -9,8 +9,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
-from cryptography.fernet import Fernet, InvalidToken
-
 from ..errors import ApplicantError, ConfigError, ProfileBusy
 from ..files import document_bytes, write_document_bytes
 from ..permissions import make_private_directory
@@ -149,6 +147,8 @@ class SessionStore:
             return record
         if 'ciphertext' not in record:
             return record.get('state')
+        from cryptography.fernet import Fernet, InvalidToken
+
         key = self.keyring('get', self._account(record))
         if key is None:
             raise SessionIntegrityError('session encryption key is missing')
@@ -195,6 +195,8 @@ class SessionStore:
 
     def _protect(self, record, state, *, encrypted):
         if encrypted:
+            from cryptography.fernet import Fernet
+
             account = self._account(record)
             key = self.keyring('set', account, Fernet.generate_key().decode('ascii'))
             record['ciphertext'] = (

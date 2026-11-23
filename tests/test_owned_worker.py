@@ -9,6 +9,7 @@ import sys
 import unittest
 from contextlib import suppress
 from threading import Event
+from time import monotonic
 from unittest.mock import Mock, patch
 
 from playwright.sync_api import Error
@@ -337,6 +338,14 @@ class OwnedWorkerTest(unittest.TestCase):
                 with descendant.makefile('rb') as stream:
                     self.assertEqual(stream.read(5), b'ready')
 
+            modeled_timeout = iter((0.0, 4.0))
+            startup_limit = monotonic() + 30
+
+            def test_clock():
+                if descendants:
+                    return next(modeled_timeout, 4.0)
+                return 4.0 if monotonic() >= startup_limit else 0.0
+
             def worker(_function, _arguments, *, timeout):
                 self.assertEqual(timeout, 3)
                 return run_worker(
@@ -346,6 +355,7 @@ class OwnedWorkerTest(unittest.TestCase):
                     grace=1.0,
                     interactive=True,
                     pause=ready,
+                    monotonic=test_clock,
                 )
 
             try:
