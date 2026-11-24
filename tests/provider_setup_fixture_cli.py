@@ -28,9 +28,11 @@ def fixture_cli(name, scenario, args):
 
     harness = RealBrowserTest()
     harness.setUp()
+    phases = []
     try:
 
         def check(name, state, *, interactive=False, **options):
+            phases.append('capture' if interactive else 'restore')
             markup = (FIXTURES / f'{name}.html').read_text(encoding='utf-8')
             if scenario == 'missing':
                 markup = '<button data-testid="userProfile">Profile</button>'
@@ -78,7 +80,12 @@ def fixture_cli(name, scenario, args):
             patch('sys.stdin.isatty', return_value=True),
             patch('applicant.services.provider_setup._check_browser', side_effect=check),
         ):
-            return main(args)
+            code = main(args)
+            if scenario == 'signed-in':
+                assert phases == ['capture', 'restore'], (
+                    f'{name} setup: expected separate capture and fresh-context verification'
+                )
+            return code
     finally:
         harness.doCleanups()
 

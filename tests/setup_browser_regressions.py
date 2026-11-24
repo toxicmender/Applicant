@@ -12,6 +12,27 @@ from tests.provider_setup_fixture_cli import COOKIE_VALUE, PAGE_TEXT, QUERY_VALU
 
 
 class SetupFailureBrowserTest(RealBrowserTest):
+    def test_absent_health_db_preserves_successful_live_setup(self):
+        for name in ('naukri', 'googlejobs', 'levels'):
+            with self.subTest(provider=name):
+                database = self.folder / f'{name}-health.db'
+                result = self.cli(
+                    name, 'signed-in', ['provider', name, '--database', str(database)], 0
+                )
+                assert result['status'] == 'verified', (
+                    f'{name} setup: fresh-context restoration did not verify'
+                )
+                assert result['health_recovery']['status'] == 'skipped_missing_database', (
+                    f'{name} recovery: expected a successful setup with the optional health database absent'
+                )
+                status = self.cli(name, 'no-worker', ['status', '--provider', name], 0)
+                assert status['status'] == 'verified' and status['network_checked'] is False, (
+                    f'{name} status: a separate offline process could not read the verified session'
+                )
+                assert not database.exists(), (
+                    f'{name} recovery: setup created an unused health database'
+                )
+
     def test_ambitionbox_reports_individual_control_visibility(self):
         profile = '<button data-testid="userProfile">Profile</button>'
         hidden = profile.replace('<button', '<button hidden')
