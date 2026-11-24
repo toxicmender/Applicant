@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 from ..domain.canonical import content_hash
 from ..domain.contracts import now
 from ..domain.providers import provider
-from ..errors import AuthFailed, ConfigError, ProfileBusy
+from ..errors import AuthFailed, ConfigError, CookieSchemaError, ProfileBusy
 from ..infra.browser import BrowserSession, looks_blocked
 from ..infra.browser_diagnostics import event, safe_origin, stage
 from ..infra.owned_worker import CleanupUnconfirmed, WorkerFailure
@@ -120,7 +120,7 @@ def _scope_captured_state(value, name: str):
     return {**value, 'cookies': scoped_cookies, 'origins': scoped_origins}
 
 
-def validate_state(value, name, format='playwright'):
+def validate_state(value, name, format='playwright', *, stage='storage'):
     domains = _provider_domains(name)
 
     warnings = []
@@ -136,7 +136,10 @@ def validate_state(value, name, format='playwright'):
         raise ConfigError('storage state requires cookies and origins arrays')
     normalized = []
     for cookie in cookies:
-        if not isinstance(cookie, dict) or set(cookie) - {
+        context = f'{name} {stage} validation'
+        if not isinstance(cookie, dict):
+            raise CookieSchemaError(f'{context}: expected a cookie object')
+        unknown = set(cookie) - {
             'name',
             'value',
             'domain',
@@ -145,8 +148,23 @@ def validate_state(value, name, format='playwright'):
             'httpOnly',
             'secure',
             'sameSite',
-        }:
-            raise ConfigError('unsupported cookie fields')
+            'partitionKey',
+            '_crHasCrossSiteAncestor',
+        }
+        if unknown:
+            raise CookieSchemaError(f'{context}: {len(unknown)} unsupported cookie field(s)')
+        if 'partitionKey' in cookie:
+            key = cookie['partitionKey']
+            if (
+                not isinstance(key, str)
+                or not key.startswith(('https://', 'http://'))
+                or safe_origin(key) != key
+            ):
+                raise CookieSchemaError(f'{context}: invalid partitionKey')
+        if '_crHasCrossSiteAncestor' in cookie and (
+            type(cookie['_crHasCrossSiteAncestor']) is not bool or 'partitionKey' not in cookie
+        ):
+            raise CookieSchemaError(f'{context}: invalid _crHasCrossSiteAncestor')
         if (
             not all(isinstance(cookie.get(k), str) for k in ('name', 'value', 'domain', 'path'))
             or not cookie['name']
@@ -522,7 +540,7 @@ def _run_verifier(verifier, name, state, *, interactive=False, restore=False, **
         )
     checked = _check_browser(name, state, interactive=interactive, **options)
     if restore and checked['status'] == 'verified':
-        captured, _ = validate_state(checked['state'], name)
+        captured, _ = validate_state(checked['state'], name, stage='capture')
         checked = _check_browser(
             name,
             captured,
@@ -587,7 +605,7 @@ def import_session(
         raise ConfigError('import source is the managed session file')
     if source.stat().st_size > 2_000_000:
         raise ConfigError('session file exceeds 2 MB')
-    state, warnings = validate_state(read_ranking_document(source), name, format)
+    state, warnings = validate_state(read_ranking_document(source), name, format, stage='import')
     result = {'provider': name, 'status': 'unverified', 'warnings': warnings}
     if dry_run:
         return {**result, 'dry_run': True}
@@ -598,7 +616,7 @@ def import_session(
         checked = _run_verifier(verifier, name, state, restore=True)
         if checked['status'] != 'verified':
             return {**result, **_result(name, checked)}
-        state, _ = validate_state(checked['state'], name)
+        state, _ = validate_state(checked['state'], name, stage='restore')
         result['status'] = 'verified'
     _check_install(
         store.install(
@@ -639,7 +657,7 @@ def setup_provider(
     checked = _run_verifier(verifier, name, None, interactive=True, restore=True, region=region)
     if checked['status'] != 'verified':
         return _result(name, checked)
-    state, warnings = validate_state(checked['state'], name)
+    state, warnings = validate_state(checked['state'], name, stage='restore')
     result = {
         'provider': name,
         'status': 'verified',

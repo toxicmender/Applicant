@@ -25,6 +25,9 @@ def seed_cookie_jar(jar, state, *, clock=time):
     jar.set_policy(DefaultCookiePolicy(strict_ns_domain=DefaultCookiePolicy.DomainStrictNonDomain))
     cutoff = clock() + 30
     for cookie in state['cookies']:
+        # CookieJar has no top-level site context for partitioned cookies.
+        if 'partitionKey' in cookie:
+            continue
         expiry = cookie.get('expires', -1)
         if expiry != -1 and expiry <= cutoff:
             continue
@@ -63,8 +66,10 @@ def apply_cookie_scope(request, jar):
 
 def cookie_state(jar, state, *, clock=time):
     cutoff = clock() + 30
-    previous = {(c['name'], c['domain'], c['path']): c for c in state['cookies']}
-    cookies = []
+    previous = {
+        (c['name'], c['domain'], c['path']): c for c in state['cookies'] if 'partitionKey' not in c
+    }
+    cookies = [c for c in state['cookies'] if 'partitionKey' in c]
     for cookie in jar:
         domain = cookie.domain if cookie.domain_specified else cookie.domain.lstrip('.')
         if cookie.domain_specified and not domain.startswith('.'):

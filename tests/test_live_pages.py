@@ -223,6 +223,70 @@ AUTH_FIXTURES = Path(__file__).parent / 'fixtures' / 'provider_auth'
 
 
 class ProviderVerificationBrowserTest(RealBrowserTest):
+    def test_partition_metadata_survives_encrypted_restore(self):
+        from applicant.errors import ConfigError
+        from applicant.infra.session_store import SessionStore
+        from applicant.services.provider_setup import validate_state
+
+        keys = {}
+
+        def keyring(action, account, value=None):
+            if action == 'set':
+                keys.setdefault(account, value)
+            return keys.get(account)
+
+        for name, host, site in (
+            ('indeed', 'in.indeed.com', 'https://indeed.com'),
+            ('glassdoor', 'www.glassdoor.co.in', 'https://glassdoor.co.in'),
+        ):
+            with self.subTest(provider=name):
+                with BrowserSession() as session:
+                    session.context.add_cookies(
+                        [
+                            {
+                                'name': 'account',
+                                'value': 'synthetic-cookie-canary',
+                                'domain': host,
+                                'path': '/',
+                                'secure': True,
+                                'sameSite': 'None',
+                                'partitionKey': site,
+                            }
+                        ]
+                    )
+                    exported = session.context.storage_state()
+
+                def metadata(state):
+                    return [
+                        (c.get('partitionKey'), c.get('_crHasCrossSiteAncestor'))
+                        for c in state['cookies']
+                    ]
+
+                expected = metadata(exported)
+                assert (
+                    len(expected) == 1 and expected[0][0] == site and type(expected[0][1]) is bool
+                ), f'{name} capture: Chromium did not export the expected partition metadata'
+                try:
+                    state, _ = validate_state(exported, name)
+                except ConfigError as error:
+                    self.fail(
+                        f'{name} capture validation: Chromium partition metadata rejected: {error}'
+                    )
+                path = self.folder / name / 'storage_state.json'
+                store = SessionStore(path, name, keyring=keyring)
+                store.install({}, state, 'verified')
+                sealed = 'ciphertext' in store.snapshot()
+                assert sealed, f'{name} persistence: expected an encrypted session'
+                saved = SessionStore(path, name, keyring=keyring).active()
+                assert saved is not None and metadata(saved) == expected, (
+                    f'{name} persistence: encrypted round trip changed partition metadata'
+                )
+                with BrowserSession(storage_state=saved) as restored:
+                    actual = metadata(restored.context.storage_state())
+                assert actual == expected, (
+                    f'{name} restore: fresh Chromium context lost partition metadata'
+                )
+
     def test_signed_in_fixtures_and_hidden_guest_controls(self):
         def verify(name, fixture):
             markup = (AUTH_FIXTURES / f'{fixture}.html').read_text(encoding='utf-8')

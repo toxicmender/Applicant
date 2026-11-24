@@ -258,6 +258,11 @@ def main(argv: list[str] | None = None) -> int:
     # a store that cannot be written, a setting that does not hold: expected
     # failures with a message that says what to fix, not bugs to trace
     except ApplicantError as error:
+        from ..errors import CookieSchemaError
+
+        if isinstance(error, CookieSchemaError):
+            logger.error(f'{args.command}: {error}')
+            return 2
         if isinstance(error, (DatabaseBusy, ExportConflict, StorageFull)):
             from ..domain.canonical import canonical_json
 
