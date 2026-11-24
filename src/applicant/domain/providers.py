@@ -10,6 +10,7 @@ class VerificationTarget:
     markers: tuple[str, ...]
     signed_out: tuple[str, ...] = ()
     region: str | None = None
+    control_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -299,6 +300,7 @@ _add_session(
                 'https://www.ambitionbox.com/',
                 ('button[data-testid="userProfile"]', 'button[data-testid="inboxBell"]'),
                 ('button:text-is("Login")',),
+                control_names=('profile', 'inbox'),
             ),
         ),
         ('ambitionbox.com',),

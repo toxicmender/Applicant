@@ -18,6 +18,7 @@ from ..infra.path_identity import physical_path
 from ..infra.ranking_documents import read_ranking_document
 from ..infra.session_store import FORMAT, SessionStore
 from ..interaction import Terminal
+from ..log import get
 from ..settings import Settings
 
 COOKIE_WARNING = (
@@ -499,9 +500,23 @@ def _inspect_verification(name, session, page, targets):
             if any(_visible(page, s) for s in current.signed_out):
                 return {'status': 'needs_setup', 'reason': 'signed_out'}
         if monotonic() >= deadline:
+            if current:
+                controls = {}
+                for index, selector in enumerate(current.markers):
+                    label = current.control_names[index] if current.control_names else selector
+                    if _visible(page, selector):
+                        controls[label] = 'visible'
+                    else:
+                        controls[label] = 'hidden' if page.locator(selector).count() else 'absent'
+                return {
+                    'status': 'inconclusive',
+                    'reason': 'marker_missing',
+                    'route_matched': True,
+                    'controls': controls,
+                }
             return {
                 'status': 'inconclusive',
-                'reason': 'marker_missing' if current else 'unexpected_page',
+                'reason': 'unexpected_page',
             }
         page.wait_for_timeout(100)
 
@@ -539,6 +554,7 @@ def _run_verifier(verifier, name, state, *, interactive=False, restore=False, **
             else {'status': 'needs_setup'}
         )
     checked = _check_browser(name, state, interactive=interactive, **options)
+    phase = 'capture' if interactive else 'check'
     if restore and checked['status'] == 'verified':
         captured, _ = validate_state(checked['state'], name, stage='capture')
         checked = _check_browser(
@@ -549,15 +565,26 @@ def _run_verifier(verifier, name, state, *, interactive=False, restore=False, **
             capture=checked.get('capture'),
             origin=checked.get('origin'),
         )
+        phase = 'restore'
+    if checked['status'] == 'inconclusive':
+        checked = {**checked, 'stage': phase}
     return checked
 
 
-def _result(name, checked):
+def _result(name, checked, *, saved=True):
     result = {'provider': name, 'status': checked['status']}
     if reason := checked.get('reason'):
         result['reason'] = reason
     if checked['status'] == 'inconclusive':
-        result['command'] = f'applicant setup status --provider {name} --check --show'
+        result.update(
+            {key: checked[key] for key in ('stage', 'route_matched', 'controls') if key in checked}
+        )
+        result['command'] = (
+            f'applicant setup status --provider {name} --check --show'
+            if saved
+            else f'applicant setup provider {name}'
+        )
+        get(__name__).debug('%s verification: %s', name, result)
     return result
 
 
@@ -615,7 +642,12 @@ def import_session(
     if verify:
         checked = _run_verifier(verifier, name, state, restore=True)
         if checked['status'] != 'verified':
-            return {**result, **_result(name, checked)}
+            return {
+                **result,
+                **_result(
+                    name, checked, saved=bool(previous and previous.get('status') != 'cleared')
+                ),
+            }
         state, _ = validate_state(checked['state'], name, stage='restore')
         result['status'] = 'verified'
     _check_install(
@@ -656,7 +688,7 @@ def setup_provider(
         raise ConfigError('session exists; use status --check or provider --reauth')
     checked = _run_verifier(verifier, name, None, interactive=True, restore=True, region=region)
     if checked['status'] != 'verified':
-        return _result(name, checked)
+        return _result(name, checked, saved=bool(previous and previous.get('status') != 'cleared'))
     state, warnings = validate_state(checked['state'], name, stage='restore')
     result = {
         'provider': name,

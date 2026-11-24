@@ -195,10 +195,9 @@ def test_unrecognized_pages_cannot_expire_a_credential(destination, reason):
     page.locator.return_value.first.is_visible.return_value = False
     page.goto.side_effect = lambda *_args, **_opts: setattr(page, 'url', destination)
     with patch('applicant.services.provider_setup.monotonic', side_effect=[0, 2, 11]):
-        assert _verify_detailed('levels', None, factory=factory) == {
-            'status': 'inconclusive',
-            'reason': reason,
-        }
+        result = _verify_detailed('levels', None, factory=factory)
+        assert result['status'] == 'inconclusive'
+        assert result['reason'] == reason
     page.wait_for_timeout.assert_called_once_with(100)
 
 

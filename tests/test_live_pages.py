@@ -35,6 +35,7 @@ from applicant.infra.browser import BrowserSession
 from applicant.reviews import GlassdoorClient
 from applicant.services.provider_setup import _verify_detailed
 from tests.fakes import RealBrowserTest
+from tests.setup_browser_regressions import SetupFailureBrowserTest as SetupFailureBrowserTest
 
 PAGE = 200
 
