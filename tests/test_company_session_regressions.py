@@ -1,3 +1,4 @@
+import json
 import multiprocessing
 from unittest import mock
 
@@ -15,6 +16,7 @@ from applicant.services.company_evidence import (
     show_company_evidence,
 )
 from applicant.settings import Settings
+from tests.fakes import FakePage, Visit
 from tests.provider_company_worker import (
     glassdoor_fixture_body,
     glassdoor_fixture_worker,
@@ -172,3 +174,72 @@ def test_ambitionbox_evidence_export_never_uses_a_managed_account(tmp_path, publ
         raw = CompanyResponse.model_validate(responses[0])
         assert raw.body == public
         assert raw.body_sha256 == sha256(public).hexdigest()
+
+
+def test_legacy_plaintext_glassdoor_rotates_and_restarts_after_signout(tmp_path, monkeypatch):
+    from applicant.infra.browser import BrowserSession
+    from applicant.infra.session_access import run_with_session
+    from applicant.services.provider_setup import provider_session, session_status
+
+    settings = Settings(data_dir=tmp_path, session_storage='plaintext')
+    store = provider_session(settings, 'glassdoor')
+    legacy = {
+        'cookies': [
+            {'name': 'account', 'value': 'synthetic', 'domain': '.glassdoor.com', 'path': '/'}
+        ],
+        'origins': [],
+    }
+    store.path.parent.mkdir()
+    raw = json.dumps(legacy).encode()
+    store.path.write_bytes(raw)
+    assert session_status(settings, 'glassdoor')['status'] == 'unverified'
+    assert store.path.read_bytes() == raw
+
+    visits = []
+    locator = LOCATORS['glassdoor']
+
+    def start(session):
+        state = session.storage_state
+        private = state is not None
+        if private:
+            session._context = mock.Mock()
+            session._context.storage_state.return_value = {
+                'cookies': [{**state['cookies'][0], 'value': 'rotated'}],
+                'origins': [],
+            }
+
+        class Page(FakePage):
+            def goto(self, url, **options):
+                visits.append((private, url))
+                return super().goto(url, **options)
+
+        return Page(
+            [
+                (
+                    r'E42_P2\.htm$',
+                    Visit(
+                        status=200 if private else 404,
+                        redirect='https://www.glassdoor.com/profile/login_input.htm'
+                        if private
+                        else None,
+                    ),
+                ),
+                (r'E42\.htm$', Visit(html=glassdoor_fixture_body(private))),
+            ]
+        )
+
+    monkeypatch.setattr(BrowserSession, 'start', start)
+    rating, access = run_with_session(
+        store, lambda: GlassdoorClient().fetch(locator, 1), public=True
+    )
+    assert rating.company_id == '42'
+    assert access['access_mode'] == 'public'
+    assert visits[:3] == [
+        (True, locator),
+        (True, locator.replace('.htm', '_P2.htm')),
+        (False, locator),
+    ]
+    current = store.snapshot()
+    assert current['status'] == 'needs_setup' and current['generation'] == 1
+    active = store.active()
+    assert active is not None and active['cookies'][0]['value'] == 'rotated'

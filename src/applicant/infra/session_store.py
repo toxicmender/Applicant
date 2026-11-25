@@ -233,17 +233,20 @@ class SessionStore:
         with self.lock():
             previous = self.snapshot()
             state = self.credentials(previous)
-            if state is None or self.mode != 'encrypted' or 'ciphertext' in previous:
+            if state is None:
                 return previous, state
+            encrypted = self.mode == 'encrypted'
             if previous.get('format') != FORMAT:
                 from ..services.provider_setup import _scope_captured_state, validate_state
 
                 scoped = _scope_captured_state({'origins': [], **state}, self.provider)
                 state, _ = validate_state(scoped, self.provider)
                 record = self._new_record(previous, 'unverified')
-            else:
+            elif encrypted and 'ciphertext' not in previous:
                 record = {**previous, 'revision': previous['revision'] + 1}
-            self._protect(record, state, encrypted=True)
+            else:
+                return previous, state
+            self._protect(record, state, encrypted=encrypted)
             self._write(record)
             self._remove_old_metadata()
             return record, state
