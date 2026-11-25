@@ -45,10 +45,12 @@ def identity_key(observation):
     )
 
 
-def match_jobs(observations):
+def match_jobs(observations, *, evidence=()):
     groups = defaultdict(list)
     # One latest version per posting, with deterministic ties.
     latest = {}
+    known_requisitions = defaultdict(dict)
+    observations = tuple(observations)
     for observation in observations:
         key = (observation.job.source, observation.job.id or observation.source_url)
         if key not in latest or (observation.acquired_at, observation.job_version_id) > (
@@ -56,8 +58,36 @@ def match_jobs(observations):
             latest[key].job_version_id,
         ):
             latest[key] = observation
-    for observation in latest.values():
-        groups[identity_key(observation)].append(observation)
+    for observation in (*observations, *evidence):
+        key = (observation.job.source, observation.job.id or observation.source_url)
+        if key not in latest:
+            continue
+        identity = identity_key(observation)
+        if not identity.startswith('board:'):
+            exact = (*key, requisition_url(observation.source_url))
+            previous = known_requisitions[exact].get(identity)
+            if previous is None or (observation.acquired_at, observation.job_version_id) > (
+                previous.acquired_at,
+                previous.job_version_id,
+            ):
+                known_requisitions[exact][identity] = observation
+    inherited = {}
+    for key, observation in latest.items():
+        identity = identity_key(observation)
+        exact = (*key, requisition_url(observation.source_url))
+        known = known_requisitions.get(exact, {})
+        if identity.startswith('board:') and len(known) == 1:
+            confirmed_identity, evidence = next(iter(known.items()))
+            if (
+                not observation.employer_entity_id
+                or observation.employer_entity_id == evidence.employer_entity_id
+            ) and (
+                not observation.employer_requisition_id
+                or observation.employer_requisition_id == evidence.employer_requisition_id
+            ):
+                identity = confirmed_identity
+                inherited[observation.job_version_id] = evidence.job_version_id
+        groups[identity].append(observation)
     output = []
     for identity, values in sorted(groups.items()):
         values.sort(key=lambda x: (x.job.source, x.job_version_id))
@@ -97,6 +127,13 @@ def match_jobs(observations):
                 'possible_match_groups': [],
             }
         )
+        lineage = {
+            x.job_version_id: inherited[x.job_version_id]
+            for x in values
+            if x.job_version_id in inherited
+        }
+        if lineage:
+            output[-1]['identity_evidence_ids'] = lineage
     for i, group in enumerate(output):
         sample = groups[group['identity_basis']][0]
         signature = tuple(

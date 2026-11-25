@@ -5,6 +5,7 @@ import pytest
 
 from applicant.boards.public import PublicBoard
 from applicant.errors import Unparseable
+from applicant.services.research_feed import collect_feed
 
 
 def posting(identifier, title):
@@ -70,3 +71,25 @@ def test_off_origin_candidate_cannot_abort_valid_discovery():
     with httpx.Client(transport=httpx.MockTransport(respond)) as http:
         jobs = PublicBoard('wellfound', client=http).search('Engineer', limit=1)
     assert [job.id for job in jobs] == ['2']
+
+
+def test_instahyre_block_is_persisted_for_next_acquisition(tmp_path):
+    requests = []
+
+    def respond(request):
+        requests.append(request.url.host)
+        return httpx.Response(403, text='Access denied')
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+
+        def factory(name, **kwargs):
+            return PublicBoard(name, client=http)
+
+        path = tmp_path / 'health.db'
+        query = {'providers': ['instahyre']}
+        first = collect_feed(path, query, factory=factory)
+        second = collect_feed(path, query, factory=factory)
+    assert first['outcomes'][0]['status'] == 'blocked'
+    assert second['outcomes'][0]['status'] == 'cooldown'
+    assert first['outcomes'][0]['eligible_at'] == second['outcomes'][0]['eligible_at']
+    assert requests == ['www.instahyre.com']

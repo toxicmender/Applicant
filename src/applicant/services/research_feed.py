@@ -7,12 +7,14 @@ from ..domain.contracts import now
 from ..domain.providers import provider
 from ..domain.research import ListingObservation, ResearchImport, posting_languages
 from ..domain.research_identity import match_jobs
+from ..domain.source_operations import eligible_route
 from ..errors import AuthFailed, Blocked, SourceError, Unparseable
 from ..infra.board_worker import OwnedBoard
 from ..infra.owned_worker import CleanupUnconfirmed, WorkerFailure
 from ..infra.provider_registry import board_client
 from .provider_health import Acquisition, LeaseFailure
 from .research import import_research, read_research, save_snapshot
+from .source_operations import operations
 
 
 def observations_from(client, jobs, stamp, name):
@@ -96,7 +98,40 @@ def collect_feed(
                 }
             )
             continue
-        with Acquisition(database, name, clock=clock, probe=probe, route=selected_route) as owner:
+        active_route = selected_route
+        managed = use_session
+        if active_route is None and factory is board_client:
+            key = 'job_detail' if query.get('urls', {}).get(name) else 'job_search'
+            configured = operations(provider(name)).get(key)
+            if configured is None:
+                outcomes.append({'provider': name, 'status': 'route_unavailable'})
+                continue
+            routes = configured.routes
+            if any(route.credential_kind == 'browser_session' for route in routes):
+                from .provider_setup import provider_session
+
+                record = (
+                    provider_session(settings, name).snapshot() if settings and use_session else {}
+                )
+                managed = bool(record) and record.get('status') not in ('cleared', 'needs_setup')
+                if not managed:
+                    routes = tuple(
+                        route for route in routes if route.credential_kind != 'browser_session'
+                    )
+            chosen, exclusions = eligible_route(
+                configured.model_copy(update={'routes': routes}), 'persist'
+            )
+            if chosen is None:
+                outcomes.append(
+                    {
+                        'provider': name,
+                        'status': next(iter(exclusions.values()), 'route_unavailable'),
+                        'command': 'applicant research import --from-file evidence.json',
+                    }
+                )
+                continue
+            active_route = (key, chosen.id, chosen.adapter_revision)
+        with Acquisition(database, name, clock=clock, probe=probe, route=active_route) as owner:
             lease = owner.result
             if lease['status'] != 'acquired':
                 outcomes.append({'provider': name, **lease})
@@ -106,7 +141,7 @@ def collect_feed(
             status, error, retry_at = 'success', None, None
             try:
                 client = (
-                    OwnedBoard(name, owner.check, settings=settings if use_session else None)
+                    OwnedBoard(name, owner.check, settings=settings if managed else None)
                     if factory is board_client
                     else factory(name, headless=True)
                 )
@@ -216,7 +251,9 @@ def collect_feed(
         'parent_snapshot_id': parent,
         'observations': [x.model_dump(mode='json') for x in acquired],
         'job_version_ids': [x.job_version_id for x in acquired],
-        'groups': match_jobs(acquired),
+        'groups': match_jobs(
+            acquired, evidence=read_research(database)['observations'] if acquired else ()
+        ),
         'outcomes': outcomes,
     }
     return save_snapshot(database, value)

@@ -10,6 +10,7 @@ from ..domain.language import singleton
 from ..domain.ranking import Evidence, JobVersion
 from ..domain.ranking_inputs import JobVersionBundle
 from ..domain.research import ListingObservation, parse_import
+from ..errors import DatabaseBusy, sqlite_busy
 from ..infra.store.research import RECORDS, ResearchRepository
 from ..infra.store.sqlite import Store
 
@@ -40,11 +41,18 @@ def import_research(database, bundle, *, dry_run=False):
         finally:
             db.close()
     else:
-        with Store(database) as store, store.db:
-            store.db.execute('BEGIN IMMEDIATE')
-            repo = ResearchRepository(store.db)
-            count = repo.import_bundle(bundle)
-            members = repo.resolved_members(bundle)
+        try:
+            with Store(database) as store, store.db:
+                store.db.execute('BEGIN IMMEDIATE')
+                repo = ResearchRepository(store.db)
+                count = repo.import_bundle(bundle)
+                members = repo.resolved_members(bundle)
+        except sqlite3.Error as error:
+            if sqlite_busy(error):
+                raise DatabaseBusy(
+                    'research publication busy; retry after the writer finishes'
+                ) from error
+            raise
     return {
         'kind': 'research_import_result',
         'inserted': count,
