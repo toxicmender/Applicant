@@ -100,12 +100,12 @@ def company_session(provider, client):
 def fetch_company(provider, client, company, limit, *, state=_UNSET, check=None, capture=None):
     completed = []
 
-    def received(result):
-        value, responses = result
+    def accepted():
+        value, responses = completed[-1]
         if capture is not None:
             for response in responses:
                 capture(response.source_url, response.body, response.representation)
-        completed.append(value)
+        return value
 
     managed = getattr(client, 'session_store', None)
     use_managed = managed is not None and managed.path.is_file()
@@ -138,19 +138,19 @@ def fetch_company(provider, client, company, limit, *, state=_UNSET, check=None,
             outcome = run_worker(
                 _fetch,
                 request,
-                progress=received,
+                progress=completed.append,
                 provider=provider,
                 check=check,
                 timeout=180,
             )
     except KeyboardInterrupt as error:
         if completed:
-            raise CompanyFetchInterrupted(completed[-1]) from error
+            raise CompanyFetchInterrupted(accepted()) from error
         raise
     except WorkerFailure:
         if not completed:
             raise
-        return completed[-1]
+        return accepted()
     if managed is not None:
         client.access = outcome.get('access', {'access_mode': 'public'})
         if client.access.get('reason') == 'session_expired':
@@ -169,4 +169,4 @@ def fetch_company(provider, client, company, limit, *, state=_UNSET, check=None,
         raise kind(f'{provider}: acquisition failed')
     if not completed:
         raise Unparseable(f'{provider}: browser returned no completed observation')
-    return completed[-1]
+    return accepted()

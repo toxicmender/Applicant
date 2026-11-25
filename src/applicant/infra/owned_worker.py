@@ -15,7 +15,7 @@ from queue import Empty, Queue
 from threading import Thread
 from typing import Any
 
-from ..errors import ProfileBusy, SourceError
+from ..errors import ApplicantError, ProfileBusy, SourceError
 from .browser_diagnostics import QUEUE_SIZE, WorkerDiagnostics, active_diagnostics, failure_details
 from .interrupts import defer_interrupt
 
@@ -34,7 +34,7 @@ class WorkerTeardownTimeout(WorkerFailure):
     """The browser or worker failed to exit within its cleanup allowance."""
 
 
-class CleanupUnconfirmed(WorkerFailure):
+class CleanupUnconfirmed(ApplicantError):
     cleanup_unconfirmed = True
 
 
@@ -372,6 +372,13 @@ def run_worker(
                             'browser worker error provider=%s pid=%s %s', provider, pid, result
                         )
                         if (
+                            result['exception_module'] == CleanupUnconfirmed.__module__
+                            and result['exception_class'] == CleanupUnconfirmed.__name__
+                        ):
+                            failure = CleanupUnconfirmed(
+                                'owned worker cleanup could not be confirmed'
+                            )
+                        elif (
                             result['exception_module'] == ProfileBusy.__module__
                             and result['exception_class'] == ProfileBusy.__name__
                         ):

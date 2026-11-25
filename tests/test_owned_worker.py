@@ -16,7 +16,7 @@ from playwright.sync_api import Error
 
 from applicant.errors import ProfileBusy
 from applicant.infra.browser_diagnostics import QUEUE_SIZE, event, stage
-from applicant.infra.owned_worker import WorkerFailure, _ControlPipe, run_worker
+from applicant.infra.owned_worker import CleanupUnconfirmed, WorkerFailure, _ControlPipe, run_worker
 
 
 def echo(connection, arguments):
@@ -48,6 +48,10 @@ def hanging(connection, arguments):
 
 def profile_busy(connection, arguments):
     raise ProfileBusy('private detail')
+
+
+def unconfirmed_cleanup(connection, arguments):
+    raise CleanupUnconfirmed('private detail')
 
 
 def failing(connection, arguments):
@@ -215,6 +219,10 @@ class OwnedWorkerTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(WorkerFailure, 'preparation'):
             run_worker(slow_keyring_import, 30, timeout=3, preparation_timeout=0.3)
+
+    def test_cleanup_failure_survives_worker_boundary(self):
+        with self.assertRaisesRegex(CleanupUnconfirmed, 'owned worker cleanup'):
+            run_worker(unconfirmed_cleanup, None)
 
     def test_private_roundtrip(self):
         self.assertEqual(run_worker(echo, {'synthetic': 'state'}), {'synthetic': 'state'})

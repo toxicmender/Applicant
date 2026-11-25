@@ -107,6 +107,89 @@ def test_glassdoor_managed_profile_can_capture_anonymous_regional_evidence(tmp_p
         )
 
 
+def test_unconfirmed_cleanup_discards_review_and_evidence(tmp_path, monkeypatch, capsys):
+    from applicant.cli import main
+    from applicant.infra.owned_worker import CleanupUnconfirmed, run_worker
+    from applicant.services.company_cache import CompanyCache
+
+    def fail_after_progress(_target, args, *, progress, **kwargs):
+        run_worker(glassdoor_fixture_worker, (*args, 200), progress=progress, **kwargs)
+        raise CleanupUnconfirmed('synthetic cleanup failure')
+
+    output = tmp_path / 'ratings.json'
+    output.write_text('{"previous": true}', encoding='utf-8')
+    db = tmp_path / 'company.db'
+    job = version('company')
+    associated = association(job)
+    with Store(db) as store, write_transaction(store.db):
+        JobVersionRepository(store.db).put(job)
+    import_company_evidence(db, CompanyEvidenceImport(associations=(associated,)))
+    sibling = AmbitionBoxClient(
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, text=next_data_html(PAGE_PROPS))
+            )
+        ),
+        delay=0,
+    )
+    reviews = GlassdoorClient(profile_dir=None)
+    reviews.owned = True
+    monkeypatch.setattr(
+        'applicant.cli.reviews.clients',
+        lambda *args: {'ambitionbox': sibling, 'glassdoor': reviews},
+    )
+    monkeypatch.setattr('applicant.infra.company_worker.run_worker', fail_after_progress)
+
+    code = main(
+        [
+            '--store',
+            'files',
+            'reviews',
+            LOCATORS['glassdoor'],
+            '--source',
+            'both',
+            '--max-reviews',
+            '0',
+            '--output',
+            str(output),
+            '--refresh',
+            '--log-file',
+            str(tmp_path / 'run.log'),
+        ]
+    )
+    assert code == 1
+    streams = capsys.readouterr()
+    assert 'synthetic cleanup failure' in streams.err
+    assert 'written to' not in streams.out
+    assert output.read_text(encoding='utf-8') == '{"previous": true}'
+    assert not CompanyCache(str(output)).path.exists()
+
+    assert 'glassdoor: Acme' not in streams.out
+
+    export = tmp_path / 'capture.json'
+    code = main(
+        [
+            'company-evidence',
+            'capture',
+            '--association',
+            associated.association_id,
+            '--database',
+            str(db),
+            '--export',
+            str(export),
+            '--log-file',
+            str(tmp_path / 'run.log'),
+        ]
+    )
+    assert code == 1
+    assert 'synthetic cleanup failure' in capsys.readouterr().err
+    assert not export.exists()
+    with Store.open_readonly(db) as store:
+        assert store.db.execute('SELECT count(*) FROM company_evidence_snapshots').fetchone() == (
+            0,
+        )
+
+
 @pytest.mark.parametrize(
     'host, employer', [('glassdoor.co.in.evil.test', '42'), ('glassdoor.co.in', '43')]
 )

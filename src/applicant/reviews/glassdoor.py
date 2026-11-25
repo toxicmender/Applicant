@@ -6,7 +6,7 @@ from contextlib import suppress
 from urllib.parse import urlsplit
 
 from ..domain.providers import GLASSDOOR_REGIONS
-from ..errors import Blocked, ConfigError, SourceError, Unparseable
+from ..errors import ApplicantError, Blocked, ConfigError, SourceError, Unparseable
 from ..infra.browser import BrowserSession, browser, looks_blocked
 from ..infra.session_access import active_access
 from ..infra.session_store import SessionStore
@@ -105,7 +105,7 @@ class GlassdoorClient:
                 )
             else:
                 rating = self._fetch(company, max_reviews)
-        except (SourceError, ConfigError):
+        except ApplicantError:
             raise
         # the browser: launch failures, timeouts, a window closed by hand
         except Exception as error:

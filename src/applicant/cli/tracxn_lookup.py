@@ -394,14 +394,11 @@ class InteractiveTracxn:
             if captures:
                 raise FinancialsInterrupted(captures[-1]) from None
             raise
+        except CleanupUnconfirmed:
+            self.stopped = True
+            raise
         except WorkerFailure as error:
             self.stopped = True
-            if isinstance(error, CleanupUnconfirmed):
-                logger.error('%s: %s', profile, error)
-                if isinstance(error.__cause__, KeyboardInterrupt):
-                    if captures:
-                        raise FinancialsInterrupted(captures[-1]) from None
-                    raise KeyboardInterrupt from None
             if not captures:
                 raise LookupStopped(f'Tracxn browser ended: {error}') from None
             logger.warning('Tracxn browser ended after capture: %s', error)
