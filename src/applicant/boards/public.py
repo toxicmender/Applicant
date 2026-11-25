@@ -2,12 +2,12 @@
 
 import json
 from html.parser import HTMLParser
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urldefrag, urljoin, urlsplit
 
 from ..domain.capability import Capability, Field
 from ..domain.job import Job
 from ..domain.language_extraction import extract_language
-from ..errors import AuthFailed, Blocked, Unparseable
+from ..errors import AuthFailed, Blocked, Unparseable, Unreachable
 from ..infra.http import HttpClient
 
 SITES = {
@@ -82,29 +82,46 @@ class PublicBoard:
         self.structured_jobs = {}
         self.partial_jobs = []
 
+    def _provider_url(self, url):
+        try:
+            parsed = urlsplit(url)
+            host = (urlsplit(SITES[self.name][0]).hostname or '').removeprefix('www.')
+            return (
+                parsed.scheme == 'https'
+                and parsed.hostname in (host, f'www.{host}')
+                and parsed.username is None
+                and parsed.password is None
+                and parsed.port in (None, 443)
+            )
+        except ValueError:
+            return False
+
     def _read(self, url):
-        base = SITES[self.name][0]
-        host = (urlsplit(base).hostname or '').removeprefix('www.')
-        parsed = urlsplit(url)
-        if (
-            parsed.scheme != 'https'
-            or (parsed.hostname or '').removeprefix('www.') != host
-            or parsed.username
-            or parsed.password
-        ):
+        if not self._provider_url(url):
             raise ValueError('public capture URL must belong to the selected provider')
-        response = self.http.get(url)
+        response = self.http.get(url, follow_redirects=False)
+        for _ in range(5):
+            if not response.is_redirect or 'location' not in response.headers:
+                break
+            target = urljoin(str(response.url), response.headers['location'])
+            if not self._provider_url(target):
+                raise Unparseable(f'{self.name}: listing redirected outside the selected board')
+            response = self.http.get(target, follow_redirects=False)
+        if response.is_redirect:
+            raise Unparseable(f'{self.name}: incomplete listing redirect')
         if response.status_code == 403 or any(
             x in response.text[:8000].casefold()
             for x in ('cf-chl-', 'captcha-form', 'just a moment...', 'access denied')
         ):
             raise Blocked(f'{self.name}: access denied or challenge')
         if response.status_code == 401 or any(
-            x in str(response.url) for x in ('/login', '/signin', '/authwall')
+            x in response.url.path for x in ('/login', '/signin', '/authwall')
         ):
             raise AuthFailed(f'{self.name}: authentication required')
-        if response.url.scheme != 'https' or response.url.host.removeprefix('www.') != host:
+        if not self._provider_url(str(response.url)):
             raise Unparseable(f'{self.name}: listing redirected outside the selected board')
+        if response.status_code >= 500:
+            raise Unreachable(f'{self.name}: upstream HTTP {response.status_code}')
         if response.status_code >= 400:
             raise Unparseable(f'{self.name}: HTTP {response.status_code}; not closure evidence')
         if len(response.content) > 8_000_000:
@@ -186,31 +203,53 @@ class PublicBoard:
 
     def search(self, keywords, location='', limit=25, posted_within_days=None):
         landing, pattern = SITES[self.name]
+        self.partial_jobs = []
         body = self._read(landing)
         records, links = structured_records(body, 'JobPosting')
-        jobs = [self._job(record, landing) for record in records]
-        if not jobs:
-            candidates = list(dict.fromkeys(urljoin(landing, x) for x in links if pattern in x))[
-                : min(25, limit * 2)
-            ]
-            for url in candidates:
+        words = keywords.casefold().split()
+        matches = {}
+        recognized = bool(records)
+
+        def accept(jobs):
+            for job in jobs:
+                if all(word in job.title.casefold() for word in words) and (
+                    not location
+                    or not job.location
+                    or location.casefold() in job.location.casefold()
+                ):
+                    matches.setdefault(job.id, job)
+                if len(matches) >= limit:
+                    break
+
+        accept(self._job(record, landing) for record in records)
+        candidates = {}
+        if len(matches) < limit:
+            for link in links:
                 try:
-                    jobs.extend(self.capture(url))
-                    self.partial_jobs = jobs.copy()
+                    target = urldefrag(urljoin(landing, link)).url
+                    path = urlsplit(target).path
+                except ValueError:
+                    continue
+                if self._provider_url(target) and pattern in path and path != pattern:
+                    candidates.setdefault(target, None)
+            for url in list(candidates)[: min(25, limit * 2)]:
+                try:
+                    jobs = self.capture(url)
                 except Unparseable:
                     continue
-                if len(jobs) >= limit:
+                recognized = True
+                accept(jobs)
+                self.partial_jobs = list(matches.values())
+                if len(matches) >= limit:
                     break
-        if not jobs:
+        if not recognized and not any(
+            type(record.get('numberOfItems')) is int and record['numberOfItems'] == 0
+            for record in structured_records(body, 'ItemList')[0]
+        ):
             raise Unparseable(
                 f'{self.name}: public structured discovery unavailable; import evidence instead'
             )
-        return [
-            job
-            for job in jobs
-            if all(word.casefold() in job.title.casefold() for word in keywords.split())
-            and (not location or not job.location or location.casefold() in job.location.casefold())
-        ][:limit]
+        return list(matches.values())
 
     def close(self):
         self.http.close()
