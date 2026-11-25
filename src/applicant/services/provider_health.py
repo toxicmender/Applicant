@@ -27,6 +27,15 @@ def health(database, name):
     )
 
 
+def route_health(database, name, operation, route):
+    with Store.open_readonly(database) as store:
+        row = store.db.execute(
+            'SELECT adapter_revision FROM provider_route_health WHERE provider=? AND operation=? AND route=?',
+            (name, operation, route),
+        ).fetchone()
+    return {'status': 'adapter_degraded', 'adapter_revision': row[0]} if row else {}
+
+
 def recover_authentication(database, name, *, action='recover'):
     """Inspect and update existing health only; never initialize or migrate."""
     path = Path(database)
@@ -67,7 +76,7 @@ def recover_authentication(database, name, *, action='recover'):
         }
 
 
-def acquire(database, name, *, clock=now, allow_degraded=False):
+def acquire(database, name, *, clock=now, allow_degraded=False, route=None):
     provider(name)
     current = clock()
     with Store(database) as store:
@@ -83,7 +92,17 @@ def acquire(database, name, *, clock=now, allow_degraded=False):
                 or (row[2] and datetime.fromisoformat(row[2]) > current)
             ):
                 store.db.rollback()
-                return {'status': row[0] if row[0] != 'ready' else 'leased', 'eligible_at': row[1]}
+                leased = row[2] and datetime.fromisoformat(row[2]) > current
+                return {'status': 'leased' if leased else row[0], 'eligible_at': row[1]}
+            if route:
+                operation, identifier, revision = route
+                quarantine = store.db.execute(
+                    'SELECT adapter_revision FROM provider_route_health WHERE provider=? AND operation=? AND route=?',
+                    (name, operation, identifier),
+                ).fetchone()
+                if quarantine and (not allow_degraded or quarantine[0] == revision):
+                    store.db.rollback()
+                    return {'status': 'adapter_degraded', 'eligible_at': None}
             token = str(uuid4())
             store.db.execute(
                 "INSERT INTO provider_health(provider,status,lease_until,lease_token) VALUES (?,'ready',?,?) ON CONFLICT(provider) DO UPDATE SET lease_until=excluded.lease_until,lease_token=excluded.lease_token",
@@ -96,7 +115,7 @@ def acquire(database, name, *, clock=now, allow_degraded=False):
             raise
 
 
-def finish(database, name, token, outcome, *, retry_at=None, clock=now):
+def finish(database, name, token, outcome, *, retry_at=None, clock=now, route=None):
     current = clock()
     with Store(database) as store:
         store.db.execute('BEGIN IMMEDIATE')
@@ -118,6 +137,18 @@ def finish(database, name, token, outcome, *, retry_at=None, clock=now):
                 eligible = current + timedelta(seconds=seconds)
                 if retry_at is not None:
                     eligible = max(eligible, retry_at)
+            if route and outcome == 'adapter_degraded':
+                store.db.execute(
+                    'INSERT INTO provider_route_health VALUES (?,?,?,?) '
+                    'ON CONFLICT(provider,operation,route) DO UPDATE SET adapter_revision=excluded.adapter_revision',
+                    (name, *route),
+                )
+                status = 'ready'
+            elif route and outcome == 'success':
+                store.db.execute(
+                    'DELETE FROM provider_route_health WHERE provider=? AND operation=? AND route=?',
+                    (name, *route[:2]),
+                )
             store.db.execute(
                 'UPDATE provider_health SET status=?,failures=?,eligible_at=?,lease_until=NULL,lease_token=NULL,reason=? WHERE provider=?',
                 (status, failures, eligible.isoformat() if eligible else None, outcome, name),
@@ -160,16 +191,19 @@ class LeaseFailure(RuntimeError):
 class Acquisition:
     """Own a lease and a bounded renewal worker through every exit path."""
 
-    def __init__(self, database, name, *, clock=now, probe=False, interval=60):
+    def __init__(self, database, name, *, clock=now, probe=False, interval=60, route=None):
         self.database, self.name, self.clock = database, name, clock
         self.probe, self.interval = probe, interval
+        self.route = route
         self.stop = Event()
         self.error = None
         self.thread = None
         self.token = None
 
     def __enter__(self):
-        self.result = acquire(self.database, self.name, clock=self.clock, allow_degraded=self.probe)
+        self.result = acquire(
+            self.database, self.name, clock=self.clock, allow_degraded=self.probe, route=self.route
+        )
         if self.result['status'] == 'acquired':
             self.token = self.result['token']
             try:
@@ -216,7 +250,13 @@ class Acquisition:
         self.check()
         try:
             result = finish(
-                self.database, self.name, self.token, outcome, clock=self.clock, **kwargs
+                self.database,
+                self.name,
+                self.token,
+                outcome,
+                clock=self.clock,
+                route=self.route,
+                **kwargs,
             )
         except ValueError as error:
             raise LeaseFailure('provider acquisition lease ownership lost') from error

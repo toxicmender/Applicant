@@ -57,7 +57,7 @@ def test_old_database_rejected_before_search(tmp_path):
                 )
                 == 0
             )
-    assert 'already current at schema 14' in output.getvalue()
+    assert 'already current at schema 15' in output.getvalue()
 
 
 def test_template_to_archived_language_run():

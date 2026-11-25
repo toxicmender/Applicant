@@ -197,6 +197,9 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         )""",
     ),
     LANGUAGE_MIGRATION,
+    (
+        'CREATE TABLE provider_route_health (provider TEXT NOT NULL, operation TEXT NOT NULL, route TEXT NOT NULL, adapter_revision TEXT NOT NULL, PRIMARY KEY (provider, operation, route))',
+    ),
 )
 
 
