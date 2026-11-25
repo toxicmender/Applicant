@@ -290,15 +290,16 @@ class SessionStore:
     def clear(self, *, database=None):
         with self.lock():
             previous = self.snapshot()
+            interrupted_install = (
+                not previous and self.path.with_suffix('.session-id.json').is_file()
+            )
             record = (
                 previous
                 if previous.get('status') == 'cleared'
                 else self._new_record(previous, 'cleared', pending='clear')
             )
-            if 'ciphertext' in previous or (
-                not previous and self.path.with_suffix('.session-id.json').is_file()
-            ):
-                record['delete_key'] = self.mode == 'encrypted' or 'ciphertext' in previous
+            if 'ciphertext' in previous or interrupted_install:
+                record['delete_key'] = True
             if record.get('pending') and database is not None:
                 record.setdefault('pending_database', database)
             self._write(record)

@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 from applicant.errors import ConfigError
 from applicant.infra.session_store import SessionStore
@@ -41,6 +42,37 @@ class SessionStoreTest(unittest.TestCase):
             store.clear()
             self.assertIsNone(store.install(earlier, STATE, 'verified'))
             self.assertIsNone(store.credentials(store.snapshot()))
+
+    def test_clear_fresh_profile_without_keyring_then_install(self):
+        with tempfile.TemporaryDirectory() as folder:
+            keyring = Mock(side_effect=ConfigError('keyring unavailable'))
+            store = SessionStore(Path(folder) / 'storage_state.json', 'indeed', keyring=keyring)
+            cleared = store.clear()
+            self.assertEqual(store.clear(), cleared)
+            keyring.assert_not_called()
+            self.assertFalse(cleared.get('delete_key'))
+            from cryptography.fernet import Fernet
+
+            keyring.side_effect = None
+            keyring.return_value = Fernet.generate_key()
+            self.assertIsNotNone(store.install(cleared, STATE, 'verified'))
+
+    def test_clear_retries_key_removal_after_interrupted_install(self):
+        with tempfile.TemporaryDirectory() as folder:
+            keyring = Mock(side_effect=ConfigError('keyring unavailable'))
+            store = SessionStore(Path(folder) / 'storage_state.json', 'indeed', keyring=keyring)
+            with self.assertRaises(ConfigError):
+                store.install({}, STATE, 'verified')
+            account = keyring.call_args.args[1]
+            # A switch to plaintext cannot erase a key created by the failed installation.
+            store = SessionStore(store.path, 'indeed', mode='plaintext', keyring=keyring)
+            with self.assertRaises(ConfigError):
+                store.clear()
+            self.assertTrue(store.snapshot()['delete_key'])
+            keyring.side_effect = None
+            cleared = store.clear()
+            self.assertFalse(cleared.get('delete_key'))
+            keyring.assert_called_with('delete', account)
 
     def test_pending_database_survives_reopen(self):
         with tempfile.TemporaryDirectory() as folder:
