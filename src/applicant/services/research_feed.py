@@ -9,7 +9,7 @@ from ..domain.research import ListingObservation, ResearchImport, posting_langua
 from ..domain.research_identity import match_jobs
 from ..errors import AuthFailed, Blocked, SourceError, Unparseable
 from ..infra.board_worker import OwnedBoard
-from ..infra.owned_worker import WorkerFailure
+from ..infra.owned_worker import CleanupUnconfirmed, WorkerFailure
 from ..infra.provider_registry import board_client
 from .provider_health import Acquisition, LeaseFailure
 from .research import import_research, read_research, save_snapshot
@@ -52,6 +52,7 @@ def collect_feed(
     probe=False,
     settings=None,
     use_session=True,
+    selected_route=None,
 ):
     allowed = {'providers', 'keywords', 'location', 'limit', 'require_all_sources', 'urls'}
     if not isinstance(query, dict) or set(query) - allowed or not query.get('providers'):
@@ -84,8 +85,8 @@ def collect_feed(
             raise ValueError('URL provider must be a canonical selected provider')
         if urls and not (provider(name).board or '').startswith('applicant.boards.public.'):
             raise ValueError('provider does not support explicit public job URLs')
-    outcomes, acquired = [], []
-    for name in names:
+    outcomes, acquired, committed = [], [], []
+    for index, name in enumerate(names):
         if provider(name).board is None:
             outcomes.append(
                 {
@@ -95,7 +96,7 @@ def collect_feed(
                 }
             )
             continue
-        with Acquisition(database, name, clock=clock, probe=probe) as owner:
+        with Acquisition(database, name, clock=clock, probe=probe, route=selected_route) as owner:
             lease = owner.result
             if lease['status'] != 'acquired':
                 outcomes.append({'provider': name, **lease})
@@ -124,6 +125,8 @@ def collect_feed(
                         query.get('keywords', ''), location=query.get('location', ''), limit=limit
                     )
                 owner.check()
+            except CleanupUnconfirmed as failure:
+                status, error = 'cleanup_unconfirmed', failure
             except (LeaseFailure, WorkerFailure) as failure:
                 status, error = 'infrastructure_failure', failure
             except (SourceError, OSError, ValueError) as failure:
@@ -144,8 +147,23 @@ def collect_feed(
                 if client is not None:
                     try:
                         client.close()
+                    except CleanupUnconfirmed as failure:
+                        status, error = 'cleanup_unconfirmed', failure
                     except Exception as failure:  # noqa: BLE001 - adapter teardown boundary
-                        status, error = 'infrastructure_failure', failure
+                        if status != 'cleanup_unconfirmed':
+                            status, error = 'infrastructure_failure', failure
+            if status == 'cleanup_unconfirmed':
+                return {
+                    'kind': 'research_feed',
+                    'schema_version': 1,
+                    'outcome': 'partial_commit' if committed else 'aborted',
+                    'committed_providers': committed,
+                    'failed_provider': name,
+                    'skipped_providers': names[index + 1 :],
+                    'query': query,
+                    'job_version_ids': [item.job_version_id for item in acquired],
+                    'outcomes': [*outcomes, {'provider': name, 'status': status}],
+                }
             partial = getattr(client, 'partial_jobs', [])
             if error is not None and isinstance(partial, list):
                 jobs = [*jobs, *partial]
@@ -170,12 +188,17 @@ def collect_feed(
                 ),
             )
             acquired.extend(observations)
+            if observations:
+                committed.append(name)
+            eligible_at = None
             if status != 'infrastructure_failure':
                 try:
-                    owner.finish(status, retry_at=retry_at)
+                    eligible_at = owner.finish(status, retry_at=retry_at).get('eligible_at')
                 except LeaseFailure as failure:
                     status, error = 'infrastructure_failure', failure
             outcome: dict[str, str | int] = {'provider': name, 'status': status}
+            if eligible_at:
+                outcome['eligible_at'] = eligible_at
             if isinstance(client, OwnedBoard):
                 outcome.update(client.access)
             if error is None:
