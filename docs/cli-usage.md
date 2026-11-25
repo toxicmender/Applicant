@@ -689,7 +689,7 @@ provider account on the website.
 | 2 | Invalid input, unsupported region, or required key store unavailable |
 | 3 | Missing or confirmed expired session |
 | 5 | Verification page or account controls could not be recognized |
-| 7 | Browser or transport unavailable |
+| 7 | Browser or transport unavailable, or browser teardown timed out |
 | 8 | Profile busy or DB reconciliation pending |
 | 11 | Challenge during session verification. Retry the check with `--show`. |
 | 130 | Interrupted |
@@ -703,13 +703,20 @@ Levels.fyi supports account setup. Compensation imports remain file-based.
 
 | Provider | Offline account checks | Live session restoration | Live adapter use |
 | --- | --- | --- | --- |
-| Indeed | Covered | Unverified | Unverified |
-| Naukri | Covered | Unverified | Unverified |
-| Google Jobs | Careers account covered | Unverified | Unverified |
-| Glassdoor | India Community and US profile policies | Unverified | Unverified |
-| AmbitionBox | Covered | Unverified | Unverified |
-| Levels.fyi | Covered | Unverified | Not applicable |
+| Indeed | Covered | Verified November 25, 2026 | Unverified |
+| Naukri | Covered | Verified November 24, 2026 | Unverified |
+| Google Jobs | Careers account covered | Verified November 24, 2026 | Unverified |
+| Glassdoor | India Community and US profile policies | November 25 restore worker timed out. Live retry pending. | Unverified |
+| AmbitionBox | Desktop and narrow layouts covered | November 25 capture found hidden mobile controls. Live retry pending. | Unverified |
+| Levels.fyi | Covered | Verified November 24, 2026 | Not applicable |
 | We Work Remotely | Signed-in Job Seeker dashboard evidence pending | Unverified | Public RSS only |
+
+For the Glassdoor and AmbitionBox live retries, run
+`uv run applicant setup provider <provider>` and complete sign-in. After setup
+returns `verified`, run `uv run applicant setup status --provider <provider> --check --show`
+in a separate process. For an existing session, start with the status check.
+If file-only status reports `deferred_file_only`, a pending SQLite action
+remains queued for a later SQLite-backed check.
 
 We Work Remotely account setup requires a verified dashboard route and
 member-only control. The same evidence is pending for Glassdoor regions
