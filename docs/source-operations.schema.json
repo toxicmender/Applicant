@@ -1,0 +1,392 @@
+{
+  "$defs": {
+    "CatalogOperations": {
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "operations": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Operation"
+          },
+          "propertyNames": {
+            "enum": [
+              "job_search",
+              "job_detail",
+              "company_profile",
+              "compensation",
+              "workplace_reviews",
+              "workplace_policy",
+              "account_setup"
+            ]
+          },
+          "title": "Operations",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "operations"
+      ],
+      "title": "CatalogOperations",
+      "type": "object"
+    },
+    "Operation": {
+      "additionalProperties": false,
+      "properties": {
+        "implementation": {
+          "enum": [
+            "implemented",
+            "import_only",
+            "pending",
+            "deprecated"
+          ],
+          "title": "Implementation",
+          "type": "string"
+        },
+        "routes": {
+          "items": {
+            "$ref": "#/$defs/Route"
+          },
+          "title": "Routes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "implementation",
+        "routes"
+      ],
+      "title": "Operation",
+      "type": "object"
+    },
+    "Route": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "priority": {
+          "title": "Priority",
+          "type": "integer"
+        },
+        "method": {
+          "enum": [
+            "public_feed",
+            "public_structured",
+            "public_browser",
+            "managed_browser",
+            "official_api",
+            "official_mcp",
+            "user_import"
+          ],
+          "title": "Method",
+          "type": "string"
+        },
+        "credential_kind": {
+          "default": "none",
+          "enum": [
+            "none",
+            "browser_session",
+            "api_key",
+            "oauth2"
+          ],
+          "title": "Credential Kind",
+          "type": "string"
+        },
+        "policy": {
+          "enum": [
+            "allowed",
+            "approval_required",
+            "prohibited",
+            "unreviewed"
+          ],
+          "title": "Policy",
+          "type": "string"
+        },
+        "authority": {
+          "title": "Authority",
+          "type": "string"
+        },
+        "reviewed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reviewed At"
+        },
+        "destinations": {
+          "default": [],
+          "items": {
+            "enum": [
+              "display",
+              "persist",
+              "export"
+            ],
+            "type": "string"
+          },
+          "title": "Destinations",
+          "type": "array"
+        },
+        "retention": {
+          "default": "none",
+          "enum": [
+            "none",
+            "temporary",
+            "durable"
+          ],
+          "title": "Retention",
+          "type": "string"
+        },
+        "retention_ttl_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retention Ttl Seconds"
+        },
+        "adapter_revision": {
+          "title": "Adapter Revision",
+          "type": "string"
+        },
+        "fallback": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fallback"
+        },
+        "fixture": {
+          "$ref": "#/$defs/Validation",
+          "default": {
+            "outcome": "unverified",
+            "checked_at": null,
+            "revision": null,
+            "reason": null,
+            "last_passed_at": null
+          }
+        },
+        "live": {
+          "$ref": "#/$defs/Validation",
+          "default": {
+            "outcome": "unverified",
+            "checked_at": null,
+            "revision": null,
+            "reason": null,
+            "last_passed_at": null
+          }
+        },
+        "runtime": {
+          "$ref": "#/$defs/Runtime",
+          "default": {
+            "health": "unknown",
+            "reason": null,
+            "eligible_at": null,
+            "lease_until": null,
+            "credential_status": "unknown",
+            "credential_expires_at": null
+          }
+        }
+      },
+      "required": [
+        "id",
+        "priority",
+        "method",
+        "policy",
+        "authority",
+        "adapter_revision"
+      ],
+      "title": "Route",
+      "type": "object"
+    },
+    "Runtime": {
+      "additionalProperties": false,
+      "properties": {
+        "health": {
+          "default": "unknown",
+          "title": "Health",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "eligible_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Eligible At"
+        },
+        "lease_until": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lease Until"
+        },
+        "credential_status": {
+          "default": "unknown",
+          "enum": [
+            "not_required",
+            "unknown",
+            "missing",
+            "present_unverified",
+            "valid",
+            "expired",
+            "invalid",
+            "insufficient_scope"
+          ],
+          "title": "Credential Status",
+          "type": "string"
+        },
+        "credential_expires_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Credential Expires At"
+        }
+      },
+      "title": "Runtime",
+      "type": "object"
+    },
+    "Validation": {
+      "additionalProperties": false,
+      "properties": {
+        "outcome": {
+          "default": "unverified",
+          "enum": [
+            "unverified",
+            "passed",
+            "empty",
+            "blocked",
+            "failed",
+            "inconclusive"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "checked_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Checked At"
+        },
+        "revision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Revision"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "last_passed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Passed At"
+        }
+      },
+      "title": "Validation",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "operations_schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Operations Schema Version",
+      "type": "integer"
+    },
+    "providers": {
+      "items": {
+        "$ref": "#/$defs/CatalogOperations"
+      },
+      "title": "Providers",
+      "type": "array"
+    }
+  },
+  "required": [
+    "providers"
+  ],
+  "title": "SourcesDocument",
+  "type": "object"
+}

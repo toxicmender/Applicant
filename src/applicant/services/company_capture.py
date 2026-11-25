@@ -8,7 +8,7 @@ from ..domain.canonical import canonical_json, content_hash
 from ..domain.company_evidence import CompanyResponse
 from ..domain.company_resolution import resolve_company, suggest_manual_matches
 from ..domain.contracts import now
-from ..domain.providers import provider
+from ..domain.providers import PROFILE_PROVIDERS, provider
 from ..domain.ranking_facts import country
 from ..domain.research import Company, CompanyIdentifier, Culture, ResearchEvidence, ResearchImport
 from ..errors import AuthFailed, Blocked, SourceError, Unparseable
@@ -17,8 +17,6 @@ from ..infra.store.company_evidence import CompanyEvidenceRepository
 from ..infra.store.sqlite import Store
 from .provider_health import Acquisition
 from .research import import_research, read_research
-
-PROFILE_PROVIDERS = ('flexa', 'wellfound', 'builtin', 'welcometothejungle')
 
 
 def capture_profile(database, selection, *, client=None, clock=now):

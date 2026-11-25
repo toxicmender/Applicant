@@ -43,7 +43,15 @@ def observations_from(client, jobs, stamp, name):
 
 
 def collect_feed(
-    database, query, *, factory=board_client, clock=now, parent=None, probe=False, settings=None
+    database,
+    query,
+    *,
+    factory=board_client,
+    clock=now,
+    parent=None,
+    probe=False,
+    settings=None,
+    use_session=True,
 ):
     allowed = {'providers', 'keywords', 'location', 'limit', 'require_all_sources', 'urls'}
     if not isinstance(query, dict) or set(query) - allowed or not query.get('providers'):
@@ -97,7 +105,7 @@ def collect_feed(
             status, error, retry_at = 'success', None, None
             try:
                 client = (
-                    OwnedBoard(name, owner.check, settings=settings)
+                    OwnedBoard(name, owner.check, settings=settings if use_session else None)
                     if factory is board_client
                     else factory(name, headless=True)
                 )

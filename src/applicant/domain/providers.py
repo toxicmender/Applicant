@@ -37,22 +37,18 @@ class Provider:
     validation: str = 'reference_only'
     authentication: SessionPolicy | None = None
 
+    legacy_session_document: bool = False
+
     @property
     def session(self) -> SessionPolicy | None:
-        if self.authentication:
-            return self.authentication
-        if not self.login_url or not self.check_url or not self.auth_selector:
-            return None
-        hostname = urlsplit(self.url).hostname
-        assert hostname
-        return SessionPolicy(
-            self.login_url,
-            (VerificationTarget(self.check_url, (self.auth_selector,)),),
-            (hostname.removeprefix('www.'),),
-        )
+        return self.authentication
 
     def document(self):
-        return asdict(self)
+        result = asdict(self)
+        result.pop('legacy_session_document')
+        if self.legacy_session_document:
+            result['authentication'] = None
+        return result
 
 
 PROVIDERS = {
@@ -65,9 +61,6 @@ PROVIDERS = {
             ('jobs',),
             'public_session',
             'applicant.boards.linkedin.LinkedInGuest',
-            login_url='https://www.linkedin.com/login',
-            check_url='https://www.linkedin.com/feed/',
-            auth_selector='a[href*="/mynetwork/"]',
             validation='existing_adapter',
         ),
         Provider(
@@ -103,9 +96,6 @@ PROVIDERS = {
             'https://www.glassdoor.com',
             ('culture', 'compensation'),
             'session_import',
-            login_url='https://www.glassdoor.com/profile/login_input.htm',
-            check_url='https://www.glassdoor.com/member/profile/index.htm',
-            auth_selector='[data-test="user-profile-menu"], a[href*="logout"]',
             validation='existing_adapter',
         ),
         Provider(
@@ -122,9 +112,6 @@ PROVIDERS = {
             'https://www.crunchbase.com',
             ('company',),
             'session_api_import',
-            login_url='https://www.crunchbase.com/login',
-            check_url='https://www.crunchbase.com/account',
-            auth_selector='a[href*="logout"], button[aria-label="Account"]',
             validation='existing_adapter',
         ),
         Provider(
@@ -133,9 +120,6 @@ PROVIDERS = {
             'https://tracxn.com',
             ('company',),
             'session_api_import',
-            login_url='https://tracxn.com/login',
-            check_url='https://platform.tracxn.com/a/dashboard',
-            auth_selector='#r-dashboard-wrap .txn--home-dashboard',
             validation='existing_adapter',
         ),
         Provider(
@@ -206,7 +190,7 @@ INDEED_HOSTS = (
 )
 
 
-def _add_session(name, policy):
+def _add_session(name, policy, *, legacy_document=False):
     target = policy.targets[0]
     PROVIDERS[name] = replace(
         PROVIDERS[name],
@@ -214,7 +198,42 @@ def _add_session(name, policy):
         login_url=policy.login,
         check_url=target.url,
         auth_selector=target.markers[0],
+        legacy_session_document=legacy_document,
     )
+
+
+for _name, _login, _target, _selector in (
+    (
+        'linkedin',
+        'https://www.linkedin.com/login',
+        'https://www.linkedin.com/feed/',
+        'a[href*="/mynetwork/"]',
+    ),
+    (
+        'crunchbase',
+        'https://www.crunchbase.com/login',
+        'https://www.crunchbase.com/account',
+        'a[href*="logout"], button[aria-label="Account"]',
+    ),
+    (
+        'tracxn',
+        'https://tracxn.com/login',
+        'https://platform.tracxn.com/a/dashboard',
+        '#r-dashboard-wrap .txn--home-dashboard',
+    ),
+):
+    _host = urlsplit(PROVIDERS[_name].url).hostname
+    assert _host
+    _add_session(
+        _name,
+        SessionPolicy(
+            _login, (VerificationTarget(_target, (_selector,)),), (_host.removeprefix('www.'),)
+        ),
+        legacy_document=True,
+    )
+
+
+PROFILE_PROVIDERS = ('flexa', 'wellfound', 'builtin', 'welcometothejungle')
 
 
 GLASSDOOR_REGIONS = ('com', 'co.in')
