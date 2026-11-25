@@ -55,7 +55,7 @@ def reconcile_session(settings, store, database, result):
 
     def action(pending, saved_database):
         if path is None:
-            return {'status': 'skipped_file_only'}
+            return {'status': 'deferred_file_only' if saved_database else 'skipped_file_only'}
         policy = provider(store.provider).session
         if pending == 'expire' and policy is not None and policy.public_access:
             return {'status': 'credential_needs_setup'}

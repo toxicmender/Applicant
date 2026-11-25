@@ -1,10 +1,14 @@
 """A failed login attempt leaves the installed credential usable."""
 
+import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from applicant.infra.store.sqlite import Store
+from applicant.services.provider_health import health
 from applicant.services.provider_setup import (
     clear_session,
     provider_session,
@@ -34,6 +38,40 @@ class SessionRecoveryContractTest(unittest.TestCase):
                 setup_provider(settings, 'linkedin', reauth=True, verifier=verify)['status'],
                 'verified',
             )
+
+    def test_file_only_check_retains_busy_sqlite_recovery(self):
+        with tempfile.TemporaryDirectory() as folder, patch('sys.stdin.isatty', return_value=True):
+            root = Path(folder)
+            database = root / 'selected.db'
+            sqlite = Settings(data_dir=root, store='sqlite', session_storage='plaintext')
+            files = sqlite.model_copy(update={'store': 'files'})
+            with Store(database) as db, db.db:
+                db.db.execute(
+                    "INSERT INTO provider_health(provider,status) VALUES ('linkedin','needs_setup')"
+                )
+            store = provider_session(sqlite, 'linkedin')
+            with closing(sqlite3.connect(database)) as blocker:
+                blocker.execute('BEGIN IMMEDIATE')
+                saved = setup_provider(
+                    sqlite, 'linkedin', database=str(database), verifier=Mock(return_value=STATE)
+                )
+                self.assertEqual(saved['status'], 'verified')
+                self.assertEqual(saved['health_recovery']['status'], 'database_busy')
+                pending = store.snapshot()
+                checked = session_status(
+                    files, 'linkedin', check=True, verifier=Mock(side_effect=AssertionError)
+                )
+                self.assertEqual(checked['status'], 'verified')
+                self.assertEqual(
+                    store.snapshot(), pending, 'file-only status discarded SQLite recovery'
+                )
+            checked = session_status(
+                sqlite, 'linkedin', check=True, verifier=Mock(side_effect=AssertionError)
+            )
+            self.assertEqual(checked['health_recovery']['status'], 'recovered')
+            self.assertEqual(health(database, 'linkedin')['status'], 'ready')
+            self.assertIsNone(store.snapshot()['pending'])
+            self.assertEqual(store.snapshot()['generation'], pending['generation'])
 
     def test_clear_replaces_pending_recovery_and_preserves_chromium_files(self):
         with tempfile.TemporaryDirectory() as folder:

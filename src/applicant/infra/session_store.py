@@ -264,6 +264,7 @@ class SessionStore:
                 'database_error',
                 'schema_incompatible',
                 'leased',
+                'deferred_file_only',
             ):
                 record = {**record, 'pending': None, 'revision': record['revision'] + 1}
                 record.pop('pending_database', None)
