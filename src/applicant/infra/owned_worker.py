@@ -26,6 +26,10 @@ class WorkerFailure(SourceError):
     """The worker failed or could not finish normal teardown."""
 
 
+class WorkerTeardownTimeout(WorkerFailure):
+    """The browser or worker failed to exit within its cleanup allowance."""
+
+
 class CleanupUnconfirmed(WorkerFailure):
     cleanup_unconfirmed = True
 
@@ -297,6 +301,8 @@ def run_worker(
             if check:
                 check()
             if deadline is not None and monotonic() >= deadline:
+                if closing:
+                    raise WorkerTeardownTimeout('browser teardown deadline exceeded')
                 raise WorkerFailure('browser worker deadline exceeded')
             message = pending or pipe.receive()
             pending = None
@@ -342,7 +348,7 @@ def run_worker(
                 elif kind == 'heartbeat':
                     continue  # A heartbeat can race with a submitted answer.
                 elif kind == 'closing':
-                    closing = time.monotonic() + grace
+                    closing = True
                     deadline = monotonic() + grace
                 elif kind == 'progress' and progress is not None:
                     progress(value)
@@ -368,7 +374,7 @@ def run_worker(
             elif not process.is_alive():
                 raise WorkerFailure('browser worker exited without a result')
         # The child can only finish flushing its queue while the parent drains it.
-        flush_deadline = closing if closing is not None else time.monotonic() + grace
+        flush_deadline = time.monotonic() + grace
         while process.is_alive() and time.monotonic() < flush_deadline:
             received += _drain_diagnostics(diagnostics)
             process.join(min(0.05, max(0.0, flush_deadline - time.monotonic())))
@@ -378,7 +384,7 @@ def run_worker(
                 logger.warning('browser worker teardown exceeded deadline after failure')
             raise failure
         if process.is_alive():
-            raise WorkerFailure('browser worker teardown exceeded deadline')
+            raise WorkerTeardownTimeout('worker process exit deadline exceeded')
         return result
     except EOFError as error:
         raise WorkerFailure('browser worker exited without a result') from error
@@ -413,7 +419,14 @@ def run_worker(
                         )
                 logger.debug('browser worker cleanup started provider=%s pid=%s', provider, pid)
                 if original is not None:
-                    logger.debug('browser worker failure cleanup provider=%s pid=%s', provider, pid)
+                    logger.debug(
+                        'browser worker failure cleanup provider=%s pid=%s: %s',
+                        provider,
+                        pid,
+                        str(original)
+                        if isinstance(original, WorkerTeardownTimeout)
+                        else type(original).__name__,
+                    )
                 if (
                     prompt is not None
                     and pipe is not None

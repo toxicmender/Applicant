@@ -13,7 +13,7 @@ from ..domain.providers import provider
 from ..errors import AuthFailed, ConfigError, CookieSchemaError, ProfileBusy
 from ..infra.browser import BrowserSession, looks_blocked
 from ..infra.browser_diagnostics import event, safe_origin, stage
-from ..infra.owned_worker import CleanupUnconfirmed, WorkerFailure
+from ..infra.owned_worker import CleanupUnconfirmed, WorkerFailure, WorkerTeardownTimeout
 from ..infra.path_identity import physical_path
 from ..infra.ranking_documents import read_ranking_document
 from ..infra.session_store import FORMAT, SessionStore
@@ -541,6 +541,8 @@ def _check_browser(
         )
     except CleanupUnconfirmed:
         raise
+    except WorkerTeardownTimeout:
+        return {'status': 'inconclusive', 'reason': 'browser_teardown_timeout'}
     except WorkerFailure:
         return {'status': 'inconclusive', 'reason': 'browser_unavailable'}
 

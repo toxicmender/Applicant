@@ -94,7 +94,11 @@ def output_result(result, database=None):
     elif result['status'] == 'needs_setup':
         code = 3
     elif result['status'] == 'inconclusive':
-        code = {'challenge': 11, 'browser_unavailable': 7}.get(result.get('reason'), 5)
+        code = {
+            'challenge': 11,
+            'browser_unavailable': 7,
+            'browser_teardown_timeout': 7,
+        }.get(result.get('reason'), 5)
     print(canonical_json(result))
     return code
 

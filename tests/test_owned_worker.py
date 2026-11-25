@@ -9,7 +9,7 @@ import sys
 import unittest
 from contextlib import suppress
 from threading import Event
-from time import monotonic
+from time import monotonic, sleep
 from unittest.mock import Mock, patch
 
 from playwright.sync_api import Error
@@ -22,6 +22,16 @@ from applicant.infra.owned_worker import WorkerFailure, _ControlPipe, run_worker
 def echo(connection, arguments):
     connection.send(('closing', None))
     return arguments
+
+
+def slow_close(connection, delays):
+    from multiprocessing.util import Finalize
+
+    close_delay, exit_delay = delays
+    connection.send(('closing', None))
+    sleep(close_delay)
+    Finalize(None, sleep, args=(exit_delay,), exitpriority=0)
+    return 'verified'
 
 
 def hanging(connection, arguments):
@@ -178,6 +188,17 @@ class OwnedWorkerTest(unittest.TestCase):
 
     def test_private_roundtrip(self):
         self.assertEqual(run_worker(echo, {'synthetic': 'state'}), {'synthetic': 'state'})
+
+    def test_completed_browser_teardown_has_separate_worker_exit_allowance(self):
+        self.assertEqual(
+            run_worker(slow_close, (0.8, 0.65), grace=1),
+            'verified',
+            'Glassdoor restore result must survive a slow worker exit after browser teardown',
+        )
+
+    def test_hung_worker_exit_is_bounded(self):
+        with self.assertRaisesRegex(WorkerFailure, 'process exit'):
+            run_worker(slow_close, (0, 30), grace=0.5)
 
     def test_hung_close_is_bounded(self):
         # The injected clock advances only after the closing message has arrived.
