@@ -75,7 +75,8 @@ def test_resume_after_failed_or_interrupted_step(tmp_path, capsys, failure):
     assert not any(statement in traced for statement in MIGRATIONS[12])
     if version == 13:
         assert all(statement in traced for statement in MIGRATIONS[13])
-    check(path, 14)
+    assert all(statement in traced for statement in MIGRATIONS[14])
+    check(path, len(MIGRATIONS))
 
 
 @pytest.mark.parametrize('race', ['drop', 'upgrade'])
@@ -106,7 +107,27 @@ def test_recheck_after_prompt(tmp_path, race):
                 assert ('table', 'job_language_assertions') not in objects(db)
         else:
             preflight((path,), True)
-            assert inspect(path) == 14
+            assert inspect(path) == len(MIGRATIONS)
+
+
+def test_route_health_migration_preserves_provider_deadline_and_lease(tmp_path):
+    path = tmp_path / 'health.db'
+    seed(path, 14)
+    before = (
+        'instahyre',
+        'cooldown',
+        3,
+        '2026-12-01T00:00:00+00:00',
+        '2026-11-30T00:00:00+00:00',
+        'owner',
+        'blocked',
+    )
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute('INSERT INTO provider_health VALUES (?,?,?,?,?,?,?)', before)
+    with Store(path) as store:
+        assert store.db.execute('SELECT * FROM provider_health').fetchone() == before
+        assert store.db.execute('SELECT * FROM provider_route_health').fetchall() == []
+    check(path, len(MIGRATIONS))
 
 
 def inspect_version(path):

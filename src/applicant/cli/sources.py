@@ -278,11 +278,12 @@ def _probe(args, settings, database, item, declared):
                 outcome = {**outcome, 'status': 'success'}
         elif key == 'account_setup':
             outcome = session_status(settings, item.id, check=True, database=args.database)
-            recovery = outcome.get('health_recovery', {})
-            if recovery.get('retryable'):
-                outcome['reason'] = 'database_busy'
-            elif recovery.get('status') in ('database_error', 'schema_incompatible'):
-                outcome['reason'] = 'infrastructure_failure'
+            recovery = outcome.get('health_recovery')
+            if isinstance(recovery, dict):
+                if recovery.get('retryable'):
+                    outcome['reason'] = 'database_busy'
+                elif recovery.get('status') in ('database_error', 'schema_incompatible'):
+                    outcome['reason'] = 'infrastructure_failure'
     except CleanupUnconfirmed:
         outcome = {'status': 'cleanup_unconfirmed'}
     except DatabaseBusy:

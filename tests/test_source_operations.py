@@ -124,6 +124,38 @@ def test_detail_probe_uses_only_explicit_locator(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)['operation'] == 'job_detail'
 
 
+def test_flexa_profile_probe_requires_association_input(tmp_path, capsys):
+    database = tmp_path / 'unused.db'
+    selection = tmp_path / 'selection.json'
+    value = {
+        'provider': 'flexa',
+        'entity_id': 'company',
+        'provider_company_id': 'example',
+        'url': 'https://flexa.careers/companies/example',
+    }
+    selection.write_text(json.dumps(value), encoding='utf-8')
+    command = [
+        'sources',
+        'probe',
+        '--provider',
+        'flexa',
+        '--operation',
+        'company_profile',
+        '--database',
+        str(database),
+        '--no-log-file',
+    ]
+    with patch(
+        'applicant.cli.sources.capture_profile', return_value={'evidence_id': 'evidence'}
+    ) as capture:
+        assert main(command) == 2
+        capture.assert_not_called()
+        capsys.readouterr()
+        assert main([*command, '--input', str(selection)]) == 0
+    capture.assert_called_once_with(database, value)
+    assert json.loads(capsys.readouterr().out)['evidence_id'] == 'evidence'
+
+
 def test_runtime_projects_quarantine_and_cooldown(tmp_path, capsys):
     path = tmp_path / 'health.db'
     route = ('job_search', 'public', '1')
@@ -147,14 +179,28 @@ def test_runtime_projects_quarantine_and_cooldown(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)['eligible_at']
 
 
-def test_account_probe_preserves_challenge_code(tmp_path, capsys):
+@pytest.mark.parametrize(
+    ('outcome', 'code', 'reason'),
+    [
+        ({'status': 'inconclusive', 'reason': 'challenge'}, 11, 'challenge'),
+        ({'status': 'verified', 'health_recovery': {'retryable': True}}, 8, 'database_busy'),
+        (
+            {'status': 'verified', 'health_recovery': {'status': 'schema_incompatible'}},
+            1,
+            'infrastructure_failure',
+        ),
+    ],
+)
+def test_account_probe_reports_verification_and_recovery_outcomes(
+    tmp_path, capsys, outcome, code, reason
+):
     state = tmp_path / 'synthetic.json'
     state.touch()
     with (
         patch('applicant.cli.sources.provider_session', return_value=SimpleNamespace(path=state)),
         patch(
             'applicant.cli.sources.session_status',
-            side_effect=[{'status': 'verified'}, {'status': 'inconclusive', 'reason': 'challenge'}],
+            side_effect=[{'status': 'verified'}, outcome],
         ),
     ):
         assert (
@@ -171,9 +217,9 @@ def test_account_probe_preserves_challenge_code(tmp_path, capsys):
                     '--no-log-file',
                 ]
             )
-            == 11
+            == code
         )
-    assert json.loads(capsys.readouterr().out)['reason'] == 'challenge'
+    assert json.loads(capsys.readouterr().out)['reason'] == reason
 
 
 @pytest.mark.parametrize(

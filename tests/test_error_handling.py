@@ -218,6 +218,7 @@ class ReviewsErrorTest(unittest.TestCase):
     def test_one_failing_source_no_longer_ends_the_reviews_run(self):
         err = io.StringIO()
         with (
+            tempfile.TemporaryDirectory() as data_dir,
             mock.patch(
                 'applicant.infra.company_worker.fetch_company',
                 side_effect=RuntimeError('no chrome'),
@@ -229,7 +230,17 @@ class ReviewsErrorTest(unittest.TestCase):
             redirect_stderr(err),
         ):
             code = main(
-                ['reviews', 'Google-E9079', '-s', 'both', '-o', os.devnull, '--no-log-file']
+                [
+                    'reviews',
+                    'Google-E9079',
+                    '-s',
+                    'both',
+                    '-o',
+                    os.devnull,
+                    '--data-dir',
+                    data_dir,
+                    '--no-log-file',
+                ]
             )
         self.assertEqual(code, 1)  # nothing fetched, but reported rather than raised
         # a failed source is commentary, so it is reported on stderr

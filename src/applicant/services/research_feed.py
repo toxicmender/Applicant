@@ -131,6 +131,7 @@ def collect_feed(
                 )
                 continue
             active_route = (key, chosen.id, chosen.adapter_revision)
+            managed = chosen.credential_kind == 'browser_session'
         with Acquisition(database, name, clock=clock, probe=probe, route=active_route) as owner:
             lease = owner.result
             if lease['status'] != 'acquired':

@@ -278,9 +278,10 @@ def test_file_symlink_sidecars_are_preserved(tmp_path, capsys):
     target_shm.unlink()
     with Store(target) as writer:
         writer.db.execute('PRAGMA wal_autocheckpoint = 0')
-        writer.db.execute('PRAGMA user_version = 15')
+        future = len(MIGRATIONS) + 1
+        writer.db.execute(f'PRAGMA user_version = {future}')
         assert upgrade_cli(alias) == 1
-        assert 'schema 15 requires a newer Applicant' in capsys.readouterr().err
+        assert f'schema {future} requires a newer Applicant' in capsys.readouterr().err
 
 
 def test_retargeted_directory_alias(tmp_path):
