@@ -50,6 +50,32 @@ def test_import_probe_is_offline(tmp_path, capsys):
     assert list(tmp_path.iterdir()) == []
 
 
+def test_provider_input_probe_reads_manifest_without_opening_store(tmp_path, capsys):
+    data = sample_import('nodeflair', 'compensation')
+    source = tmp_path / 'compensation.json'
+    source.write_text(json.dumps(data), encoding='utf-8')
+    with patch('applicant.cli.sources.health') as database:
+        code = main(
+            [
+                'sources',
+                'probe',
+                '--provider',
+                'nodeflair',
+                '--operation',
+                'compensation',
+                '--input',
+                str(source),
+                '--no-log-file',
+                '--data-dir',
+                str(tmp_path),
+            ]
+        )
+    assert code == 0
+    database.assert_not_called()
+    assert json.loads(capsys.readouterr().out)['validation_kind'] == 'user_input'
+    assert list(tmp_path.iterdir()) == [source]
+
+
 def test_compensation_batch_preserves_identical_rows_and_reimports_idempotently(tmp_path):
     data = sample_import('nodeflair', 'compensation')
     data['manifest']['destinations'] = ['persist']

@@ -154,6 +154,35 @@ def test_flexa_profile_probe_requires_association_input(tmp_path, capsys):
         assert main([*command, '--input', str(selection)]) == 0
     capture.assert_called_once_with(database, value)
     assert json.loads(capsys.readouterr().out)['evidence_id'] == 'evidence'
+    selection.write_text(json.dumps({**value, 'provider': 'builtin'}), encoding='utf-8')
+    with patch('applicant.cli.sources.capture_profile') as capture:
+        assert main([*command, '--input', str(selection)]) == 2
+    capture.assert_not_called()
+    assert json.loads(capsys.readouterr().out)['reason'] == 'invalid_input'
+
+
+def test_operation_outside_provider_catalog_is_reported_offline(tmp_path, capsys):
+    database = tmp_path / 'unused.db'
+    with patch('applicant.cli.sources.collect_feed') as collect:
+        assert (
+            main(
+                [
+                    'sources',
+                    'probe',
+                    '--provider',
+                    'wwr',
+                    '--operation',
+                    'compensation',
+                    '--database',
+                    str(database),
+                    '--no-log-file',
+                ]
+            )
+            == 2
+        )
+    collect.assert_not_called()
+    assert json.loads(capsys.readouterr().out)['reason'] == 'route_unavailable'
+    assert not database.exists()
 
 
 def test_runtime_projects_quarantine_and_cooldown(tmp_path, capsys):
