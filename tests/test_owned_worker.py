@@ -34,6 +34,13 @@ def slow_close(connection, delays):
     return 'verified'
 
 
+def slow_keyring_import(connection, seconds):
+    sleep(seconds)
+    connection.send(('operation_ready', None))
+    connection.recv()
+    return 'available'
+
+
 def hanging(connection, arguments):
     connection.send(('closing', None))
     connection.recv()
@@ -115,6 +122,12 @@ def held_tree(connection, address):
         connection.recv()
 
 
+def keyring_held_tree(connection, address):
+    connection.send(('operation_ready', None))
+    connection.recv()
+    return held_tree(connection, address)
+
+
 def probe_windows_job(pid):
     if sys.platform != 'win32':
         raise AssertionError('Windows job probe requires Windows')
@@ -186,12 +199,29 @@ class OwnedWorkerTest(unittest.TestCase):
                 raise
             raise unittest.SkipTest(f'native capability restriction: {error}') from error
 
+    def test_setup_allows_slow_pre_result_browser_close(self):
+        from applicant.services.provider_setup import _check_browser
+
+        def simulate_close(function, arguments, **options):
+            return run_worker(slow_close, (5.5, 0), **options)
+
+        with patch('applicant.infra.owned_worker.run_worker', side_effect=simulate_close):
+            self.assertEqual(_check_browser('glassdoor', None), 'verified')
+
+    def test_keyring_backend_loading_has_its_own_bounded_allowance(self):
+        self.assertEqual(
+            run_worker(slow_keyring_import, 0.6, timeout=0.3, preparation_timeout=2),
+            'available',
+        )
+        with self.assertRaisesRegex(WorkerFailure, 'preparation'):
+            run_worker(slow_keyring_import, 30, timeout=3, preparation_timeout=0.3)
+
     def test_private_roundtrip(self):
         self.assertEqual(run_worker(echo, {'synthetic': 'state'}), {'synthetic': 'state'})
 
     def test_completed_browser_teardown_has_separate_worker_exit_allowance(self):
         self.assertEqual(
-            run_worker(slow_close, (0.8, 0.65), grace=1),
+            run_worker(slow_close, (2, 1.5), grace=3),
             'verified',
             'Glassdoor restore result must survive a slow worker exit after browser teardown',
         )
@@ -367,14 +397,14 @@ class OwnedWorkerTest(unittest.TestCase):
                     return next(modeled_timeout, 4.0)
                 return 4.0 if monotonic() >= startup_limit else 0.0
 
-            def worker(_function, _arguments, *, timeout, timeout_after_start):
+            def worker(_function, _arguments, *, timeout, preparation_timeout):
                 self.assertEqual(timeout, 3)
-                self.assertTrue(timeout_after_start)
+                self.assertEqual(preparation_timeout, 10)
                 return run_worker(
-                    held_tree,
+                    keyring_held_tree,
                     listener.getsockname(),
                     timeout=timeout,
-                    timeout_after_start=timeout_after_start,
+                    preparation_timeout=preparation_timeout,
                     grace=1.0,
                     interactive=True,
                     pause=ready,

@@ -706,8 +706,8 @@ Levels.fyi supports account setup. Compensation imports remain file-based.
 | Indeed | Covered | Verified November 25, 2026 | Unverified |
 | Naukri | Covered | Verified November 24, 2026 | Unverified |
 | Google Jobs | Careers account covered | Verified November 24, 2026 | Unverified |
-| Glassdoor | India Community and US profile policies | November 25 restore worker timed out. Live retry pending. | Unverified |
-| AmbitionBox | Desktop and narrow layouts covered | November 25 capture found hidden mobile controls. Live retry pending. | Unverified |
+| Glassdoor | India Community and US profile policies | November 25 capture exported state but exceeded the browser-close deadline. Live retry pending. | Unverified |
+| AmbitionBox | Desktop and narrow layouts covered | Fresh browser verification succeeded November 25. Key persistence failed. Encrypted setup retry pending. | Unverified |
 | Levels.fyi | Covered | Verified November 24, 2026 | Not applicable |
 | We Work Remotely | Signed-in Job Seeker dashboard evidence pending | Unverified | Public RSS only |
 

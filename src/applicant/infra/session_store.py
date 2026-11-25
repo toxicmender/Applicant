@@ -13,7 +13,7 @@ from ..errors import ApplicantError, ConfigError, ProfileBusy
 from ..files import document_bytes, write_document_bytes
 from ..permissions import make_private_directory
 from .advisory_lock import advisory_lock
-from .owned_worker import CleanupUnconfirmed, WorkerFailure, run_worker
+from .owned_worker import CleanupUnconfirmed, WorkerDeadline, WorkerFailure, run_worker
 from .path_identity import physical_path
 from .profile_lock import profile_lock
 
@@ -33,15 +33,19 @@ def _keyring_worker(connection, arguments):
     if sys.platform == 'win32':
         from keyring.backends.Windows import WinVaultKeyring
 
-        backend = WinVaultKeyring()
+        backend_class = WinVaultKeyring
     elif sys.platform == 'darwin':
         from keyring.backends.macOS import Keyring
 
-        backend = Keyring()
+        backend_class = Keyring
     else:
         from keyring.backends.SecretService import Keyring
 
-        backend = Keyring()
+        backend_class = Keyring
+    # Keep backend construction and OS credential access inside the operation deadline.
+    connection.send(('operation_ready', None))
+    connection.recv()
+    backend = backend_class()
     current = backend.get_password(KEY_SERVICE, account)
     if action == 'set' and current is None:
         backend.set_password(KEY_SERVICE, account, value)
@@ -55,10 +59,12 @@ def _keyring_worker(connection, arguments):
 def session_keyring(action, account, value=None):
     try:
         return run_worker(
-            _keyring_worker, (action, account, value), timeout=3, timeout_after_start=True
+            _keyring_worker, (action, account, value), timeout=3, preparation_timeout=10
         )
     except CleanupUnconfirmed:
         raise
+    except WorkerDeadline as error:
+        raise ConfigError(f'key_store_unavailable: {error}; retry encrypted setup') from None
     except WorkerFailure:
         raise ConfigError(
             'key_store_unavailable: unlock the OS keyring or configure session_storage = "plaintext"'

@@ -545,6 +545,7 @@ def _check_browser(
             ),
             interactive=interactive,
             prompt=Terminal().ask_interruptibly if interactive else None,
+            close_timeout=30,
             provider=name,
         )
     except CleanupUnconfirmed:

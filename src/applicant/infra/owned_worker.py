@@ -26,6 +26,10 @@ class WorkerFailure(SourceError):
     """The worker failed or could not finish normal teardown."""
 
 
+class WorkerDeadline(WorkerFailure):
+    """The worker exceeded its preparation or operation deadline."""
+
+
 class WorkerTeardownTimeout(WorkerFailure):
     """The browser or worker failed to exit within its cleanup allowance."""
 
@@ -251,7 +255,8 @@ def run_worker(
     check=None,
     progress=None,
     timeout: float | None = 60,
-    timeout_after_start: bool = False,
+    preparation_timeout: float | None = None,
+    close_timeout: float | None = None,
     grace: float = 5,
     monotonic=time.monotonic,
     provider: str = 'unknown',
@@ -275,7 +280,8 @@ def run_worker(
     child.close()
     job = None
     pipe = None
-    deadline = None if timeout is None or timeout_after_start else monotonic() + timeout
+    preparing = preparation_timeout is not None
+    deadline = None if timeout is None or preparing else monotonic() + timeout
     group_ready = False
     emitted = dropped = discarded = None
     received = 0
@@ -293,8 +299,8 @@ def run_worker(
         group_ready = os.name != 'nt'
         if os.name == 'nt':
             job = WindowsJob(pid)
-        if timeout_after_start and timeout is not None:
-            deadline = monotonic() + timeout
+        if preparation_timeout is not None:
+            deadline = monotonic() + preparation_timeout
         pipe.send(arguments)
         while True:
             received += _drain_diagnostics(diagnostics)
@@ -303,14 +309,21 @@ def run_worker(
             if deadline is not None and monotonic() >= deadline:
                 if closing:
                     raise WorkerTeardownTimeout('browser teardown deadline exceeded')
-                raise WorkerFailure('browser worker deadline exceeded')
+                phase = 'preparation' if preparing else 'operation'
+                raise WorkerDeadline(f'worker {phase} deadline exceeded')
             message = pending or pipe.receive()
             pending = None
             if message is not None:
                 kind, value = message
                 if kind == 'eof':
                     raise WorkerFailure('browser worker exited without a result')
-                if kind == 'pause':
+                if kind == 'operation_ready':
+                    if not preparing:
+                        raise WorkerFailure('unexpected worker readiness message')
+                    preparing = False
+                    deadline = None if timeout is None else monotonic() + timeout
+                    pipe.send(None)
+                elif kind == 'pause':
                     if pause is None or not interactive:
                         raise WorkerFailure('unexpected interactive worker request')
                     received += _drain_diagnostics(diagnostics)
@@ -349,7 +362,7 @@ def run_worker(
                     continue  # A heartbeat can race with a submitted answer.
                 elif kind == 'closing':
                     closing = True
-                    deadline = monotonic() + grace
+                    deadline = monotonic() + (grace if close_timeout is None else close_timeout)
                 elif kind == 'progress' and progress is not None:
                     progress(value)
                 elif kind in ('error', 'result'):
@@ -424,7 +437,7 @@ def run_worker(
                         provider,
                         pid,
                         str(original)
-                        if isinstance(original, WorkerTeardownTimeout)
+                        if isinstance(original, (WorkerDeadline, WorkerTeardownTimeout))
                         else type(original).__name__,
                     )
                 if (
