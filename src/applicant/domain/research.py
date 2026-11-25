@@ -5,7 +5,15 @@ from decimal import Decimal
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from .canonical import content_hash
 from .company_evidence import CompanyResponse
@@ -177,6 +185,47 @@ class JobParty(Record):
     recorded_at: Timestamp | None = None
 
 
+class VestingTranche(BaseModel):
+    model_config = Record.model_config
+
+    months: int = Field(ge=0)
+    percent: Decimal = Field(gt=0, le=100, allow_inf_nan=False)
+
+
+class CompensationDetails(BaseModel):
+    model_config = Record.model_config
+
+    payment_type: (
+        Literal['recurring_bonus', 'signing_bonus', 'equity_grant', 'annualized_equity'] | None
+    ) = None
+    statistic: Literal['mean', 'median', 'percentile'] | None = None
+    percentile: Decimal | None = Field(default=None, gt=0, lt=100, allow_inf_nan=False)
+    valuation_date: date | None = None
+    cliff_months: int | None = Field(default=None, ge=0)
+    vesting: tuple[VestingTranche, ...] = ()
+
+    @model_validator(mode='after')
+    def validate_details(self):
+        if (self.statistic == 'percentile') != (self.percentile is not None):
+            raise ValueError('a percentile statistic requires its percentile value')
+        months = [tranche.months for tranche in self.vesting]
+        if months != sorted(set(months)):
+            raise ValueError('vesting tranches must have unique, increasing months')
+        if sum(tranche.percent for tranche in self.vesting) > 100:
+            raise ValueError('vesting percentages cannot exceed 100')
+        if self.cliff_months is not None and months and months[0] < self.cliff_months:
+            raise ValueError('vesting cannot precede the stated cliff')
+        return self
+
+    @model_serializer(mode='wrap')
+    def omit_unknown(self, handler):
+        return {
+            name: value
+            for name, value in handler(self).items()
+            if value is not None and value != () and value != []
+        }
+
+
 class Compensation(Record):
     kind: Literal['compensation'] = 'compensation'
     minimum: Money | None = None
@@ -193,11 +242,25 @@ class Compensation(Record):
     geography: str | None = None
     sample_size: int | None = Field(default=None, ge=1)
     methodology: str | None = None
+    details: CompensationDetails | None = None
+
+    @model_serializer(mode='wrap')
+    def preserve_legacy_payload(self, handler):
+        value = handler(self)
+        if self.details is None:
+            value.pop('details', None)
+        return value
 
     @model_validator(mode='after')
     def bounds(self):
         if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
             raise ValueError('compensation minimum exceeds maximum')
+        if (
+            self.details
+            and self.details.statistic
+            and self.measurement not in ('benchmark', 'estimate')
+        ):
+            raise ValueError('compensation statistics require a benchmark or estimate measurement')
         return self
 
 

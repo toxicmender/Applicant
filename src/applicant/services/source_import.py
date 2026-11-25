@@ -49,7 +49,12 @@ def compensation_revisions(bundle, manifest, records, artifact_digest):
             identity = ('source_record', record.source_record_id)
         else:
             identity = ('batch_row', batch, record.row_locator or str(index))
-        metric = record.metric or item.payload.component
+        details = item.payload.details
+        metric = record.metric or (
+            item.payload.component,
+            details.statistic if details else None,
+            details.percentile if details else None,
+        )
         logical = content_hash((provider(manifest.provider).id, manifest.dataset, identity, metric))
         payload = item.model_dump(mode='json', exclude={'evidence_id', 'acquired_at'})
         revision = content_hash(payload)
