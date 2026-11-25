@@ -10,6 +10,7 @@ from pydantic import Field, field_validator, model_validator
 from .benchmarks import BenchmarkResponse
 from .canonical import canonical_json, content_hash
 from .contracts import Contract, Identity, Timestamp
+from .providers import GLASSDOOR_REGIONS
 
 CompanyProvider = Literal['glassdoor', 'ambitionbox', 'crunchbase', 'tracxn']
 
@@ -42,8 +43,10 @@ class CompanyAssociation(Contract):
         if self.provider == 'ambitionbox':
             valid = re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', self.locator)
         elif self.provider == 'glassdoor':
+            regions = '|'.join(map(re.escape, GLASSDOOR_REGIONS))
             valid = re.fullmatch(
-                r'https://www\.glassdoor\.com/Reviews/[^/?#]+-Reviews-E([0-9]+)\.htm', self.locator
+                rf'https://www\.glassdoor\.(?:{regions})/Reviews/[^/?#]+-Reviews-E([0-9]+)\.htm',
+                self.locator,
             )
             valid = valid and valid[1] == self.provider_company_id
         elif self.provider == 'crunchbase':

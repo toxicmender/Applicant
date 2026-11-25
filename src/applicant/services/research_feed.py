@@ -42,7 +42,9 @@ def observations_from(client, jobs, stamp, name):
     return observations, invalid
 
 
-def collect_feed(database, query, *, factory=board_client, clock=now, parent=None, probe=False):
+def collect_feed(
+    database, query, *, factory=board_client, clock=now, parent=None, probe=False, settings=None
+):
     allowed = {'providers', 'keywords', 'location', 'limit', 'require_all_sources', 'urls'}
     if not isinstance(query, dict) or set(query) - allowed or not query.get('providers'):
         raise ValueError(
@@ -95,7 +97,7 @@ def collect_feed(database, query, *, factory=board_client, clock=now, parent=Non
             status, error, retry_at = 'success', None, None
             try:
                 client = (
-                    OwnedBoard(name, owner.check)
+                    OwnedBoard(name, owner.check, settings=settings)
                     if factory is board_client
                     else factory(name, headless=True)
                 )
@@ -166,6 +168,8 @@ def collect_feed(database, query, *, factory=board_client, clock=now, parent=Non
                 except LeaseFailure as failure:
                     status, error = 'infrastructure_failure', failure
             outcome: dict[str, str | int] = {'provider': name, 'status': status}
+            if isinstance(client, OwnedBoard):
+                outcome.update(client.access)
             if error is None:
                 outcome['count'] = len(observations)
             else:

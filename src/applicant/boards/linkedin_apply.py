@@ -331,13 +331,14 @@ class LinkedIn(LinkedInGuest):
 
     def _load_state(self, filepath: str | Path):
         """A Playwright storage_state saved by `login`, or None."""
+        from ..infra.session_store import SessionIntegrityError, read_session_file
+
         try:
-            with open(filepath, encoding='utf-8') as file:
-                payload = json.load(file)
-        except FileNotFoundError:
+            payload = read_session_file(filepath, expected_provider='linkedin')
+        except SessionIntegrityError as error:
+            logger.warning('linkedin: %s', error)
             return None
-        except ValueError as error:
-            logger.warning(f'linkedin: {filepath} is not valid JSON ({error})')
+        if payload is None:
             return None
 
         if isinstance(payload, dict) and 'cookies' in payload:

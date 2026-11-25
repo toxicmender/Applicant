@@ -10,7 +10,6 @@ from uuid import uuid4
 from ..domain.contracts import now
 from ..domain.providers import provider
 from ..errors import DatabaseBusy, sqlite_busy
-from ..infra.store.maintenance import configure_connection
 from ..infra.store.sqlite import MIGRATIONS, Store
 
 
@@ -28,14 +27,16 @@ def health(database, name):
     )
 
 
-def recover_authentication(database, name):
+def recover_authentication(database, name, *, action='recover'):
     """Inspect and update existing health only; never initialize or migrate."""
     path = Path(database)
     if not path.exists():
         return {'status': 'skipped_missing_database'}
     try:
-        with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=rw', uri=True)) as db:
-            configure_connection(db)
+        with closing(
+            sqlite3.connect(path.resolve().as_uri() + '?mode=rw', uri=True, timeout=0)
+        ) as db:
+            db.execute('PRAGMA synchronous = FULL')
             if db.execute('PRAGMA user_version').fetchone()[0] != len(MIGRATIONS):
                 return {
                     'status': 'schema_incompatible',
@@ -43,11 +44,21 @@ def recover_authentication(database, name):
                     'command': f'applicant db upgrade --database "{path}"',
                 }
             with db:
+                identifier = provider(name).id
+                status = 'needs_setup' if action == 'expire' else 'ready'
                 changed = db.execute(
-                    "UPDATE provider_health SET status='ready',failures=0,reason=NULL "
-                    "WHERE provider=? AND status='needs_setup' AND lease_token IS NULL",
-                    (provider(name).id,),
+                    'UPDATE provider_health SET status=?,failures=0,reason=NULL '
+                    'WHERE provider=? AND status=? AND lease_token IS NULL',
+                    (status, identifier, 'ready' if action == 'expire' else 'needs_setup'),
                 ).rowcount
+                if (
+                    not changed
+                    and db.execute(
+                        'SELECT 1 FROM provider_health WHERE provider=? AND lease_token IS NOT NULL',
+                        (identifier,),
+                    ).fetchone()
+                ):
+                    return {'status': 'leased', 'retryable': True}
         return {'status': 'recovered' if changed else 'unchanged'}
     except sqlite3.Error as error:
         return {

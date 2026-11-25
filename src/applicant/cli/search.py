@@ -18,7 +18,7 @@ logger = get(__name__)
 
 
 def add_parser(add: AddParser) -> argparse.ArgumentParser:
-    search = add('search', help='search job boards without signing in')
+    search = add('search', help='search job boards')
     search.add_argument(
         'keywords',
         nargs='?',
@@ -183,6 +183,7 @@ def run(args: Search, settings: Settings) -> int:
         session=settings.path(settings.files.cookies),
     ) as board:
         board.owned_search = True
+        board.session_settings = settings
         if args.resume_pending:
             result = board.resume_pending(output, args.enrich_limit)
             print(

@@ -17,9 +17,10 @@ from ..domain.dates import epoch_to_iso
 from ..domain.job import Job
 from ..domain.places import country_for
 from ..domain.salary import parse_salary
-from ..errors import Blocked, SourceError, Unparseable
+from ..errors import Blocked, RateLimited, SourceError, Unparseable
 from ..infra.browser import browser, looks_blocked
 from ..infra.http import USER_AGENT, HttpClient
+from ..infra.session_access import SessionExpired, active_access
 from . import CAPABILITIES
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,7 @@ class Indeed:
         self.domain = domain.rstrip('/') if domain else None
         self.host = self.domain or BASE  # re-resolved per search from the location
         self.delay = delay
+        self._browser_only = False
         self.headless = headless
         # `delay` spaces the result pages. A 429 is not retried here: any
         # refusal of the plain request sends it to the browser instead
@@ -168,8 +170,19 @@ class Indeed:
         return '{}/jobs?{}'.format(self.host, urlencode(query))
 
     def _html(self, url):
+        access = active_access.get()
+        if self._browser_only:
+            return self._html_via_browser(url)
         try:
-            response = self.http.get(url)
+            response = (
+                self.http.get(url)
+                if access is None
+                else access.http(
+                    self.http.client,
+                    lambda: self.http.get(url),
+                    accepted=lambda r: r.status_code == 200 and bool(MOSAIC.search(r.text)),
+                )
+            )
             if response.status_code == 200 and MOSAIC.search(response.text):
                 return response.text
             logger.info(
@@ -177,8 +190,27 @@ class Indeed:
                 'retrying in a browser'
             )
         # unreachable after the retries, or rate limited
+        except (RateLimited, SessionExpired):
+            raise
         except SourceError as error:
             logger.info(f'indeed: plain request failed ({error}); retrying in a browser')
+        if access is not None:
+            from ..services.provider_setup import _verify_detailed
+
+            with access.exchange():
+                checked = _verify_detailed(
+                    'indeed',
+                    access.state,
+                    show=not self.headless,
+                    capture=access.record.get('capture'),
+                    origin=access.record.get('origin'),
+                )
+                if checked['status'] == 'needs_setup':
+                    raise SessionExpired('indeed: account session expired')
+                if checked['status'] != 'verified':
+                    raise Blocked('indeed: account verification was inconclusive')
+                access.publish(checked['state'])
+            self._browser_only = True
         # Indeed challenged or reshaped the plain request - try it in a browser
         return self._html_via_browser(url)
 

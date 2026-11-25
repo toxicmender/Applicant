@@ -31,7 +31,7 @@ class SetupLifecycleTest(unittest.TestCase):
         from tests.research_fixtures import NOW
 
         with tempfile.TemporaryDirectory() as folder:
-            settings = Settings(data_dir=Path(folder))
+            settings = Settings(session_storage='plaintext', data_dir=Path(folder))
             database = Path(folder) / 'chosen.db'
             lease = acquire(database, 'linkedin', clock=lambda: NOW)
             finish(database, 'linkedin', lease['token'], 'needs_setup', clock=lambda: NOW)
@@ -77,7 +77,7 @@ class SetupLifecycleTest(unittest.TestCase):
 
     def test_verified_replacement_and_metadata_divergence(self):
         with tempfile.TemporaryDirectory() as folder:
-            settings = Settings(data_dir=Path(folder))
+            settings = Settings(session_storage='plaintext', data_dir=Path(folder))
             source = Path(folder) / 'input.json'
             source.write_text(json.dumps(STATE), encoding='utf-8')
             self.assertEqual(session_status(settings, 'linkedin')['status'], 'needs_setup')
@@ -88,9 +88,9 @@ class SetupLifecycleTest(unittest.TestCase):
             self.assertEqual(session_status(settings, 'linkedin')['status'], 'verified')
             target = session_path(settings, 'linkedin')
             target.with_suffix('.status.json').write_text('{}', encoding='utf-8')
-            self.assertEqual(session_status(settings, 'linkedin')['status'], 'unverified')
+            self.assertEqual(session_status(settings, 'linkedin')['status'], 'verified')
             target.with_suffix('.status.json').unlink()
-            self.assertEqual(session_status(settings, 'linkedin')['status'], 'unverified')
+            self.assertEqual(session_status(settings, 'linkedin')['status'], 'verified')
             previous = target.read_bytes()
             with self.assertRaises(ConfigError):
                 import_session(

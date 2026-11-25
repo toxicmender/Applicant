@@ -17,7 +17,10 @@ Skipped without a browser (see RealBrowserTest); CI's browser job installs one.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import unittest
+from pathlib import Path
 
 import httpx
 
@@ -25,10 +28,14 @@ from applicant.boards.googlejobs import GoogleJobs
 from applicant.boards.indeed import Indeed
 from applicant.boards.linkedin_apply import LinkedIn
 from applicant.boards.naukri import Naukri
+from applicant.domain.providers import provider
 from applicant.errors import Blocked, NotFound
 from applicant.financials import CrunchbaseClient, TracxnClient
+from applicant.infra.browser import BrowserSession
 from applicant.reviews import GlassdoorClient
+from applicant.services.provider_setup import _verify_detailed
 from tests.fakes import RealBrowserTest
+from tests.setup_browser_regressions import SetupFailureBrowserTest as SetupFailureBrowserTest
 
 PAGE = 200
 
@@ -211,3 +218,216 @@ class LinkedInLiveTest(RealBrowserTest):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+AUTH_FIXTURES = Path(__file__).parent / 'fixtures' / 'provider_auth'
+
+
+class ProviderVerificationBrowserTest(RealBrowserTest):
+    def test_partition_metadata_survives_encrypted_restore(self):
+        from applicant.errors import ConfigError
+        from applicant.infra.session_store import SessionStore
+        from applicant.services.provider_setup import validate_state
+
+        keys = {}
+
+        def keyring(action, account, value=None):
+            if action == 'set':
+                keys.setdefault(account, value)
+            return keys.get(account)
+
+        for name, host, site in (
+            ('indeed', 'in.indeed.com', 'https://indeed.com'),
+            ('glassdoor', 'www.glassdoor.co.in', 'https://glassdoor.co.in'),
+        ):
+            with self.subTest(provider=name):
+                with BrowserSession() as session:
+                    session.context.add_cookies(
+                        [
+                            {
+                                'name': 'account',
+                                'value': 'synthetic-cookie-canary',
+                                'domain': host,
+                                'path': '/',
+                                'secure': True,
+                                'sameSite': 'None',
+                                'partitionKey': site,
+                            }
+                        ]
+                    )
+                    exported = session.context.storage_state()
+
+                def metadata(state):
+                    return [
+                        (c.get('partitionKey'), c.get('_crHasCrossSiteAncestor'))
+                        for c in state['cookies']
+                    ]
+
+                expected = metadata(exported)
+                assert (
+                    len(expected) == 1 and expected[0][0] == site and type(expected[0][1]) is bool
+                ), f'{name} capture: Chromium did not export the expected partition metadata'
+                try:
+                    state, _ = validate_state(exported, name)
+                except ConfigError as error:
+                    self.fail(
+                        f'{name} capture validation: Chromium partition metadata rejected: {error}'
+                    )
+                path = self.folder / name / 'storage_state.json'
+                store = SessionStore(path, name, keyring=keyring)
+                store.install({}, state, 'verified')
+                sealed = 'ciphertext' in store.snapshot()
+                assert sealed, f'{name} persistence: expected an encrypted session'
+                saved = SessionStore(path, name, keyring=keyring).active()
+                assert saved is not None and metadata(saved) == expected, (
+                    f'{name} persistence: encrypted round trip changed partition metadata'
+                )
+                with BrowserSession(storage_state=saved) as restored:
+                    actual = metadata(restored.context.storage_state())
+                assert actual == expected, (
+                    f'{name} restore: fresh Chromium context lost partition metadata'
+                )
+
+    def test_signed_in_fixtures_and_hidden_guest_controls(self):
+        def verify(name, fixture):
+            markup = (AUTH_FIXTURES / f'{fixture}.html').read_text(encoding='utf-8')
+
+            class FixtureSession(BrowserSession):
+                def start(self):
+                    page = super().start()
+                    page.route(
+                        '**/*', lambda route: route.fulfill(content_type='text/html', body=markup)
+                    )
+                    return page
+
+            return _verify_detailed(name, None, factory=FixtureSession)['status']
+
+        for name in ('indeed', 'naukri', 'googlejobs', 'glassdoor', 'ambitionbox', 'levels'):
+            with self.subTest(provider=name):
+                policy = provider(name).session
+                assert policy is not None
+                assert verify(name, name) == 'verified'
+        assert verify('levels', 'levels-signed-out') == 'needs_setup'
+
+    def test_indeed_restores_a_captured_uk_cookie_in_a_fresh_browser(self):
+        origin = 'https://uk.indeed.com'
+        markup = (AUTH_FIXTURES / 'indeed.html').read_text(encoding='utf-8')
+        requests = []
+        page = None
+        capturing = True
+
+        def respond(route):
+            if not route.request.is_navigation_request():
+                route.abort()
+                return
+            url = route.request.url
+            cookie = route.request.header_value('cookie')
+            requests.append((url, cookie))
+            if url == origin + '/' and (capturing or cookie == 'account=synthetic'):
+                headers = (
+                    {'Set-Cookie': 'account=synthetic; Path=/; Secure; HttpOnly'}
+                    if capturing
+                    else {}
+                )
+                route.fulfill(content_type='text/html', body=markup, headers=headers)
+            else:
+                route.fulfill(
+                    content_type='text/html',
+                    body='<a data-gnav-element-name="SignIn">Sign in</a>',
+                )
+
+        class FixtureSession(BrowserSession):
+            def start(self):
+                nonlocal page
+                if self._page is None:
+                    page = super().start()
+                    page.route('**/*', respond)
+                return super().start()
+
+        def fixture_session(*, headless, storage_state, capture_settings):
+            return FixtureSession(
+                headless=True, storage_state=storage_state, capture_settings=capture_settings
+            )
+
+        def sign_in(_prompt):
+            assert page is not None
+            page.goto(origin + '/')
+
+        captured = _verify_detailed(
+            'indeed', None, interactive=True, factory=fixture_session, pause=sign_in
+        )
+        assert captured['status'] == 'verified'
+        state = captured['state']
+        assert isinstance(state, dict)
+        assert state['cookies'][0]['domain'] == 'uk.indeed.com'
+        capturing = False
+        requests.clear()
+        restored = _verify_detailed(
+            'indeed', state, origin=captured['origin'], factory=fixture_session
+        )
+        assert restored['status'] == 'verified'
+        assert requests == [(origin + '/', 'account=synthetic')]
+
+    def test_cli_verification_outcomes_in_a_fresh_process(self):
+        from applicant.services.provider_setup import provider_session
+        from applicant.settings import Settings
+
+        store = provider_session(
+            Settings(data_dir=self.folder, session_storage='plaintext', store='files'), 'indeed'
+        )
+        store.install(
+            {},
+            {
+                'cookies': [
+                    {
+                        'name': 'account',
+                        'value': 'synthetic',
+                        'domain': '.indeed.com',
+                        'path': '/',
+                        'expires': -1,
+                        'secure': True,
+                        'httpOnly': False,
+                        'sameSite': 'Lax',
+                    }
+                ],
+                'origins': [],
+            },
+            'verified',
+            metadata={
+                'checked_at': '2026-11-01T00:00:00+00:00',
+                'origin': 'https://in.indeed.com',
+            },
+        )
+        config = self.folder / 'config.toml'
+        config.write_text('session_storage = "plaintext"\nstore = "files"\n', encoding='utf-8')
+        original = store.path.read_bytes()
+        for page, code, status, reason in (
+            ('challenge', 11, 'inconclusive', 'challenge'),
+            ('unknown', 5, 'inconclusive', 'marker_missing'),
+            ('signout', 3, 'needs_setup', None),
+            ('acquisition', 3, None, None),
+        ):
+            with self.subTest(page=page):
+                command = subprocess.run(
+                    [
+                        sys.executable,
+                        '-m',
+                        'tests.provider_browser_cli',
+                        page,
+                        '--config',
+                        str(config),
+                        '--data-dir',
+                        str(self.folder),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    check=False,
+                )
+                assert command.returncode == code, (command.stdout, command.stderr)
+                if status:
+                    result = json.loads(command.stdout)
+                    assert result['status'] == status
+                    assert result.get('reason') == reason
+                if page in {'challenge', 'unknown'}:
+                    assert store.path.read_bytes() == original

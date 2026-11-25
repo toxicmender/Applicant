@@ -142,6 +142,7 @@ class Settings(BaseModel):
     # sqlite: applicant.db beside the files is the record and the JSON/CSV are
     # exports of it. files: the JSON/CSV alone, as before the database existed.
     store: Store = 'sqlite'
+    session_storage: Literal['encrypted', 'plaintext'] = 'encrypted'
     files: Files = Files()
     crunchbase_key: SecretStr | None = None
     tracxn_key: SecretStr | None = None

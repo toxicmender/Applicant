@@ -39,12 +39,12 @@ class CompanyRecorder:
 
 def company_client(association, recorder, *, settings):
     provider = association.provider
+    # Portable review evidence must come from an anonymous request. The
+    # recorder preserves response bytes, including any embedded page state.
     if provider == 'ambitionbox':
         return AmbitionBoxClient(capture=recorder)
     if provider == 'glassdoor':
-        return GlassdoorClient(
-            profile_dir=settings.path(settings.files.glassdoor_profile), capture=recorder
-        )
+        return GlassdoorClient(profile_dir=None, capture=recorder)
     if provider == 'crunchbase':
         return CrunchbaseClient(
             api_key=settings.secret('crunchbase_key'),

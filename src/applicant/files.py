@@ -74,7 +74,7 @@ def document_bytes(document: Any, *, trailing_newline: bool = False) -> bytes:
     return text.replace('\n', os.linesep).encode('utf-8')
 
 
-def write_document_bytes(path: str | Path, content: bytes, *, replace=None) -> None:
+def write_document_bytes(path: str | Path, content: bytes, *, replace=None, private=False) -> None:
     """Publish previously serialized JSON without changing its digest."""
     target = Path(path)
     # a data directory named for the first time does not exist yet
@@ -85,7 +85,7 @@ def write_document_bytes(path: str | Path, content: bytes, *, replace=None) -> N
     try:
         with os.fdopen(descriptor, 'wb') as handle:
             # Own the descriptor even if permission setup fails.
-            if target.exists():
+            if target.exists() and not private:
                 copy_permissions(target, temporary)
             else:
                 make_private(temporary)

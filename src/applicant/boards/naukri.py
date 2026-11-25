@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import logging
 import re
+from contextlib import ExitStack, nullcontext
 
 from ..domain.dates import relative_to_iso
 from ..domain.job import Job
 from ..errors import Blocked
 from ..infra.browser import browser, looks_blocked
+from ..infra.session_access import active_access
 from . import CAPABILITIES
 
 logger = logging.getLogger(__name__)
@@ -54,47 +56,52 @@ class Naukri:
         jobs = []
         seen = set()
 
-        with browser(headless=self.headless, timeout=self.timeout) as page:
-            captured = []
-            page.on('response', lambda response: self._capture(response, captured))
-
-            page_number = 1
-            while len(jobs) < limit and page_number <= 15:
-                before = len(captured)
-                page.goto(
-                    search_url(keywords, location, page_number), wait_until='domcontentloaded'
+        access = active_access.get()
+        captured = []
+        with ExitStack() as stack:
+            common_page = None
+            if access is None:
+                common_page = stack.enter_context(
+                    browser(headless=self.headless, timeout=self.timeout)
                 )
-                if looks_blocked(page):
-                    raise Blocked(
-                        'Naukri served a bot check. Retry later, or run with --show '
-                        'to solve it in a visible window.'
+                common_page.on('response', lambda response: self._capture(response, captured))
+            for page_number in range(1, 16):
+                context = (
+                    nullcontext(common_page)
+                    if common_page is not None
+                    else browser(headless=self.headless, timeout=self.timeout)
+                )
+                captured.clear()
+                with context as page:
+                    if access is not None:
+                        page.on('response', lambda response: self._capture(response, captured))
+                    page.goto(
+                        search_url(keywords, location, page_number), wait_until='domcontentloaded'
                     )
-
-                try:
-                    page.wait_for_selector('.srp-jobtuple-wrapper', timeout=15000)
-                except Exception:  # noqa: BLE001 - no tuples on this page, so we are done
-                    logger.debug(f'naukri: no job tuples on page {page_number}; stopping')
-                    break
-                page.wait_for_timeout(int(self.delay * 1000))
-
-                from_api = self._from_api(captured[before:])
-                found = from_api or self._from_dom(page)
-                logger.debug(
-                    f'naukri: page {page_number}: {len(found)} job(s) from '
-                    + ('its search API' if from_api else 'the rendered page')
-                )
+                    if looks_blocked(page):
+                        raise Blocked(
+                            'Naukri served a bot check. Retry later, or run with --show '
+                            'to solve it in a visible window.'
+                        )
+                    if access is not None:
+                        access.check_page(page)
+                    try:
+                        page.wait_for_selector('.srp-jobtuple-wrapper', timeout=15000)
+                    except Exception:  # noqa: BLE001 - no tuples on this page, so we are done
+                        logger.debug(f'naukri: no job tuples on page {page_number}; stopping')
+                        break
+                    page.wait_for_timeout(int(self.delay * 1000))
+                    found = self._from_api(captured) or self._from_dom(page)
                 if not found:
                     break
-
                 for job in found:
-                    if job.id in seen:
-                        continue
-                    seen.add(job.id)
-                    jobs.append(job)
-                    if len(jobs) >= limit:
-                        break
-
-                page_number += 1
+                    if job.id not in seen:
+                        seen.add(job.id)
+                        jobs.append(job)
+                        if len(jobs) >= limit:
+                            break
+                if len(jobs) >= limit:
+                    break
 
         logger.info(f'naukri: {min(len(jobs), limit)} job(s)')
         return jobs[:limit]

@@ -9,12 +9,14 @@ import sys
 import unittest
 from contextlib import suppress
 from threading import Event
+from time import monotonic, sleep
 from unittest.mock import Mock, patch
 
 from playwright.sync_api import Error
 
+from applicant.errors import ProfileBusy
 from applicant.infra.browser_diagnostics import QUEUE_SIZE, event, stage
-from applicant.infra.owned_worker import WorkerFailure, _ControlPipe, run_worker
+from applicant.infra.owned_worker import CleanupUnconfirmed, WorkerFailure, _ControlPipe, run_worker
 
 
 def echo(connection, arguments):
@@ -22,9 +24,34 @@ def echo(connection, arguments):
     return arguments
 
 
+def slow_close(connection, delays):
+    from multiprocessing.util import Finalize
+
+    close_delay, exit_delay = delays
+    connection.send(('closing', None))
+    sleep(close_delay)
+    Finalize(None, sleep, args=(exit_delay,), exitpriority=0)
+    return 'verified'
+
+
+def slow_keyring_import(connection, seconds):
+    sleep(seconds)
+    connection.send(('operation_ready', None))
+    connection.recv()
+    return 'available'
+
+
 def hanging(connection, arguments):
     connection.send(('closing', None))
     connection.recv()
+
+
+def profile_busy(connection, arguments):
+    raise ProfileBusy('private detail')
+
+
+def unconfirmed_cleanup(connection, arguments):
+    raise CleanupUnconfirmed('private detail')
 
 
 def failing(connection, arguments):
@@ -99,6 +126,12 @@ def held_tree(connection, address):
         connection.recv()
 
 
+def keyring_held_tree(connection, address):
+    connection.send(('operation_ready', None))
+    connection.recv()
+    return held_tree(connection, address)
+
+
 def probe_windows_job(pid):
     if sys.platform != 'win32':
         raise AssertionError('Windows job probe requires Windows')
@@ -170,8 +203,40 @@ class OwnedWorkerTest(unittest.TestCase):
                 raise
             raise unittest.SkipTest(f'native capability restriction: {error}') from error
 
+    def test_setup_allows_slow_pre_result_browser_close(self):
+        from applicant.services.provider_setup import _check_browser
+
+        def simulate_close(function, arguments, **options):
+            return run_worker(slow_close, (5.5, 0), **options)
+
+        with patch('applicant.infra.owned_worker.run_worker', side_effect=simulate_close):
+            self.assertEqual(_check_browser('glassdoor', None), 'verified')
+
+    def test_keyring_backend_loading_has_its_own_bounded_allowance(self):
+        self.assertEqual(
+            run_worker(slow_keyring_import, 0.6, timeout=0.3, preparation_timeout=2),
+            'available',
+        )
+        with self.assertRaisesRegex(WorkerFailure, 'preparation'):
+            run_worker(slow_keyring_import, 30, timeout=3, preparation_timeout=0.3)
+
+    def test_cleanup_failure_survives_worker_boundary(self):
+        with self.assertRaisesRegex(CleanupUnconfirmed, 'owned worker cleanup'):
+            run_worker(unconfirmed_cleanup, None)
+
     def test_private_roundtrip(self):
         self.assertEqual(run_worker(echo, {'synthetic': 'state'}), {'synthetic': 'state'})
+
+    def test_completed_browser_teardown_has_separate_worker_exit_allowance(self):
+        self.assertEqual(
+            run_worker(slow_close, (2, 1.5), grace=3),
+            'verified',
+            'Glassdoor restore result must survive a slow worker exit after browser teardown',
+        )
+
+    def test_hung_worker_exit_is_bounded(self):
+        with self.assertRaisesRegex(WorkerFailure, 'process exit'):
+            run_worker(slow_close, (0, 30), grace=0.5)
 
     def test_hung_close_is_bounded(self):
         # The injected clock advances only after the closing message has arrived.
@@ -315,6 +380,59 @@ class OwnedWorkerTest(unittest.TestCase):
                 sentinel.join(60)
             sentinel.close()
 
+    def test_keyring_timeout_terminates_owned_descendant(self):
+        from applicant.errors import ConfigError
+        from applicant.infra.session_store import session_keyring
+
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1', 0))
+            listener.listen()
+            listener.settimeout(10)
+            descendants = []
+
+            def ready(_):
+                descendant, _ = listener.accept()
+                descendants.append(descendant)
+                descendant.settimeout(10)
+                with descendant.makefile('rb') as stream:
+                    self.assertEqual(stream.read(5), b'ready')
+
+            modeled_timeout = iter((0.0, 4.0))
+            startup_limit = monotonic() + 30
+
+            def test_clock():
+                if descendants:
+                    return next(modeled_timeout, 4.0)
+                return 4.0 if monotonic() >= startup_limit else 0.0
+
+            def worker(_function, _arguments, *, timeout, preparation_timeout, check):
+                self.assertEqual(timeout, 3)
+                self.assertEqual(preparation_timeout, 10)
+                self.assertIsNone(check)
+                return run_worker(
+                    keyring_held_tree,
+                    listener.getsockname(),
+                    timeout=timeout,
+                    preparation_timeout=preparation_timeout,
+                    grace=1.0,
+                    interactive=True,
+                    pause=ready,
+                    monotonic=test_clock,
+                )
+
+            try:
+                with (
+                    patch('applicant.infra.session_store.run_worker', side_effect=worker),
+                    self.assertRaisesRegex(ConfigError, 'key_store_unavailable'),
+                ):
+                    session_keyring('get', 'indeed/test-profile')
+                self.assertEqual(len(descendants), 1)
+                with suppress(ConnectionResetError):
+                    self.assertEqual(descendants[0].recv(1), b'')
+            finally:
+                for descendant in descendants:
+                    descendant.close()
+
 
 class OwnedWorkerBoundaryTest(unittest.TestCase):
     def test_control_pipe_waiting_for_partial_message_keeps_supervisor_responsive(self):
@@ -371,3 +489,8 @@ class OwnedWorkerBoundaryTest(unittest.TestCase):
         self.assertLessEqual(process.join.call_args.args[0], 5)
         transport.return_value.close.assert_called_once_with()
         child.close.assert_called_once_with()
+
+
+def test_owned_worker_reports_profile_contention_without_private_details():
+    with unittest.TestCase().assertRaisesRegex(ProfileBusy, 'retry the operation'):
+        run_worker(profile_busy, None)

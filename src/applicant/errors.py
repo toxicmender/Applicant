@@ -126,6 +126,10 @@ class ConfigError(ApplicantError):
     """The settings, flags or environment do not describe a runnable job."""
 
 
+class CookieSchemaError(ConfigError):
+    """The supplied browser cookie cannot be safely interpreted."""
+
+
 class ProfileBusy(ConfigError):
     """Another process owns the session profile."""
 

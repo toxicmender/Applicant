@@ -9,24 +9,47 @@ import signal
 import struct
 import sys
 import time
-from contextlib import suppress
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
 from typing import Any
 
-from ..errors import SourceError
+from ..errors import ApplicantError, ConfigError, ProfileBusy, SourceError
 from .browser_diagnostics import QUEUE_SIZE, WorkerDiagnostics, active_diagnostics, failure_details
 from .interrupts import defer_interrupt
 
 logger = logging.getLogger('applicant.browser.worker')
+BROWSER_CLOSE_TIMEOUT = 30
+_worker_connection: ContextVar[Any] = ContextVar('owned_worker_connection', default=None)
+
+
+@contextmanager
+def browser_closing():
+    connection = _worker_connection.get()
+    if connection is not None:
+        connection.send(('browser_close_started', None))
+    try:
+        yield
+    finally:
+        if connection is not None:
+            connection.send(('browser_close_finished', None))
 
 
 class WorkerFailure(SourceError):
     """The worker failed or could not finish normal teardown."""
 
 
-class CleanupUnconfirmed(WorkerFailure):
+class WorkerDeadline(WorkerFailure):
+    """The worker exceeded its preparation or operation deadline."""
+
+
+class WorkerTeardownTimeout(WorkerFailure):
+    """The browser or worker failed to exit within its cleanup allowance."""
+
+
+class CleanupUnconfirmed(ApplicantError):
     cleanup_unconfirmed = True
 
 
@@ -205,6 +228,7 @@ def _child(connection, function, diagnostics_queue, provider):
     connection.send(('ready', None))
     diagnostics = WorkerDiagnostics(diagnostics_queue, provider)
     token = active_diagnostics.set(diagnostics)
+    connection_token = _worker_connection.set(connection)
     try:
         arguments = connection.recv()
         kind, value = 'result', function(connection, arguments)
@@ -215,6 +239,7 @@ def _child(connection, function, diagnostics_queue, provider):
         if diagnostics.cleanup_failures:
             value = {**value, 'cleanup_failures': diagnostics.cleanup_failures}
     finally:
+        _worker_connection.reset(connection_token)
         active_diagnostics.reset(token)
     try:
         connection.send(
@@ -247,6 +272,8 @@ def run_worker(
     check=None,
     progress=None,
     timeout: float | None = 60,
+    preparation_timeout: float | None = None,
+    close_timeout: float | None = None,
     grace: float = 5,
     monotonic=time.monotonic,
     provider: str = 'unknown',
@@ -270,38 +297,89 @@ def run_worker(
     child.close()
     job = None
     pipe = None
-    deadline = None if timeout is None else monotonic() + timeout
+    preparing = preparation_timeout is not None
+    deadline = None if timeout is None or preparing else monotonic() + timeout
     group_ready = False
     emitted = dropped = discarded = None
     received = 0
     failure = None
     closing = None
+    browser_deadline = None
     pending = None
+
+    def check_operation():
+        if check:
+            check()
+        now = monotonic()
+        if browser_deadline is not None and now >= browser_deadline:
+            raise WorkerTeardownTimeout('browser teardown deadline exceeded')
+        if deadline is not None and now >= deadline:
+            if closing:
+                raise WorkerTeardownTimeout('browser teardown deadline exceeded')
+            phase = 'preparation' if preparing else 'operation'
+            raise WorkerDeadline(f'worker {phase} deadline exceeded')
+
+    def check_keyring_caller():
+        if not process.is_alive():
+            raise WorkerFailure('acquisition worker exited during keyring request')
+        check_operation()
+
     try:
         pipe = _ControlPipe(parent)
         startup_deadline = time.monotonic() + 10
         while (ready := pipe.receive()) is None and time.monotonic() < startup_deadline:
             if not process.is_alive():
                 break
+            if check:
+                check()
         if ready != ('ready', None):
             raise WorkerFailure('browser worker startup failed')
         group_ready = os.name != 'nt'
         if os.name == 'nt':
             job = WindowsJob(pid)
+        if preparation_timeout is not None:
+            deadline = monotonic() + preparation_timeout
         pipe.send(arguments)
         while True:
             received += _drain_diagnostics(diagnostics)
-            if check:
-                check()
-            if deadline is not None and monotonic() >= deadline:
-                raise WorkerFailure('browser worker deadline exceeded')
+            check_operation()
             message = pending or pipe.receive()
             pending = None
             if message is not None:
                 kind, value = message
                 if kind == 'eof':
                     raise WorkerFailure('browser worker exited without a result')
-                if kind == 'pause':
+                if kind == 'operation_ready':
+                    if not preparing:
+                        raise WorkerFailure('unexpected worker readiness message')
+                    preparing = False
+                    deadline = None if timeout is None else monotonic() + timeout
+                    pipe.send(None)
+                elif kind == 'keyring_request':
+                    from .session_store import _local_session_keyring
+
+                    if (
+                        preparation_timeout is not None
+                        or not isinstance(value, tuple)
+                        or len(value) != 3
+                        or value[0] not in ('get', 'set', 'delete')
+                        or not isinstance(value[1], str)
+                        or (
+                            not isinstance(value[2], str)
+                            if value[0] == 'set'
+                            else value[2] is not None
+                        )
+                    ):
+                        raise WorkerFailure('invalid keyring request')
+                    try:
+                        result = _local_session_keyring(*value, check=check_keyring_caller)
+                    except ConfigError as error:
+                        reply = (False, str(error))
+                    else:
+                        reply = (True, result)
+                    check_keyring_caller()
+                    pipe.send(('keyring_reply', reply))
+                elif kind == 'pause':
                     if pause is None or not interactive:
                         raise WorkerFailure('unexpected interactive worker request')
                     received += _drain_diagnostics(diagnostics)
@@ -338,9 +416,19 @@ def run_worker(
                     deadline = None if timeout is None else monotonic() + timeout
                 elif kind == 'heartbeat':
                     continue  # A heartbeat can race with a submitted answer.
+                elif kind == 'browser_close_started':
+                    if browser_deadline is not None:
+                        raise WorkerFailure('browser worker reported overlapping closes')
+                    browser_deadline = monotonic() + (
+                        BROWSER_CLOSE_TIMEOUT if close_timeout is None else close_timeout
+                    )
+                elif kind == 'browser_close_finished':
+                    if browser_deadline is None:
+                        raise WorkerFailure('browser worker finished a close without starting it')
+                    browser_deadline = None
                 elif kind == 'closing':
-                    closing = time.monotonic() + grace
-                    deadline = monotonic() + grace
+                    closing = True
+                    deadline = monotonic() + (grace if close_timeout is None else close_timeout)
                 elif kind == 'progress' and progress is not None:
                     progress(value)
                 elif kind in ('error', 'result'):
@@ -349,18 +437,33 @@ def run_worker(
                         logger.debug(
                             'browser worker error provider=%s pid=%s %s', provider, pid, result
                         )
-                        failure = WorkerFailure(
-                            'browser worker failed: {exception_class} during {operation}'.format(
-                                **result
+                        if (
+                            result['exception_module'] == CleanupUnconfirmed.__module__
+                            and result['exception_class'] == CleanupUnconfirmed.__name__
+                        ):
+                            failure = CleanupUnconfirmed(
+                                'owned worker cleanup could not be confirmed'
                             )
-                            + (f' ({result["network_code"]})' if result['network_code'] else '')
-                        )
+                        elif (
+                            result['exception_module'] == ProfileBusy.__module__
+                            and result['exception_class'] == ProfileBusy.__name__
+                        ):
+                            failure = ProfileBusy('provider session is busy; retry the operation')
+                        else:
+                            failure = WorkerFailure(
+                                'browser worker failed: {exception_class} during {operation}'.format(
+                                    **result
+                                )
+                                + (f' ({result["network_code"]})' if result['network_code'] else '')
+                            )
                     break
             elif not process.is_alive():
                 raise WorkerFailure('browser worker exited without a result')
         # The child can only finish flushing its queue while the parent drains it.
-        flush_deadline = closing if closing is not None else time.monotonic() + grace
+        flush_deadline = time.monotonic() + grace
         while process.is_alive() and time.monotonic() < flush_deadline:
+            if check:
+                check()
             received += _drain_diagnostics(diagnostics)
             process.join(min(0.05, max(0.0, flush_deadline - time.monotonic())))
         received += _drain_diagnostics(diagnostics)
@@ -369,7 +472,7 @@ def run_worker(
                 logger.warning('browser worker teardown exceeded deadline after failure')
             raise failure
         if process.is_alive():
-            raise WorkerFailure('browser worker teardown exceeded deadline')
+            raise WorkerTeardownTimeout('worker process exit deadline exceeded')
         return result
     except EOFError as error:
         raise WorkerFailure('browser worker exited without a result') from error
@@ -404,7 +507,14 @@ def run_worker(
                         )
                 logger.debug('browser worker cleanup started provider=%s pid=%s', provider, pid)
                 if original is not None:
-                    logger.debug('browser worker failure cleanup provider=%s pid=%s', provider, pid)
+                    logger.debug(
+                        'browser worker failure cleanup provider=%s pid=%s: %s',
+                        provider,
+                        pid,
+                        str(original)
+                        if isinstance(original, (WorkerDeadline, WorkerTeardownTimeout))
+                        else type(original).__name__,
+                    )
                 if (
                     prompt is not None
                     and pipe is not None

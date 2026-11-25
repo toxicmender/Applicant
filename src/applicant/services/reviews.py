@@ -68,13 +68,48 @@ def fetch_reviews(
         with Store.managed(output, 'ratings') as (store, target):
             store._reconcile_export('ratings', store._managed_name('ratings', target), target)
 
+    def scope_for(client, *, result=None, region=None):
+        managed = getattr(client, 'session_store', None)
+        if managed is not None:
+            record = managed.snapshot()
+            region = region or record.get('region') or 'default'
+            if result is not None:
+                access = getattr(client, 'access', {})
+                if access.get('access_mode') == 'public':
+                    return f'public:{region}'
+                if access.get('access_mode') == 'authenticated' and access.get('profile_id'):
+                    if (
+                        record.get('status') in ('cleared', 'needs_setup')
+                        or record.get('profile_id') != access['profile_id']
+                        or record.get('generation') != access['generation']
+                    ):
+                        return None
+                    return f'authenticated:{region}:{access["profile_id"]}:{access["generation"]}'
+                return None
+            if 'state' in record or 'ciphertext' in record:
+                if record.get('status') != 'needs_setup':
+                    return f'authenticated:{region}:{record["profile_id"]}:{record["generation"]}'
+            elif record and not record.get('format'):
+                return None
+            return f'public:{region}'
+        if isinstance(client, GlassdoorClient):
+            return browser_scope(client.profile_dir)
+        return 'public'
+
     def one(source: str) -> Any:
         client = clients[source]
-        scope, locator = None, company
+        scope, locator, region = None, company, None
         if isinstance(client, AmbitionBoxClient):
-            scope, locator = 'public', slugify(company)
+            scope, locator = scope_for(client), slugify(company)
         elif isinstance(client, GlassdoorClient):
-            scope, locator = browser_scope(client.profile_dir), reviews_url(company)[2]
+            scope = scope_for(client)
+            session = client.session_store
+            record = session.snapshot() if session is not None else {}
+            url, _, employer = reviews_url(company, region=record.get('region'))
+            if session is not None:
+                region = url.split('/')[2].removeprefix('www.glassdoor.')
+                scope = scope_for(client, region=region)
+            locator = employer if session is None else url
         previous = (
             cache.entry(source, locator, scope) if cache is not None and scope is not None else None
         )
@@ -99,6 +134,16 @@ def fetch_reviews(
             rating.overall_rating is None and rating.review_count is None and not rating.reviews
         ):
             raise Unparseable('provider did not return usable review data')
+        if getattr(client, 'session_store', None) is not None:
+            if isinstance(client, GlassdoorClient):
+                locator, _, _ = reviews_url(rating.url)
+                region = locator.split('/')[2].removeprefix('www.glassdoor.')
+            scope = scope_for(client, result=rating, region=region)
+            previous = (
+                cache.entry(source, locator, scope)
+                if cache is not None and scope is not None
+                else None
+            )
         if previous and (not rating.identity_verified or rating.company_id != previous['identity']):
             raise Unparseable('review refresh did not verify the cached company')
         payload = rating.to_dict()
@@ -107,10 +152,6 @@ def fetch_reviews(
             and scope is not None
             and isinstance(rating, CompanyRating)
             and rating.identity_verified
-            and (
-                not isinstance(client, GlassdoorClient)
-                or browser_scope(client.profile_dir) == scope
-            )
         ):
             cache_records[len(completed)] = (
                 source,
@@ -147,16 +188,27 @@ def fetch_reviews(
                 updates.append((source, locator, scope, previous, rating, stamp))
         write(payloads)
         for source, locator, scope, previous, rating, stamp in updates:
-            cache.keep_locked(
-                source,
-                locator,
-                scope,
-                rating.company_id,
-                previous,
-                len(rating.reviews),
-                rating.to_dict(),
-                stamp,
-            )
+            client = clients[source]
+            managed = getattr(client, 'session_store', None)
+            with (
+                managed.lock()
+                if managed is not None and scope.startswith('authenticated:')
+                else nullcontext()
+            ):
+                if managed is not None and scope.startswith('authenticated:'):
+                    region = scope.split(':')[1]
+                    if scope_for(client, region=region) != scope:
+                        continue
+                cache.keep_locked(
+                    source,
+                    locator,
+                    scope,
+                    rating.company_id,
+                    previous,
+                    len(rating.reviews),
+                    rating.to_dict(),
+                    stamp,
+                )
 
     def persist():
         if discard:

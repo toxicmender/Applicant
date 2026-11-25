@@ -3,9 +3,13 @@ from __future__ import annotations
 import json
 import re
 from contextlib import suppress
+from urllib.parse import urlsplit
 
-from ..errors import Blocked, SourceError, Unparseable
-from ..infra.browser import BrowserSession, looks_blocked
+from ..domain.providers import GLASSDOOR_REGIONS
+from ..errors import ApplicantError, Blocked, ConfigError, SourceError, Unparseable
+from ..infra.browser import BrowserSession, browser, looks_blocked
+from ..infra.session_access import active_access
+from ..infra.session_store import SessionStore
 from ..interaction import Interaction, Terminal
 from ..log import get
 from .models import CompanyRating, Review
@@ -24,8 +28,25 @@ APOLLO_STATE = re.compile(r'apolloState"\s*:\s*(\{.+?\})\s*\}\s*;', re.DOTALL)
 NEXT_DATA = re.compile(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.DOTALL)
 
 
-def reviews_url(company, page=1):
+def reviews_url(company, page=1, *, region=None):
     """Accepts a full reviews url or a 'Google-E9079' style slug+id pair."""
+    base = BASE
+    explicit = urlsplit(company).hostname if company.startswith('https://') else None
+    if explicit:
+        requested = explicit.removeprefix('www.').removeprefix('glassdoor.')
+        if (
+            explicit.removeprefix('www.') != f'glassdoor.{requested}'
+            or requested not in GLASSDOOR_REGIONS
+        ):
+            raise ConfigError('Glassdoor review host is outside the supported regions')
+        if region and requested != region:
+            raise ConfigError(
+                f'Glassdoor session region {region} conflicts with requested region {requested}. '
+                f'Run applicant setup provider glassdoor --reauth --region {requested}'
+            )
+        base = 'https://www.glassdoor.' + requested
+    elif region:
+        base = 'https://www.glassdoor.' + region
     match = REVIEWS_URL.match(company) or SLUG_AND_ID.match(company)
     if not match:
         raise SourceError(
@@ -33,7 +54,7 @@ def reviews_url(company, page=1):
             'got {!r}. Glassdoor company search is behind the same bot check, so names '
             'cannot be resolved automatically.'.format(company)
         )
-    url = '{}/Reviews/{}-Reviews-E{}.htm'.format(BASE, match.group('slug'), match.group('id'))
+    url = '{}/Reviews/{}-Reviews-E{}.htm'.format(base, match.group('slug'), match.group('id'))
     if page > 1:
         url = url.replace('.htm', '_P{}.htm'.format(page))
     return url, match.group('slug'), match.group('id')
@@ -63,6 +84,8 @@ class GlassdoorClient:
         self.interaction = interaction or Terminal()
         self.profile_dir = profile_dir
         self.owned = False
+        self.session_store: SessionStore | None = None
+        self.access = {}
         self.login = login
         self.headless = False if login else headless
         self.timeout = timeout
@@ -77,10 +100,12 @@ class GlassdoorClient:
             if self.owned:
                 from ..infra.company_worker import fetch_company
 
-                rating = fetch_company('glassdoor', self, company, max_reviews)
+                rating = fetch_company(
+                    'glassdoor', self, company, max_reviews, capture=self.capture
+                )
             else:
                 rating = self._fetch(company, max_reviews)
-        except SourceError:
+        except ApplicantError:
             raise
         # the browser: launch failures, timeouts, a window closed by hand
         except Exception as error:
@@ -96,6 +121,9 @@ class GlassdoorClient:
         return rating
 
     def _fetch(self, company, max_reviews):
+        access = active_access.get()
+        if access is not None:
+            return self._fetch_authenticated(company, max_reviews, access)
         url, slug, employer_id = reviews_url(company)
         payloads = []
         html_pages = []
@@ -128,6 +156,31 @@ class GlassdoorClient:
             if self.login:
                 self._save_state(session)
 
+        rating = self._build(payloads, html_pages, slug, employer_id, url)
+        rating.reviews = rating.reviews[: max(0, max_reviews)]
+        return rating
+
+    def _fetch_authenticated(self, company, max_reviews, access):
+        region = access.record.get('region')
+        url, slug, employer_id = reviews_url(company, region=region)
+        payloads, html_pages = [], []
+        for number in range(1, 31):
+            current, _, _ = reviews_url(company, number, region=region)
+            with browser(headless=self.headless, timeout=self.timeout) as page:
+                page.on('response', lambda response: self._capture(response, payloads))
+                response = page.goto(current, wait_until='domcontentloaded')
+                self._settle(page)
+                access.check_page(page)
+                if response is not None and response.status >= 400:
+                    if number == 1:
+                        raise Blocked(f'Glassdoor review page returned {response.status}')
+                    break
+                html = page.content()
+                html_pages.append(html)
+                if self.capture is not None:
+                    self.capture(current, html.encode('utf-8'), 'browser_dom')
+            if self._review_count(payloads, html_pages) >= max_reviews:
+                break
         rating = self._build(payloads, html_pages, slug, employer_id, url)
         rating.reviews = rating.reviews[: max(0, max_reviews)]
         return rating

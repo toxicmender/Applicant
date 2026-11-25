@@ -70,12 +70,17 @@ def clients(
 ) -> dict[str, AmbitionBoxClient | GlassdoorClient]:
     """One place that knows which client a --source names."""
     from ..reviews import AmbitionBoxClient, GlassdoorClient
+    from ..services.provider_setup import provider_session
 
     wanted = REVIEW_SOURCES if args.source == 'both' else (args.source,)
     made: dict[str, AmbitionBoxClient | GlassdoorClient] = {}
     for source in wanted:
         if source == 'ambitionbox':
-            made[source] = AmbitionBoxClient()
+            ambitionbox = AmbitionBoxClient()
+            session = provider_session(settings, source)
+            if session.path.is_file():
+                ambitionbox.session_store = session
+            made[source] = ambitionbox
         else:
             made[source] = GlassdoorClient(
                 profile_dir=configured_path(
@@ -87,6 +92,16 @@ def clients(
             )
             if isinstance(review := made[source], GlassdoorClient):
                 review.owned = True
+                configured = settings
+                if args.profile:
+                    configured = settings.model_copy(
+                        update={
+                            'files': settings.files.model_copy(
+                                update={'glassdoor_profile': args.profile}
+                            )
+                        }
+                    )
+                review.session_store = provider_session(configured, source)
     return made
 
 

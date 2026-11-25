@@ -5,6 +5,14 @@
 **/applied_via_jobs_interface.json
 **/.money_cache.json
 **/storage_state.json
+.applicant/sessions/
+**/.storage_state.json.*.tmp
+**/.cookies.json.*.tmp
+**/storage_state.lock
+**/cookies.lock
+**/*.session-gate.lock
+**/*.session-id.json
+**/.*.session-id.json.*.tmp
 **/company_financials.json
 **/applicant.db
 **/applicant.db-journal
