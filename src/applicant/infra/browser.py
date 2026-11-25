@@ -25,6 +25,7 @@ from ..errors import AuthFailed, SourceError
 from ..permissions import make_private
 from .browser_diagnostics import event, network_code, safe_origin, stage
 from .http import USER_AGENT
+from .owned_worker import browser_closing
 from .profile_lock import profile_lock
 from .session_access import active_access
 from .session_store import read_session_file
@@ -202,7 +203,9 @@ class BrowserSession:
                                 **context_options, storage_state=self.storage_state
                             )
             except Exception as error:  # noqa: BLE001 - try the next browser channel
-                self._close_quietly('_closer')
+                if self._closer is not None:
+                    with browser_closing():
+                        self._close_quietly('_closer')
                 failures.append(f'{label}: {type(error).__name__}')
                 continue
             self.channel = channel
@@ -234,8 +237,10 @@ class BrowserSession:
 
     def close(self) -> None:
         """Close everything that was opened. Safe to call more than once."""
-        self._close_quietly('_closer')
-        self._close_quietly('_playwright')
+        if self._closer is not None or self._playwright is not None:
+            with browser_closing():
+                self._close_quietly('_closer')
+                self._close_quietly('_playwright')
         self._context = self._page = None
         if self._profile_lock is not None:
             lock, self._profile_lock = self._profile_lock, None

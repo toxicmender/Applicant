@@ -9,7 +9,8 @@ import signal
 import struct
 import sys
 import time
-from contextlib import suppress
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
@@ -20,6 +21,20 @@ from .browser_diagnostics import QUEUE_SIZE, WorkerDiagnostics, active_diagnosti
 from .interrupts import defer_interrupt
 
 logger = logging.getLogger('applicant.browser.worker')
+BROWSER_CLOSE_TIMEOUT = 30
+_worker_connection: ContextVar[Any] = ContextVar('owned_worker_connection', default=None)
+
+
+@contextmanager
+def browser_closing():
+    connection = _worker_connection.get()
+    if connection is not None:
+        connection.send(('browser_close_started', None))
+    try:
+        yield
+    finally:
+        if connection is not None:
+            connection.send(('browser_close_finished', None))
 
 
 class WorkerFailure(SourceError):
@@ -213,6 +228,7 @@ def _child(connection, function, diagnostics_queue, provider):
     connection.send(('ready', None))
     diagnostics = WorkerDiagnostics(diagnostics_queue, provider)
     token = active_diagnostics.set(diagnostics)
+    connection_token = _worker_connection.set(connection)
     try:
         arguments = connection.recv()
         kind, value = 'result', function(connection, arguments)
@@ -223,6 +239,7 @@ def _child(connection, function, diagnostics_queue, provider):
         if diagnostics.cleanup_failures:
             value = {**value, 'cleanup_failures': diagnostics.cleanup_failures}
     finally:
+        _worker_connection.reset(connection_token)
         active_diagnostics.reset(token)
     try:
         connection.send(
@@ -287,6 +304,7 @@ def run_worker(
     received = 0
     failure = None
     closing = None
+    browser_deadline = None
     pending = None
     try:
         pipe = _ControlPipe(parent)
@@ -306,7 +324,10 @@ def run_worker(
             received += _drain_diagnostics(diagnostics)
             if check:
                 check()
-            if deadline is not None and monotonic() >= deadline:
+            now = monotonic()
+            if browser_deadline is not None and now >= browser_deadline:
+                raise WorkerTeardownTimeout('browser teardown deadline exceeded')
+            if deadline is not None and now >= deadline:
                 if closing:
                     raise WorkerTeardownTimeout('browser teardown deadline exceeded')
                 phase = 'preparation' if preparing else 'operation'
@@ -360,6 +381,16 @@ def run_worker(
                     deadline = None if timeout is None else monotonic() + timeout
                 elif kind == 'heartbeat':
                     continue  # A heartbeat can race with a submitted answer.
+                elif kind == 'browser_close_started':
+                    if browser_deadline is not None:
+                        raise WorkerFailure('browser worker reported overlapping closes')
+                    browser_deadline = monotonic() + (
+                        BROWSER_CLOSE_TIMEOUT if close_timeout is None else close_timeout
+                    )
+                elif kind == 'browser_close_finished':
+                    if browser_deadline is None:
+                        raise WorkerFailure('browser worker finished a close without starting it')
+                    browser_deadline = None
                 elif kind == 'closing':
                     closing = True
                     deadline = monotonic() + (grace if close_timeout is None else close_timeout)
