@@ -3,8 +3,10 @@
 from contextlib import contextmanager
 from contextvars import ContextVar
 from email.message import Message
+from http.client import HTTPResponse
 from http.cookiejar import Cookie, CookieJar, DefaultCookiePolicy
 from time import time
+from typing import cast
 from urllib.parse import urlsplit
 
 from httpx import Cookies
@@ -39,7 +41,8 @@ class _SessionCookieJar(CookieJar):
                     for attribute in attributes
                 ):
                     headers[field] = value
-        return super().make_cookies(headers, request)
+        # CookieJar only uses the response.info() protocol, as in HTTPX.
+        return super().make_cookies(cast(HTTPResponse, headers), request)
 
 
 def seed_cookie_jar(jar, state, *, clock=time):

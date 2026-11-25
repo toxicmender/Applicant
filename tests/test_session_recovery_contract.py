@@ -56,7 +56,9 @@ class SessionRecoveryContractTest(unittest.TestCase):
                     sqlite, 'linkedin', database=str(database), verifier=Mock(return_value=STATE)
                 )
                 self.assertEqual(saved['status'], 'verified')
-                self.assertEqual(saved['health_recovery']['status'], 'database_busy')
+                recovery = saved['health_recovery']
+                assert isinstance(recovery, dict)
+                self.assertEqual(recovery['status'], 'database_busy')
                 pending = store.snapshot()
                 checked = session_status(
                     files, 'linkedin', check=True, verifier=Mock(side_effect=AssertionError)
@@ -68,7 +70,9 @@ class SessionRecoveryContractTest(unittest.TestCase):
             checked = session_status(
                 sqlite, 'linkedin', check=True, verifier=Mock(side_effect=AssertionError)
             )
-            self.assertEqual(checked['health_recovery']['status'], 'recovered')
+            recovery = checked['health_recovery']
+            assert isinstance(recovery, dict)
+            self.assertEqual(recovery['status'], 'recovered')
             self.assertEqual(health(database, 'linkedin')['status'], 'ready')
             self.assertIsNone(store.snapshot()['pending'])
             self.assertEqual(store.snapshot()['generation'], pending['generation'])
