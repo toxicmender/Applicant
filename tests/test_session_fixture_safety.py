@@ -7,10 +7,22 @@ import pytest
 
 
 class FixtureMarkup(HTMLParser):
-    tags = frozenset({'a', 'aside', 'button', 'div', 'nav', 'section', 'span', 'ul'})
+    tags = frozenset({'a', 'aside', 'button', 'div', 'img', 'nav', 'section', 'span', 'ul'})
     values = (
         ('aria-label', frozenset({'Account', 'Open profile menu', 'Profile'})),
-        ('class', frozenset({'site-nav__account', 'site-nav__user', 'site-nav__auth'})),
+        (
+            'class',
+            frozenset(
+                {
+                    'site-nav__account',
+                    'site-nav__user',
+                    'site-nav__auth',
+                    'desktop-account',
+                    'mobile-inbox',
+                    'mobile-profile',
+                }
+            ),
+        ),
         ('data-gnav-element-name', frozenset({'Inbox', 'SignIn'})),
         ('data-signed-in', frozenset({'true', 'false'})),
         (
@@ -22,6 +34,8 @@ class FixtureMarkup(HTMLParser):
                     'left-rail-my-bowls',
                     'userProfile',
                     'inboxBell',
+                    'messageTab',
+                    'userProfileImage',
                 }
             ),
         ),

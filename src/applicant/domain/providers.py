@@ -11,6 +11,7 @@ class VerificationTarget:
     signed_out: tuple[str, ...] = ()
     region: str | None = None
     control_names: tuple[str, ...] = ()
+    alternate_markers: tuple[tuple[str, ...], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -301,6 +302,9 @@ _add_session(
                 ('button[data-testid="userProfile"]', 'button[data-testid="inboxBell"]'),
                 ('button:text-is("Login")',),
                 control_names=('profile', 'inbox'),
+                alternate_markers=(
+                    ('img[data-testid="userProfileImage"]', 'button[data-testid="messageTab"]'),
+                ),
             ),
         ),
         ('ambitionbox.com',),

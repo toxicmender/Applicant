@@ -44,9 +44,30 @@ class SetupFailureBrowserTest(RealBrowserTest):
             ('<main></main>', {'profile': 'absent', 'inbox': 'absent'}),
             (hidden + profile + inbox, None),
             (hidden + inbox + delayed, None),
+            (
+                hidden + inbox.replace('<button', '<button hidden'),
+                {'profile': 'hidden', 'inbox': 'hidden'},
+            ),
+            (
+                '<img data-testid="userProfileImage" width="30" height="30">',
+                {'profile': 'visible', 'inbox': 'absent'},
+            ),
+            (
+                profile + '<button data-testid="messageTab">Messages</button>',
+                {'profile': 'visible', 'inbox': 'visible'},
+            ),
         ]:
             with self.subTest(expected=expected, delayed=delayed in markup):
                 self.verify_markup(markup, expected)
+
+    def test_responsive_ambitionbox_setup_and_fresh_restore(self):
+        for scenario in ('responsive-desktop', 'responsive-narrow'):
+            with self.subTest(layout=scenario):
+                name = 'ambitionbox'
+                result = self.cli(name, scenario, ['provider', name, '--reauth'], 0)
+                assert result['status'] == 'verified', (
+                    f'{name} {scenario}: both capture and fresh restoration must verify'
+                )
 
     def verify_markup(self, markup, expected):
         class Session(BrowserSession):

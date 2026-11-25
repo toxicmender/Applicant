@@ -34,6 +34,14 @@ def fixture_cli(name, scenario, args):
         def check(name, state, *, interactive=False, **options):
             phases.append('capture' if interactive else 'restore')
             markup = (FIXTURES / f'{name}.html').read_text(encoding='utf-8')
+            if scenario.startswith('responsive-'):
+                markup = (FIXTURES / 'ambitionbox-responsive.html').read_text(encoding='utf-8')
+                markup += """<style>
+                    [data-testid=userProfileImage] { width: 30px; height: 30px; }
+                    @media (min-width: 768px) { .mobile-inbox { display: none; } }
+                    @media (min-width: 1024px) { .mobile-profile { display: none; } }
+                    @media (max-width: 767px) { .desktop-account { display: none; } }
+                </style>"""
             if scenario == 'missing':
                 markup = '<button data-testid="userProfile">Profile</button>'
             markup += '<main>' + PAGE_TEXT + '</main>'
@@ -65,6 +73,8 @@ def fixture_cli(name, scenario, args):
 
             def factory(**options):
                 options['headless'] = True
+                if scenario == 'responsive-narrow' and interactive:
+                    options['capture_settings'] = {'viewport': {'width': 390, 'height': 844}}
                 return Session(**options)
 
             return _verify_detailed(
@@ -81,7 +91,7 @@ def fixture_cli(name, scenario, args):
             patch('applicant.services.provider_setup._check_browser', side_effect=check),
         ):
             code = main(args)
-            if scenario == 'signed-in':
+            if code == 0 and (scenario == 'signed-in' or scenario.startswith('responsive-')):
                 assert phases == ['capture', 'restore'], (
                     f'{name} setup: expected separate capture and fresh-context verification'
                 )

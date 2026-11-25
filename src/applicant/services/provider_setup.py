@@ -478,7 +478,8 @@ def _inspect_verification(name, session, page, targets):
             return {'status': 'needs_setup', 'reason': 'signed_out'}
         current = next((t for t in targets if _same_route(page.url, t.url)), None)
         if current:
-            if all(_visible(page, s) for s in current.markers) and _same_route(
+            groups = (current.markers, *current.alternate_markers)
+            if any(all(_visible(page, s) for s in group) for group in groups) and _same_route(
                 page.url, current.url
             ):
                 settings = page.evaluate("""() => ({
@@ -504,10 +505,17 @@ def _inspect_verification(name, session, page, targets):
                 controls = {}
                 for index, selector in enumerate(current.markers):
                     label = current.control_names[index] if current.control_names else selector
-                    if _visible(page, selector):
+                    candidates = [
+                        group[index] for group in (current.markers, *current.alternate_markers)
+                    ]
+                    if any(_visible(page, candidate) for candidate in candidates):
                         controls[label] = 'visible'
                     else:
-                        controls[label] = 'hidden' if page.locator(selector).count() else 'absent'
+                        controls[label] = (
+                            'hidden'
+                            if any(page.locator(s).count() for s in candidates)
+                            else 'absent'
+                        )
                 return {
                     'status': 'inconclusive',
                     'reason': 'marker_missing',
