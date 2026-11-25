@@ -114,7 +114,8 @@ class ResearchCLIBranchesTest(unittest.TestCase):
             )
             for versions in ([], ['job']):
                 with patch(
-                    'applicant.cli.sources.collect_feed', return_value={'job_version_ids': versions}
+                    'applicant.cli.sources.collect_feed',
+                    return_value={'job_version_ids': versions, 'outcomes': [{'status': 'success'}]},
                 ) as collect:
                     self.assertEqual(
                         call('probe', '--provider', 'indeed', '--database', str(database))[0],

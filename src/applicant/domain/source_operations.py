@@ -30,6 +30,7 @@ class Validation(Contract):
     revision: str | None = None
     reason: str | None = None
     last_passed_at: datetime | None = None
+    freshness: Literal['unverified', 'fresh', 'stale'] = 'unverified'
 
 
 class Runtime(Contract):

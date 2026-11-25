@@ -1,13 +1,17 @@
 """Inspect provider operations and run explicit, bounded probes."""
 
+from pathlib import Path
 from typing import get_args
 
+from pydantic import ValidationError
+
 from ..domain.canonical import canonical_json
-from ..domain.providers import PROVIDERS, provider
+from ..domain.providers import PROFILE_PROVIDERS, PROVIDERS, provider
 from ..domain.source_operations import OperationName, eligible_route
 from ..errors import ConfigError, DatabaseBusy
 from ..infra.owned_worker import CleanupUnconfirmed
 from ..infra.ranking_documents import read_ranking_document
+from ..services.company_capture import capture_profile
 from ..services.provider_health import health, route_health
 from ..services.provider_setup import provider_session, session_status
 from ..services.research_feed import collect_feed
@@ -24,6 +28,17 @@ class Sources(DatabaseRequest):
     route: str | None = None
     input: str | None = None
 
+    @property
+    def import_probe(self) -> bool:
+        if self.operation != 'probe' or not self.provider or not self.probe_operation:
+            return False
+        if self.route is not None:
+            return self.route == 'import'
+        selected = operations(provider(self.provider)).get(self.probe_operation)
+        return bool(
+            self.input and selected and any(r.method == 'user_import' for r in selected.routes)
+        )
+
 
 _EXIT = {
     'success': 0,
@@ -37,6 +52,7 @@ _EXIT = {
     'prohibited': 2,
     'destination_denied': 2,
     'input_required': 2,
+    'invalid_input': 2,
     'needs_setup': 3,
     'blocked': 3,
     'throttled': 3,
@@ -82,6 +98,9 @@ def add_parser(add):
 
 
 def run(args, settings):
+    if args.import_probe:
+        item = provider(args.provider)
+        return _probe(args, settings, None, item, operations(item))
     database = database_path(settings, args.database) if settings.store == 'sqlite' else None
     if args.database and database is None:
         raise ConfigError('--database requires --store sqlite')
@@ -169,18 +188,25 @@ def _project(item, settings, database, *, probe=False):
 
 
 def _probe(args, settings, database, item, declared):
-    if (args.route or args.input) and not args.probe_operation:
-        raise ConfigError('--route and --input require --operation')
     key = args.probe_operation or 'job_search'
     operation = declared.get(key)
-    if args.route and (not operation or args.route not in {route.id for route in operation.routes}):
-        raise ConfigError('unknown route for the selected provider and operation')
+    invocation_error = None
+    if (args.route or args.input) and not args.probe_operation:
+        invocation_error = '--route and --input require --operation'
+    elif args.route and (
+        not operation or args.route not in {route.id for route in operation.routes}
+    ):
+        invocation_error = 'unknown route for the selected provider and operation'
     route, exclusions = None, {}
-    if operation:
+    if operation and invocation_error is None:
+        implicit_import = args.input and any(r.method == 'user_import' for r in operation.routes)
+        pin = args.route or ('import' if implicit_import else None)
         route, exclusions = eligible_route(
             operation,
-            'persist' if key == 'job_search' and not args.input else 'display',
-            pin=args.route,
+            'persist'
+            if key in ('job_search', 'job_detail', 'company_profile') and pin != 'import'
+            else 'display',
+            pin=pin,
             has_input=bool(args.input),
         )
     selected = route.id if route else next(iter(exclusions), None)
@@ -188,16 +214,18 @@ def _probe(args, settings, database, item, declared):
     outcome = {'status': 'route_unavailable'}
     collection = {'job_version_ids': [], 'observations': [], 'outcomes': [], 'groups': []}
     try:
-        if route is None:
+        if invocation_error is not None:
+            outcome = {'status': 'invalid_input', 'message': invocation_error}
+        elif route is None:
             reason = next(iter(exclusions.values()), 'route_unavailable')
             outcome = {'status': reason}
             if operation:
                 blocked = next((x for x in operation.routes if x.id == selected), None)
                 if blocked is not None and blocked.runtime.eligible_at is not None:
                     eligible = blocked.runtime.eligible_at.isoformat()
+                    if reason == 'cooldown' and blocked.runtime.reason is not None:
+                        outcome['reason'] = blocked.runtime.reason
         elif route.method == 'user_import':
-            from pathlib import Path
-
             fixture = not args.input
             value = (
                 sample_import(item.id, key)
@@ -214,8 +242,6 @@ def _probe(args, settings, database, item, declared):
         elif key in ('job_search', 'job_detail') and database is not None:
             query = {'providers': [item.id], 'limit': 1, 'keywords': ''}
             if key == 'job_detail':
-                from pathlib import Path
-
                 if not args.input:
                     raise ConfigError('job_detail requires --input with a JSON url field')
                 source = read_ranking_document(Path(settings.path(args.input)))
@@ -238,12 +264,31 @@ def _probe(args, settings, database, item, declared):
             if outcome['status'] == 'success' and not collection['job_version_ids']:
                 outcome = {**outcome, 'status': 'empty'}
             eligible = outcome.get('eligible_at')
+        elif key == 'company_profile' and item.id in PROFILE_PROVIDERS and database is not None:
+            if not args.input:
+                raise ConfigError('company_profile requires a verified company selection file')
+            selection = read_ranking_document(Path(settings.path(args.input)))
+            if not isinstance(selection, dict) or selection.get('provider') not in (
+                item.id,
+                *item.aliases,
+            ):
+                raise ConfigError('company selection does not match the selected provider')
+            outcome = capture_profile(database, selection)
+            if 'evidence_id' in outcome:
+                outcome = {**outcome, 'status': 'success'}
         elif key == 'account_setup':
             outcome = session_status(settings, item.id, check=True, database=args.database)
+            recovery = outcome.get('health_recovery', {})
+            if recovery.get('retryable'):
+                outcome['reason'] = 'database_busy'
+            elif recovery.get('status') in ('database_error', 'schema_incompatible'):
+                outcome['reason'] = 'infrastructure_failure'
     except CleanupUnconfirmed:
         outcome = {'status': 'cleanup_unconfirmed'}
     except DatabaseBusy:
         outcome = {'status': 'database_busy'}
+    except (ConfigError, ValidationError):
+        outcome = {'status': 'invalid_input'}
     status = outcome['status']
     reason = outcome.get('reason') or (
         status if status not in ('success', 'verified', 'empty') else None
@@ -260,9 +305,11 @@ def _probe(args, settings, database, item, declared):
                 'eligible_at': eligible,
                 'operation_exit_code': code,
                 'exclusions': exclusions,
+                'access_mode': outcome.get('access_mode')
+                or ('public' if route and route.method.startswith('public_') else None),
             }
         )
     )
-    if args.probe_operation:
+    if args.probe_operation or invocation_error is not None:
         return code
     return int(code != 0 or not collection['job_version_ids'])

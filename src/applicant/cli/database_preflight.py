@@ -119,6 +119,8 @@ def targets(command, action, request, settings):
         return paths, True
     if command == 'report' or (command == 'research' and action == 'template'):
         return (), False
+    if command == 'sources' and action == 'probe' and getattr(request, 'import_probe', False):
+        return (), False
     if (command, action) in {
         ('rank', 'replay'),
         ('survey', 'validate'),

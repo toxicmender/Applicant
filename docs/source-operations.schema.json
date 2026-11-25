@@ -183,7 +183,8 @@
             "checked_at": null,
             "revision": null,
             "reason": null,
-            "last_passed_at": null
+            "last_passed_at": null,
+            "freshness": "unverified"
           }
         },
         "live": {
@@ -193,7 +194,8 @@
             "checked_at": null,
             "revision": null,
             "reason": null,
-            "last_passed_at": null
+            "last_passed_at": null,
+            "freshness": "unverified"
           }
         },
         "runtime": {
@@ -362,6 +364,16 @@
           ],
           "default": null,
           "title": "Last Passed At"
+        },
+        "freshness": {
+          "default": "unverified",
+          "enum": [
+            "unverified",
+            "fresh",
+            "stale"
+          ],
+          "title": "Freshness",
+          "type": "string"
         }
       },
       "title": "Validation",

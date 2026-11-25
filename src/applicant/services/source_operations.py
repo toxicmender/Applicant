@@ -1,29 +1,40 @@
 """Resolve the catalog against offline provider health and account metadata."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
+from typing import Literal
 
 from ..domain.contracts import now
 from ..domain.providers import PROFILE_PROVIDERS, RESTRICTED_PUBLIC_ROUTES, Provider
-from ..domain.source_operations import Operation, OperationName, Route, Runtime, Validation
+from ..domain.source_operations import (
+    Credential,
+    Operation,
+    OperationName,
+    Route,
+    Runtime,
+    Validation,
+)
 
 _PUBLIC_CONTROLS = ('weworkremotely', 'wellfound', 'builtin')
-_PUBLIC_FAILURES = {
+_PUBLIC_FAILURES: dict[str, tuple[Literal['failed', 'blocked'], str]] = {
     'welcometothejungle': ('failed', 'unparseable'),
     'arc': ('failed', 'unparseable'),
     'instahyre': ('blocked', 'access_blocked'),
 }
 _SETUP_PASSES = {
-    'indeed': 25,
-    'naukri': 24,
-    'googlejobs': 24,
-    'glassdoor': 25,
-    'ambitionbox': 25,
-    'levels': 24,
+    'indeed': '2026-11-25T08:31:11.287409+00:00',
+    'naukri': '2026-11-24T08:14:37.165938+00:00',
+    'googlejobs': '2026-11-24T08:18:35.479794+00:00',
+    'glassdoor': '2026-11-25T11:22:05.581298+00:00',
+    'ambitionbox': '2026-11-25T11:20:08.638726+00:00',
+    'levels': '2026-11-24T08:21:10.446567+00:00',
 }
+_PUBLIC_PROBE_AT = '2026-11-10T13:02:23.529087+00:00'
 
 
-def _historical_visit(day, outcome='passed', reason=None):
-    stamp = datetime.fromisoformat(f'2026-11-{day:02}T00:00:00+00:00')
+def _historical_visit(
+    stamp, outcome: Literal['passed', 'failed', 'blocked'] = 'passed', reason=None
+):
+    stamp = datetime.fromisoformat(stamp)
     return Validation(
         outcome=outcome,
         checked_at=stamp,
@@ -32,7 +43,9 @@ def _historical_visit(day, outcome='passed', reason=None):
     )
 
 
-def _route(id, method, *, priority=10, established=True, credential='none', **options):
+def _route(
+    id, method, *, priority=10, established=True, credential: Credential = 'none', **options
+):
     destinations = options.pop(
         'destinations', ('display', 'persist', 'export') if established else ()
     )
@@ -56,7 +69,14 @@ def operations(item: Provider) -> dict[OperationName, Operation]:
     name = item.id
     result: dict[OperationName, Operation] = {}
 
-    def add(key: OperationName, route: Route, *additional: Route, implementation='implemented'):
+    def add(
+        key: OperationName,
+        route: Route,
+        *additional: Route,
+        implementation: Literal[
+            'implemented', 'import_only', 'pending', 'deprecated'
+        ] = 'implemented',
+    ):
         result[key] = Operation(implementation=implementation, routes=(route, *additional))
 
     def imported(key: OperationName, *routes: Route):
@@ -81,9 +101,9 @@ def operations(item: Provider) -> dict[OperationName, Operation]:
                 fixture=Validation(outcome='passed')
                 if name in (*_PUBLIC_CONTROLS, *_PUBLIC_FAILURES)
                 else Validation(),
-                live=_historical_visit(10)
+                live=_historical_visit(_PUBLIC_PROBE_AT)
                 if name in _PUBLIC_CONTROLS
-                else _historical_visit(10, *outcome)
+                else _historical_visit(_PUBLIC_PROBE_AT, *outcome)
                 if outcome
                 else Validation(),
             )
@@ -216,16 +236,30 @@ def project(operation, health, credential='unknown', *, clock=now):
     states = []
     for route in operation.routes:
         state = 'not_required' if route.credential_kind == 'none' else credential
+        validation = route.live
+        if validation.last_passed_at is not None:
+            validation = validation.model_copy(
+                update={
+                    'freshness': 'stale'
+                    if current >= validation.last_passed_at + timedelta(days=30)
+                    else 'fresh',
+                }
+            )
         states.append(
             route.model_copy(
                 update={
-                    'runtime': Runtime(
-                        health=status if route.method != 'user_import' else 'unknown',
-                        reason=health.get('reason') if route.method != 'user_import' else None,
-                        eligible_at=until if route.method != 'user_import' else None,
-                        lease_until=lease if route.method != 'user_import' else None,
-                        credential_status=state,
-                    )
+                    'live': validation,
+                    'runtime': Runtime.model_validate(
+                        {
+                            'health': status if route.method != 'user_import' else 'unknown',
+                            'reason': health.get('reason')
+                            if route.method != 'user_import'
+                            else None,
+                            'eligible_at': until if route.method != 'user_import' else None,
+                            'lease_until': lease if route.method != 'user_import' else None,
+                            'credential_status': state,
+                        }
+                    ),
                 }
             )
         )

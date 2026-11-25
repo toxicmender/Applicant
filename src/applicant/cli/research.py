@@ -200,7 +200,12 @@ def execute(args, settings):
     elif op == 'research.import':
         from ..services.source_import import validate_source_import
 
-        bundle = validate_source_import(read(args.from_file))
+        value = read(args.from_file)
+        bundle = validate_source_import(value)
+        if not args.dry_run and isinstance(value, dict) and 'manifest' in value:
+            # Research snapshots can be exported through several commands. Until store
+            # rows carry destination-level restrictions, accept exportable bundles only.
+            validate_source_import(value, destination='export')
         result = import_research(database, bundle, dry_run=args.dry_run)
     elif op == 'research.export-job-versions':
         if output is None:
