@@ -158,5 +158,58 @@ def test_http_rotation_preserves_same_name_partitioned_cookie(tmp_path):
     assert len(cookies) == 1, 'indeed HTTP deletion: ordinary cookie survived Max-Age=0'
 
 
+@pytest.mark.parametrize(
+    'update',
+    [
+        'isolated=synthetic; Secure; Path=/; Partitioned',
+        'account=replaced; Secure; Path=/; pArTiTiOnEd',
+        'account=; Secure; Path=/; Partitioned; Max-Age=0',
+    ],
+)
+def test_http_ignores_partitioned_redirect_updates(tmp_path, update):
+    store = SessionStore(tmp_path / 'state.json', 'indeed', mode='plaintext')
+    ordinary = scoped_cookie()
+    partitioned = {
+        **ordinary,
+        'value': 'browser-only',
+        'partitionKey': 'https://indeed.com',
+        '_crHasCrossSiteAncestor': True,
+    }
+    state = {'cookies': [ordinary, partitioned], 'origins': []}
+    record = store.install({}, state, 'verified')
+    access = SessionAccess(store, record, state)
+    seen = []
+
+    def respond(request):
+        seen.append(request.headers.get('cookie', ''))
+        if request.url.path == '/jobs':
+            return httpx.Response(
+                302,
+                headers=[
+                    ('Location', '/results'),
+                    ('Set-Cookie', update),
+                    ('Set-Cookie', 'other=ordinary; Secure; Path=/'),
+                ],
+            )
+        return httpx.Response(200)
+
+    with httpx.Client(transport=httpx.MockTransport(respond), follow_redirects=True) as client:
+        access.http(
+            client,
+            lambda: client.get('https://in.indeed.com/jobs'),
+            accepted=lambda response: response.is_success,
+        )
+    assert len(seen) == 2
+    assert set(seen[1].split('; ')) == {'account=' + COOKIE_VALUE, 'other=ordinary'}, (
+        'indeed redirect: a partitioned response modified the outgoing ordinary cookies'
+    )
+    reopened = store.active()
+    assert reopened is not None
+    assert partitioned in reopened['cookies'] and ordinary in reopened['cookies'], (
+        'indeed persistence: partitioned response modified a saved account cookie'
+    )
+    assert {cookie['name'] for cookie in reopened['cookies']} == {'account', 'other'}
+
+
 if __name__ == '__main__':
     raise SystemExit(invalid_capture(sys.argv[1], sys.argv[2:]))

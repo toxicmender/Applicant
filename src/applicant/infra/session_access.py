@@ -2,7 +2,8 @@
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from http.cookiejar import Cookie, DefaultCookiePolicy
+from email.message import Message
+from http.cookiejar import Cookie, CookieJar, DefaultCookiePolicy
 from time import time
 from urllib.parse import urlsplit
 
@@ -18,6 +19,27 @@ _CHALLENGE_COOKIES = {'cf_clearance', '__cf_bm', '_abck', 'ak_bmsc', 'bm_sz'}
 
 class SessionExpired(AuthFailed):
     """A provider visibly rejected saved credentials."""
+
+
+class _CookieHeaders(Message):
+    def info(self):
+        return self
+
+
+class _SessionCookieJar(CookieJar):
+    def make_cookies(self, response, request):
+        # CookieJar can apply Max-Age=0 during parsing, before consulting its policy.
+        # Drop the entire partitioned header before it can mutate the ordinary jar.
+        headers = _CookieHeaders()
+        for field in ('Set-Cookie', 'Set-Cookie2'):
+            for value in response.info().get_all(field, ()):
+                attributes = value.split(';')[1:]
+                if not any(
+                    attribute.partition('=')[0].strip().lower() == 'partitioned'
+                    for attribute in attributes
+                ):
+                    headers[field] = value
+        return super().make_cookies(headers, request)
 
 
 def seed_cookie_jar(jar, state, *, clock=time):
@@ -145,7 +167,8 @@ class SessionAccess:
         from ..services.provider_setup import _allowed_domain, _is_signed_out, _provider_domains
 
         with self.exchange():
-            jar = client.cookies.jar
+            original_jar = client.cookies.jar
+            jar = _SessionCookieJar()
             seed_cookie_jar(jar, self.state)
             if locale := (self.record.get('capture') or {}).get('locale'):
                 client.headers['Accept-Language'] = locale
@@ -154,6 +177,7 @@ class SessionAccess:
                 apply_cookie_scope(request, jar)
 
             hooks = client.event_hooks['request']
+            client.cookies.jar = jar
             hooks.append(scope)
             try:
                 response = request()
@@ -167,7 +191,7 @@ class SessionAccess:
                 return response
             finally:
                 hooks.remove(scope)
-                jar.clear()
+                client.cookies.jar = original_jar
 
 
 def run_with_session(store, operation, *, public):
