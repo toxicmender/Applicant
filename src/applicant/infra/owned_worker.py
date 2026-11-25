@@ -16,7 +16,7 @@ from queue import Empty, Queue
 from threading import Thread
 from typing import Any
 
-from ..errors import ApplicantError, ProfileBusy, SourceError
+from ..errors import ApplicantError, ConfigError, ProfileBusy, SourceError
 from .browser_diagnostics import QUEUE_SIZE, WorkerDiagnostics, active_diagnostics, failure_details
 from .interrupts import defer_interrupt
 
@@ -306,12 +306,32 @@ def run_worker(
     closing = None
     browser_deadline = None
     pending = None
+
+    def check_operation():
+        if check:
+            check()
+        now = monotonic()
+        if browser_deadline is not None and now >= browser_deadline:
+            raise WorkerTeardownTimeout('browser teardown deadline exceeded')
+        if deadline is not None and now >= deadline:
+            if closing:
+                raise WorkerTeardownTimeout('browser teardown deadline exceeded')
+            phase = 'preparation' if preparing else 'operation'
+            raise WorkerDeadline(f'worker {phase} deadline exceeded')
+
+    def check_keyring_caller():
+        if not process.is_alive():
+            raise WorkerFailure('acquisition worker exited during keyring request')
+        check_operation()
+
     try:
         pipe = _ControlPipe(parent)
         startup_deadline = time.monotonic() + 10
         while (ready := pipe.receive()) is None and time.monotonic() < startup_deadline:
             if not process.is_alive():
                 break
+            if check:
+                check()
         if ready != ('ready', None):
             raise WorkerFailure('browser worker startup failed')
         group_ready = os.name != 'nt'
@@ -322,16 +342,7 @@ def run_worker(
         pipe.send(arguments)
         while True:
             received += _drain_diagnostics(diagnostics)
-            if check:
-                check()
-            now = monotonic()
-            if browser_deadline is not None and now >= browser_deadline:
-                raise WorkerTeardownTimeout('browser teardown deadline exceeded')
-            if deadline is not None and now >= deadline:
-                if closing:
-                    raise WorkerTeardownTimeout('browser teardown deadline exceeded')
-                phase = 'preparation' if preparing else 'operation'
-                raise WorkerDeadline(f'worker {phase} deadline exceeded')
+            check_operation()
             message = pending or pipe.receive()
             pending = None
             if message is not None:
@@ -344,6 +355,30 @@ def run_worker(
                     preparing = False
                     deadline = None if timeout is None else monotonic() + timeout
                     pipe.send(None)
+                elif kind == 'keyring_request':
+                    from .session_store import _local_session_keyring
+
+                    if (
+                        preparation_timeout is not None
+                        or not isinstance(value, tuple)
+                        or len(value) != 3
+                        or value[0] not in ('get', 'set', 'delete')
+                        or not isinstance(value[1], str)
+                        or (
+                            not isinstance(value[2], str)
+                            if value[0] == 'set'
+                            else value[2] is not None
+                        )
+                    ):
+                        raise WorkerFailure('invalid keyring request')
+                    try:
+                        result = _local_session_keyring(*value, check=check_keyring_caller)
+                    except ConfigError as error:
+                        reply = (False, str(error))
+                    else:
+                        reply = (True, result)
+                    check_keyring_caller()
+                    pipe.send(('keyring_reply', reply))
                 elif kind == 'pause':
                     if pause is None or not interactive:
                         raise WorkerFailure('unexpected interactive worker request')
@@ -427,6 +462,8 @@ def run_worker(
         # The child can only finish flushing its queue while the parent drains it.
         flush_deadline = time.monotonic() + grace
         while process.is_alive() and time.monotonic() < flush_deadline:
+            if check:
+                check()
             received += _drain_diagnostics(diagnostics)
             process.join(min(0.05, max(0.0, flush_deadline - time.monotonic())))
         received += _drain_diagnostics(diagnostics)

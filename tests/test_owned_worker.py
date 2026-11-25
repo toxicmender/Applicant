@@ -405,9 +405,10 @@ class OwnedWorkerTest(unittest.TestCase):
                     return next(modeled_timeout, 4.0)
                 return 4.0 if monotonic() >= startup_limit else 0.0
 
-            def worker(_function, _arguments, *, timeout, preparation_timeout):
+            def worker(_function, _arguments, *, timeout, preparation_timeout, check):
                 self.assertEqual(timeout, 3)
                 self.assertEqual(preparation_timeout, 10)
+                self.assertIsNone(check)
                 return run_worker(
                     keyring_held_tree,
                     listener.getsockname(),

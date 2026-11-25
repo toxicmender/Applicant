@@ -13,7 +13,13 @@ from ..errors import ApplicantError, ConfigError, ProfileBusy
 from ..files import document_bytes, write_document_bytes
 from ..permissions import make_private_directory
 from .advisory_lock import advisory_lock
-from .owned_worker import CleanupUnconfirmed, WorkerDeadline, WorkerFailure, run_worker
+from .owned_worker import (
+    CleanupUnconfirmed,
+    WorkerDeadline,
+    WorkerFailure,
+    _worker_connection,
+    run_worker,
+)
 from .path_identity import physical_path
 from .profile_lock import profile_lock
 
@@ -57,9 +63,27 @@ def _keyring_worker(connection, arguments):
 
 
 def session_keyring(action, account, value=None):
+    connection = _worker_connection.get()
+    if connection is None:
+        return _local_session_keyring(action, account, value)
+    connection.send(('keyring_request', (action, account, value)))
+    kind, reply = connection.recv()
+    if kind != 'keyring_reply':
+        raise WorkerFailure('unexpected keyring reply')
+    success, result = reply
+    if not success:
+        raise ConfigError(result)
+    return result
+
+
+def _local_session_keyring(action, account, value=None, *, check=None):
     try:
         return run_worker(
-            _keyring_worker, (action, account, value), timeout=3, preparation_timeout=10
+            _keyring_worker,
+            (action, account, value),
+            timeout=3,
+            preparation_timeout=10,
+            check=check,
         )
     except CleanupUnconfirmed:
         raise
