@@ -3,7 +3,7 @@
 from datetime import datetime
 
 from ..domain.contracts import now
-from ..domain.providers import PROFILE_PROVIDERS, Provider
+from ..domain.providers import PROFILE_PROVIDERS, RESTRICTED_PUBLIC_ROUTES, Provider
 from ..domain.source_operations import Operation, OperationName, Route, Runtime, Validation
 
 _PUBLIC_CONTROLS = ('weworkremotely', 'wellfound', 'builtin')
@@ -87,7 +87,18 @@ def operations(item: Provider) -> dict[OperationName, Operation]:
                 if outcome
                 else Validation(),
             )
-            if name in ('indeed', 'naukri', 'googlejobs'):
+            if name in RESTRICTED_PUBLIC_ROUTES:
+                public = public.model_copy(
+                    update={
+                        'policy': 'prohibited',
+                        'destinations': (),
+                        'retention': 'none',
+                        'authority': RESTRICTED_PUBLIC_ROUTES[name],
+                        'reviewed_at': datetime.fromisoformat('2026-11-25T00:00:00+00:00'),
+                    }
+                )
+                imported('job_search', public)
+            elif name in ('indeed', 'naukri', 'googlejobs'):
                 add(
                     'job_search',
                     _route(
@@ -101,7 +112,11 @@ def operations(item: Provider) -> dict[OperationName, Operation]:
             else:
                 add('job_search', public)
             if method == 'public_structured':
-                add('job_detail', public.model_copy(update={'live': Validation()}))
+                detail = public.model_copy(update={'live': Validation()})
+                if name in RESTRICTED_PUBLIC_ROUTES:
+                    imported('job_detail', detail)
+                else:
+                    add('job_detail', detail)
         else:
             method = {'ziprecruiter': 'official_mcp', 'upwork': 'official_api'}.get(
                 name, 'public_structured'
@@ -136,7 +151,18 @@ def operations(item: Provider) -> dict[OperationName, Operation]:
             _route('session', 'managed_browser', established=False, credential='browser_session'),
             implementation='pending',
         )
-    if name in PROFILE_PROVIDERS:
+    if name in RESTRICTED_PUBLIC_ROUTES and 'company' in item.domains:
+        imported(
+            'company_profile',
+            _route(
+                'public',
+                'public_structured',
+                established=False,
+                policy='prohibited',
+                authority=RESTRICTED_PUBLIC_ROUTES[name],
+            ),
+        )
+    elif name in PROFILE_PROVIDERS:
         add('company_profile', _route('public', 'public_structured'))
     elif name in ('crunchbase', 'tracxn'):
         add('company_profile', _route('session', 'managed_browser', credential='browser_session'))

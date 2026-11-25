@@ -8,7 +8,7 @@ from ..domain.canonical import canonical_json, content_hash
 from ..domain.company_evidence import CompanyResponse
 from ..domain.company_resolution import resolve_company, suggest_manual_matches
 from ..domain.contracts import now
-from ..domain.providers import PROFILE_PROVIDERS, provider
+from ..domain.providers import PROFILE_PROVIDERS, RESTRICTED_PUBLIC_ROUTES, provider
 from ..domain.ranking_facts import country
 from ..domain.research import Company, CompanyIdentifier, Culture, ResearchEvidence, ResearchImport
 from ..errors import AuthFailed, Blocked, SourceError, Unparseable
@@ -36,6 +36,10 @@ def capture_profile(database, selection, *, client=None, clock=now):
     name = provider(selection['provider']).id
     if name not in PROFILE_PROVIDERS:
         raise ValueError('unsupported public profile provider')
+    if name in RESTRICTED_PUBLIC_ROUTES and client is None:
+        raise Blocked(
+            f'{name}: live capture restricted by provider terms; use an authorized import'
+        )
     root = (urlsplit(provider(name).url).hostname or '').removeprefix('www.')
     locator = urlsplit(selection['url'])
     if (

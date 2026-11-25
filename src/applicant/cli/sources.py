@@ -7,9 +7,11 @@ from ..domain.providers import PROVIDERS, provider
 from ..domain.source_operations import OperationName, eligible_route
 from ..errors import ConfigError, DatabaseBusy
 from ..infra.owned_worker import CleanupUnconfirmed
-from ..services.provider_health import health
+from ..infra.ranking_documents import read_ranking_document
+from ..services.provider_health import health, route_health
 from ..services.provider_setup import provider_session, session_status
 from ..services.research_feed import collect_feed
+from ..services.source_import import sample_import, validate_source_import
 from ..services.source_operations import operations, project
 from .database import database_path
 from .dispatch import DatabaseRequest, actions, bind
@@ -99,7 +101,7 @@ def run(args, settings):
             settings,
             database,
             item,
-            _project(item, settings, database if has_database else None),
+            _project(item, settings, database if has_database else None, probe=True),
         )
     items = [provider(args.provider)] if args.provider else list(PROVIDERS.values())
     print(
@@ -124,7 +126,7 @@ def run(args, settings):
     return 0
 
 
-def _project(item, settings, database):
+def _project(item, settings, database, *, probe=False):
     state = health(database, item.id) if database is not None else {}
     credential = 'unknown'
     if item.session:
@@ -138,9 +140,32 @@ def _project(item, settings, database):
                 'needs_setup': 'expired',
                 'cleared': 'missing',
             }.get(recorded, 'present_unverified')
-    return {
-        key: project(operation, state, credential) for key, operation in operations(item).items()
-    }
+    result = {}
+    for key, operation in operations(item).items():
+        projected = project(operation, state, credential)
+        if database is not None:
+            routes = []
+            for route in projected.routes:
+                recorded = route_health(database, item.id, key, route.id)
+                if (
+                    recorded
+                    and route.runtime.health not in ('cooldown', 'leased')
+                    and (not probe or recorded['adapter_revision'] == route.adapter_revision)
+                ):
+                    route = route.model_copy(
+                        update={
+                            'runtime': route.runtime.model_copy(
+                                update={
+                                    'health': 'adapter_degraded',
+                                    'reason': 'parser_quarantined',
+                                },
+                            )
+                        }
+                    )
+                routes.append(route)
+            projected = projected.model_copy(update={'routes': tuple(routes)})
+        result[key] = projected
+    return result
 
 
 def _probe(args, settings, database, item, declared):
@@ -171,14 +196,43 @@ def _probe(args, settings, database, item, declared):
                 if blocked is not None and blocked.runtime.eligible_at is not None:
                     eligible = blocked.runtime.eligible_at.isoformat()
         elif route.method == 'user_import':
-            outcome = {'status': 'input_required'}
-        elif key == 'job_search' and database is not None:
+            from pathlib import Path
+
+            fixture = not args.input
+            value = (
+                sample_import(item.id, key)
+                if fixture
+                else read_ranking_document(Path(settings.path(args.input)))
+            )
+            validate_source_import(
+                value, expected=(item.id, key), destination='display', fixture=fixture
+            )
+            outcome = {
+                'status': 'success',
+                'validation_kind': 'fixture' if fixture else 'user_input',
+            }
+        elif key in ('job_search', 'job_detail') and database is not None:
+            query = {'providers': [item.id], 'limit': 1, 'keywords': ''}
+            if key == 'job_detail':
+                from pathlib import Path
+
+                if not args.input:
+                    raise ConfigError('job_detail requires --input with a JSON url field')
+                source = read_ranking_document(Path(settings.path(args.input)))
+                if (
+                    not isinstance(source, dict)
+                    or set(source) != {'url'}
+                    or not isinstance(source['url'], str)
+                ):
+                    raise ConfigError('job_detail requires a JSON object containing a url')
+                query['urls'] = {item.id: [source['url']]}
             collection = collect_feed(
                 database,
-                {'providers': [item.id], 'limit': 1, 'keywords': ''},
+                query,
                 probe=True,
                 settings=settings,
                 use_session=route.credential_kind == 'browser_session',
+                selected_route=(key, route.id, route.adapter_revision),
             )
             outcome = collection['outcomes'][0]
             if outcome['status'] == 'success' and not collection['job_version_ids']:

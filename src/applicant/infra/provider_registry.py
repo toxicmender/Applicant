@@ -2,7 +2,8 @@
 
 from importlib import import_module
 
-from ..domain.providers import provider
+from ..domain.providers import RESTRICTED_PUBLIC_ROUTES, provider
+from ..errors import Blocked
 
 
 def board_class(name: str):
@@ -14,6 +15,11 @@ def board_class(name: str):
 
 
 def board_client(name: str, **kwargs):
+    name = provider(name).id
+    if name in RESTRICTED_PUBLIC_ROUTES and kwargs.get('client') is None:
+        raise Blocked(
+            f'{name}: live acquisition restricted by provider terms; use an authorized import'
+        )
     adapter = board_class(name)
     if adapter.__module__ == 'applicant.boards.public':
         kwargs['name'] = provider(name).id

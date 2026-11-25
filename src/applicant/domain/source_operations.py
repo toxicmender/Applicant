@@ -124,12 +124,10 @@ def eligible_route(operation: Operation, destination: Destination, *, pin=None, 
         state = route.runtime
         if route.method == 'user_import' and pin is None and not has_input:
             exclusions[route.id] = 'input_required'
-        elif (
-            operation.implementation in ('pending', 'deprecated') and route.method != 'user_import'
-        ):
-            exclusions[route.id] = 'route_unavailable'
         elif route.policy != 'allowed':
             exclusions[route.id] = route.policy
+        elif operation.implementation != 'implemented' and route.method != 'user_import':
+            exclusions[route.id] = 'route_unavailable'
         elif destination not in route.destinations:
             exclusions[route.id] = 'destination_denied'
         elif state.health in ('cooldown', 'leased', 'adapter_degraded'):

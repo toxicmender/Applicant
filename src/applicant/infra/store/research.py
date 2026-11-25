@@ -91,6 +91,12 @@ class ResearchRepository:
         ).fetchone()
         if found:
             if found != (digest, payload):
+                if table == 'research_evidence' and key.startswith('comp-'):
+                    old, incoming = json.loads(found[1]), json.loads(payload)
+                    old.pop('acquired_at', None)
+                    incoming.pop('acquired_at', None)
+                    if old == incoming:
+                        return False
                 raise StoreError(f'{table} identity already contains different data: {key}')
             return False
         fields = {'id': key, 'payload_hash': digest, 'payload': payload, **(columns or {})}

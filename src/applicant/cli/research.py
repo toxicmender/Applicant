@@ -198,7 +198,10 @@ def execute(args, settings):
         if schema_path:
             atomic_text(schema_path, canonical_json(IMPORT_ADAPTER.json_schema()) + '\n')
     elif op == 'research.import':
-        result = import_research(database, read(args.from_file), dry_run=args.dry_run)
+        from ..services.source_import import validate_source_import
+
+        bundle = validate_source_import(read(args.from_file))
+        result = import_research(database, bundle, dry_run=args.dry_run)
     elif op == 'research.export-job-versions':
         if output is None:
             raise ConfigError('export-job-versions requires --output')
@@ -294,6 +297,12 @@ def execute(args, settings):
         ReportDocument.model_validate(result)
     else:
         raise ConfigError('unknown research operation')
+    if op in ('feed.collect', 'feed.refresh') and result.get('outcome') in (
+        'aborted',
+        'partial_commit',
+    ):
+        print(canonical_json(result))
+        return 1
     document = None
     if pdf or args.format == 'markdown':
         document = snapshot_report(result, limit=args.limit, offset=args.offset)

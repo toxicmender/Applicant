@@ -234,6 +234,10 @@ for _name, _login, _target, _selector in (
 
 
 PROFILE_PROVIDERS = ('flexa', 'wellfound', 'builtin', 'welcometothejungle')
+RESTRICTED_PUBLIC_ROUTES = {
+    'arc': 'https://arc.dev/terms',
+    'welcometothejungle': 'https://www.welcometothejungle.com/en/pages/terms',
+}
 
 
 GLASSDOOR_REGIONS = ('com', 'co.in')
