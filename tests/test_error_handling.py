@@ -236,7 +236,7 @@ class ReviewsErrorTest(unittest.TestCase):
                     '-s',
                     'both',
                     '-o',
-                    os.devnull,
+                    os.path.join(data_dir, 'reviews.json'),
                     '--data-dir',
                     data_dir,
                     '--no-log-file',
